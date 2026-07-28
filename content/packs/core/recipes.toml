@@ -1,0 +1,313 @@
+[[recipes]]
+id = "iron_plate"
+station = "smelting"
+output = { item = "core:iron_plate", count = 1 }
+ingredients = [
+  { item = "core:iron_ore", count = 2 },
+]
+purpose = "Basic structural material."
+
+[[recipes]]
+id = "copper_plate"
+station = "smelting"
+output = { item = "core:copper_plate", count = 1 }
+ingredients = [
+  { item = "core:copper_ore", count = 2 },
+]
+purpose = "Basic conductive material."
+
+[[recipes]]
+id = "nickel_plate"
+station = "smelting"
+output = { item = "core:nickel_plate", count = 1 }
+ingredients = [
+  { item = "core:nickel_ore", count = 2 },
+]
+purpose = "Stronger industrial material."
+
+[[recipes]]
+id = "structural_alloy"
+station = "smelting"
+output = { item = "core:structural_alloy", count = 1 }
+ingredients = [
+  { item = "core:iron_plate", count = 1 },
+  { item = "core:nickel_plate", count = 1 },
+]
+purpose = "Stronger upgrade material."
+
+[[recipes]]
+id = "aluminum_plate"
+station = "smelting"
+output = { item = "core:aluminum_plate", count = 1 }
+ingredients = [
+  { item = "core:aluminum_ore", count = 2 },
+]
+purpose = "Lightweight industrial material."
+
+[[recipes]]
+id = "titanium_plate"
+station = "smelting"
+output = { item = "core:titanium_plate", count = 1 }
+ingredients = [
+  { item = "core:titanium_ore", count = 2 },
+]
+purpose = "Strong hull and engine material."
+
+[[recipes]]
+id = "cobalt_alloy"
+station = "smelting"
+output = { item = "core:cobalt_alloy", count = 1 }
+ingredients = [
+  { item = "core:cobalt_ore", count = 1 },
+  { item = "core:nickel_plate", count = 1 },
+]
+purpose = "High-performance upgrade material."
+
+[[recipes]]
+id = "silicon_wafer"
+station = "processing"
+output = { item = "core:silicon_wafer", count = 1 }
+ingredients = [
+  { item = "core:silicon_ore", count = 2 },
+]
+purpose = "Electronics substrate."
+
+[[recipes]]
+id = "hydrogen_fuel"
+station = "processing"
+output = { item = "core:hydrogen_fuel", count = 1 }
+ingredients = [
+  { item = "core:water_ice", count = 2 },
+]
+purpose = "Common ship fuel."
+
+[[recipes]]
+id = "coolant"
+station = "processing"
+output = { item = "core:coolant", count = 1 }
+ingredients = [
+  { item = "core:water_ice", count = 1 },
+  { item = "core:copper_plate", count = 1 },
+]
+purpose = "Reactor and engine support."
+
+[[recipes]]
+id = "lithium_cell"
+station = "processing"
+output = { item = "core:lithium_cell", count = 1 }
+ingredients = [
+  { item = "core:lithium_ore", count = 1 },
+  { item = "core:copper_wire", count = 2 },
+]
+purpose = "Battery and capacitor component."
+
+[[recipes]]
+id = "silver_contact"
+station = "processing"
+output = { item = "core:silver_contact", count = 1 }
+ingredients = [
+  { item = "core:silver_ore", count = 1 },
+  { item = "core:copper_wire", count = 1 },
+]
+purpose = "Advanced electronics component."
+
+[[recipes]]
+id = "gold_conductor"
+station = "processing"
+output = { item = "core:gold_conductor", count = 1 }
+ingredients = [
+  { item = "core:gold_ore", count = 1 },
+  { item = "core:copper_wire", count = 1 },
+]
+purpose = "Precision electronics component."
+
+[[recipes]]
+id = "uranium_reactor_pellet"
+station = "processing"
+output = { item = "core:reactor_pellet", count = 1 }
+allow_duplicate_output = true
+ingredients = [
+  { item = "core:uranium_ore", count = 1 },
+  { item = "core:coolant", count = 1 },
+]
+purpose = "High-output reactor fuel component."
+
+[[recipes]]
+id = "thorium_reactor_pellet"
+station = "processing"
+output = { item = "core:reactor_pellet", count = 1 }
+allow_duplicate_output = true
+ingredients = [
+  { item = "core:thorium_ore", count = 1 },
+  { item = "core:coolant", count = 1 },
+]
+purpose = "Stable reactor fuel component."
+
+[[recipes]]
+id = "helium_3_cell"
+station = "processing"
+output = { item = "core:helium_3_cell", count = 1 }
+ingredients = [
+  { item = "core:helium_3", count = 1 },
+  { item = "core:electronics", count = 1 },
+]
+purpose = "Fusion fuel component."
+
+[[recipes]]
+id = "fuel_canister"
+station = "processing"
+output = { item = "core:fuel_canister", count = 1 }
+ingredients = [
+  { item = "core:hydrogen_fuel", count = 3 },
+  { item = "core:aluminum_plate", count = 1 },
+]
+purpose = "Stored travel fuel."
+
+[[recipes]]
+id = "copper_wire"
+station = "crafting"
+output = { item = "core:copper_wire", count = 2 }
+ingredients = [
+  { item = "core:copper_plate", count = 1 },
+]
+purpose = "Conductive component."
+
+[[recipes]]
+id = "gear"
+station = "crafting"
+output = { item = "core:gear", count = 1 }
+ingredients = [
+  { item = "core:iron_plate", count = 2 },
+]
+purpose = "Mechanical component."
+
+[[recipes]]
+id = "circuit"
+station = "crafting"
+output = { item = "core:circuit", count = 1 }
+ingredients = [
+  { item = "core:iron_plate", count = 1 },
+  { item = "core:copper_wire", count = 3 },
+]
+purpose = "Electronic component."
+
+[[recipes]]
+id = "electronics"
+station = "crafting"
+output = { item = "core:electronics", count = 1 }
+ingredients = [
+  { item = "core:copper_wire", count = 2 },
+  { item = "core:silicon_wafer", count = 1 },
+]
+purpose = "Scanner and drone component."
+
+[[recipes]]
+id = "survey_drone"
+station = "crafting"
+output = { item = "core:survey_drone", count = 1 }
+ingredients = [
+  { item = "core:circuit", count = 1 },
+  { item = "core:gear", count = 1 },
+  { item = "core:copper_wire", count = 4 },
+]
+purpose = "One-way planet survey."
+
+[[recipes]]
+id = "improved_survey_drone"
+station = "crafting"
+output = { item = "core:improved_survey_drone", count = 1 }
+ingredients = [
+  { item = "core:survey_drone", count = 1 },
+  { item = "core:electronics", count = 1 },
+  { item = "core:structural_alloy", count = 1 },
+]
+purpose = "Deeper scan capability."
+
+[[recipes]]
+id = "rare_earth_magnet"
+station = "crafting"
+output = { item = "core:rare_earth_magnet", count = 1 }
+ingredients = [
+  { item = "core:rare_earths", count = 1 },
+  { item = "core:cobalt_alloy", count = 1 },
+]
+purpose = "Scanner motor and guidance component."
+
+[[recipes]]
+id = "exotic_matter_capsule"
+station = "crafting"
+output = { item = "core:exotic_matter_capsule", count = 1 }
+ingredients = [
+  { item = "core:exotic_matter", count = 1 },
+  { item = "core:vitrine_crystal", count = 1 },
+  { item = "core:eldridium_nodule", count = 1 },
+]
+purpose = "Late-game jump fuel."
+
+[[recipes]]
+id = "advanced_scanner_core"
+station = "crafting"
+output = { item = "core:advanced_scanner_core", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 1 },
+  { item = "core:rare_earth_magnet", count = 1 },
+  { item = "core:silver_contact", count = 1 },
+]
+purpose = "High-tier survey upgrade component."
+
+[[recipes]]
+id = "fusion_drive_core"
+station = "crafting"
+output = { item = "core:fusion_drive_core", count = 1 }
+ingredients = [
+  { item = "core:helium_3_cell", count = 1 },
+  { item = "core:reactor_pellet", count = 1 },
+  { item = "core:gold_conductor", count = 1 },
+]
+purpose = "Long-range engine upgrade component."
+
+[[recipes]]
+id = "film_solar_sail"
+station = "crafting"
+output = { item = "core:film_solar_sail", count = 1 }
+ingredients = [
+  { item = "core:aluminum_plate", count = 2 },
+  { item = "core:silicon_wafer", count = 2 },
+  { item = "core:copper_wire", count = 3 },
+]
+purpose = "Low-risk solar power module."
+
+[[recipes]]
+id = "plasma_torch_cell"
+station = "crafting"
+output = { item = "core:plasma_torch_cell", count = 1 }
+ingredients = [
+  { item = "core:fuel_canister", count = 1 },
+  { item = "core:lithium_cell", count = 2 },
+  { item = "core:cobalt_alloy", count = 1 },
+  { item = "core:electronics", count = 1 },
+]
+purpose = "High-output plasma power module."
+
+[[recipes]]
+id = "compact_fission_cell"
+station = "crafting"
+output = { item = "core:compact_fission_cell", count = 1 }
+ingredients = [
+  { item = "core:reactor_pellet", count = 2 },
+  { item = "core:coolant", count = 2 },
+  { item = "core:structural_alloy", count = 1 },
+  { item = "core:circuit", count = 1 },
+]
+purpose = "Reliable nuclear power module."
+
+[[recipes]]
+id = "jump_core"
+station = "crafting"
+output = { item = "core:jump_core", count = 1 }
+ingredients = [
+  { item = "core:exotic_matter_capsule", count = 1 },
+  { item = "core:advanced_scanner_core", count = 1 },
+  { item = "core:eldridium_nodule", count = 1 },
+]
+purpose = "Late-game jump system component."

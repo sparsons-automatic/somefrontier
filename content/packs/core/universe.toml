@@ -1,0 +1,34 @@
+[[universes]]
+id = "frontier_universe"
+name = "Some Frontier"
+description = "The default universe for the core mining, fabrication, and exploration loop."
+
+[[galaxy_groups]]
+id = "local_group"
+name = "Local Group"
+universe = "frontier_universe"
+description = "A practical grouping for reachable early-game galaxies."
+
+[[galaxy_clusters]]
+id = "frontier_cluster"
+name = "Frontier Cluster"
+galaxy_group = "local_group"
+universe = "frontier_universe"
+description = "Sparse industrial lanes and survey routes near settled space."
+
+[[galaxies]]
+id = "ember_spiral"
+name = "Ember Spiral"
+galaxy_cluster = "frontier_cluster"
+galaxy_group = "local_group"
+universe = "frontier_universe"
+description = "A mineral-rich spiral galaxy with unstable jump corridors."
+
+[[regions]]
+id = "cinder_reaches"
+name = "Cinder Reaches"
+galaxy = "ember_spiral"
+galaxy_cluster = "frontier_cluster"
+galaxy_group = "local_group"
+universe = "frontier_universe"
+description = "Starter frontier region with industrial-resource systems."

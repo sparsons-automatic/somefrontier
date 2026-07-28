@@ -1,0 +1,7 @@
+[[options]]
+id = "redwake_hostility"
+label = "Redwake hostility"
+description = "Reserved for future NPC and faction pressure in Duskfall Reach."
+type = "choice"
+default = "dormant"
+choices = ["dormant", "watchful", "hostile"]

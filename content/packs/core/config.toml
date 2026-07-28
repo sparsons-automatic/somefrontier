@@ -1,0 +1,14 @@
+[[options]]
+id = "starter_supply_bonus"
+label = "Starter supply bonus"
+description = "Reserved for future new-game inventory tuning."
+type = "bool"
+default = false
+
+[[options]]
+id = "resource_density"
+label = "Resource density"
+description = "Reserved for future world generation resource tuning."
+type = "choice"
+default = "standard"
+choices = ["lean", "standard", "rich"]

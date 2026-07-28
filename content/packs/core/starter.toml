@@ -1,0 +1,7 @@
+inventory = [
+  { item = "core:iron_ore", count = 18 },
+  { item = "core:copper_ore", count = 14 },
+  { item = "core:iron_plate", count = 4 },
+  { item = "core:copper_plate", count = 2 },
+  { item = "core:survey_drone", count = 25 },
+]

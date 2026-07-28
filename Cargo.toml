@@ -1,0 +1,10 @@
+[package]
+name = "some-frontier"
+version = "0.1.0"
+edition = "2021"
+default-run = "some-frontier"
+
+[dependencies]
+macroquad = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

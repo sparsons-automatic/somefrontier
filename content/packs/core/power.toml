@@ -1,0 +1,36 @@
+[[power_modules]]
+id = "film_solar_sail"
+name = "Film Solar Sail"
+family = "Solar"
+install_item = "film_solar_sail"
+generation = 6.0
+mass = 850.0
+heat = 0.05
+risk = 0.02
+summary = "Low-output solar film for quiet baseline recharge with minimal risk."
+
+[[power_modules]]
+id = "plasma_torch_cell"
+name = "Plasma Torch Cell"
+family = "Plasma"
+install_item = "plasma_torch_cell"
+generation = 18.0
+mass = 2100.0
+fuel_item = "fuel_canister"
+fuel_per_minute = 0.03
+heat = 0.55
+risk = 0.18
+summary = "High-output plasma generation with fuel draw and noticeable thermal load."
+
+[[power_modules]]
+id = "compact_fission_cell"
+name = "Compact Fission Cell"
+family = "Nuclear"
+install_item = "compact_fission_cell"
+generation = 14.0
+mass = 3200.0
+fuel_item = "reactor_pellet"
+fuel_per_minute = 0.01
+heat = 0.35
+risk = 0.10
+summary = "Reliable nuclear ship power for frontier cargo work."

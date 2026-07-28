@@ -1,0 +1,19 @@
+[[systems]]
+id = "duskfall_reach"
+name = "Duskfall Reach"
+region = "core:cinder_reaches"
+galaxy = "core:ember_spiral"
+universe = "core:frontier_universe"
+primary_star = "duskfall_primary"
+arrival = [0.0, 0.0]
+description = "A remote surveyed-route endpoint beyond the starter frontier, intended to prove plugin-provided systems can become warp destinations."
+tags = ["remote", "first-party-plugin", "surveyed-route"]
+
+[[stars]]
+id = "duskfall_primary"
+name = "Duskfall Primary"
+system = "duskfall_reach"
+classification = "M-type red dwarf"
+color = [255, 116, 82]
+radius = 126.0
+position = [-740.0, -560.0]

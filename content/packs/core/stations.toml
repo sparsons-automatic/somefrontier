@@ -1,0 +1,275 @@
+[[stations]]
+id = "smelting"
+name = "Smelting"
+skill = "smelting"
+base_seconds = 2.0
+
+[[stations]]
+id = "crafting"
+name = "Crafting"
+skill = "fabrication"
+base_seconds = 1.5
+
+[[stations]]
+id = "processing"
+name = "Processing"
+skill = "fabrication"
+base_seconds = 2.0
+
+[[stations]]
+id = "frontier_exchange"
+name = "Frontier Exchange"
+system = "frontier"
+position = [760.0, -420.0]
+radius = 58.0
+icon = "ring"
+texture = "./assets/stations/frontier-exchange.png"
+culture = "Freebelt dockworkers"
+faction = "Cinder Cooperative"
+summary = "A modular trade station where refinery crews, haulers, and survey pilots exchange cargo and rumors."
+
+[[stations.services]]
+id = "market"
+name = "Exchange Market"
+kind = "shop"
+description = "Cargo buying and selling counter reserved for the trading system."
+
+[[stations.services.trade]]
+item = "iron_ore"
+buy_price = 18
+sell_price = 7
+stock = 80
+restock_days = 3.0
+
+[[stations.services.trade]]
+item = "copper_ore"
+buy_price = 22
+sell_price = 9
+stock = 60
+restock_days = 3.0
+
+[[stations.services.trade]]
+item = "survey_drone"
+buy_price = 120
+sell_price = 42
+stock = 8
+restock_days = 5.0
+
+[[stations.services]]
+id = "garage"
+name = "Service Garage"
+kind = "garage"
+description = "Ship repair, fitting, and future ship purchase services."
+
+[[stations.services]]
+id = "saloon"
+name = "Low-G Saloon"
+kind = "saloon"
+description = "Social contact space for rumors, recipes, and faction hooks."
+
+[[stations]]
+id = "ore_lattice_depot"
+name = "Ore Lattice Depot"
+system = "frontier"
+position = [-980.0, 360.0]
+radius = 50.0
+icon = "station"
+texture = "./assets/stations/ore-lattice-depot.png"
+culture = "Belt sorting crews"
+faction = "Cinder Cooperative"
+summary = "A freight lattice and bulk-storage depot that stages raw ore shipments before refinery transfer."
+
+[[stations.services]]
+id = "ore_lattice_bulk_market"
+name = "Bulk Ore Counter"
+kind = "shop"
+description = "High-volume ore buying and future commodity contract desk."
+
+[[stations.services.trade]]
+item = "iron_ore"
+buy_price = 16
+sell_price = 8
+stock = 160
+restock_days = 2.0
+
+[[stations.services.trade]]
+item = "nickel_ore"
+buy_price = 34
+sell_price = 13
+stock = 90
+restock_days = 3.0
+
+[[stations.services.trade]]
+item = "titanium_ore"
+buy_price = 62
+sell_price = 24
+stock = 30
+restock_days = 5.0
+
+[[stations.services]]
+id = "ore_lattice_freight_lock"
+name = "Freight Lock"
+kind = "cargo"
+description = "Cargo handling, storage, and hauling-job hooks."
+
+[[stations]]
+id = "cinder_repair_yard"
+name = "Cinder Repair Yard"
+system = "frontier"
+position = [1180.0, 520.0]
+radius = 64.0
+icon = "ring"
+texture = "./assets/stations/cinder-repair-yard.png"
+culture = "Dockyard machinists"
+faction = "Helioforge Yard Union"
+summary = "A rugged repair yard built from pressure gantries, salvage frames, and temporary drydock arms."
+
+[[stations.services]]
+id = "cinder_yard_garage"
+name = "Yard Garage"
+kind = "garage"
+description = "Repair, refit, and future ship-purchase service group."
+
+[[stations.services]]
+id = "cinder_yard_parts"
+name = "Parts Cage"
+kind = "shop"
+description = "Ship parts, upgrade materials, and vendor-stock hooks."
+
+[[stations.services.trade]]
+item = "circuit"
+buy_price = 95
+sell_price = 34
+stock = 16
+restock_days = 4.0
+
+[[stations.services.trade]]
+item = "gear"
+buy_price = 88
+sell_price = 31
+stock = 18
+restock_days = 4.0
+
+[[stations.services.trade]]
+item = "fuel_canister"
+buy_price = 210
+sell_price = 70
+stock = 6
+restock_days = 6.0
+
+[[stations.services]]
+id = "cinder_yard_bar"
+name = "Torchcut Bar"
+kind = "bar"
+description = "Crew rumors, mechanics, and faction access hooks."
+
+[[stations]]
+id = "pale_orbit_archive"
+name = "Pale Orbit Archive"
+system = "frontier"
+position = [-520.0, -1120.0]
+radius = 46.0
+icon = "station"
+texture = "./assets/stations/pale-orbit-archive.png"
+culture = "Survey archivists"
+faction = "Frontier Cartographers"
+summary = "A quiet survey archive that collates scan records, route notes, and experimental navigation recipes."
+
+[[stations.services]]
+id = "pale_archive_data"
+name = "Survey Desk"
+kind = "archive"
+description = "Scan data, discoveries, and future route-unlock hooks."
+
+[[stations.services]]
+id = "pale_archive_recipes"
+name = "Recipe Clerk"
+kind = "recipe_vendor"
+description = "Purchasable recipe unlocks reserved for recipe vendor work."
+
+[[stations.services.recipe_unlocks]]
+recipe = "advanced_scanner_core"
+price = 850
+
+[[stations.services.recipe_unlocks]]
+recipe = "fusion_drive_core"
+price = 1250
+
+[[stations.services.recipe_unlocks]]
+recipe = "jump_core"
+price = 1800
+
+[[stations]]
+id = "freebelt_commissary"
+name = "Freebelt Commissary"
+system = "frontier"
+position = [240.0, 1020.0]
+radius = 52.0
+icon = "ring"
+texture = "./assets/stations/freebelt-commissary.png"
+culture = "Independent haulers"
+faction = "Freebelt Compact"
+summary = "A crowded commissary where haulers buy supplies, settle favors, and trade stories between long burns."
+
+[[stations.services]]
+id = "freebelt_supply"
+name = "Supply Shop"
+kind = "shop"
+description = "Consumables, drones, and future restock behavior."
+
+[[stations.services.trade]]
+item = "survey_drone"
+buy_price = 110
+sell_price = 38
+stock = 12
+restock_days = 4.0
+
+[[stations.services.trade]]
+item = "improved_survey_drone"
+buy_price = 360
+sell_price = 125
+stock = 3
+restock_days = 8.0
+
+[[stations.services.trade]]
+item = "fuel_canister"
+buy_price = 190
+sell_price = 64
+stock = 10
+restock_days = 5.0
+
+[[stations.services]]
+id = "freebelt_saloon"
+name = "Commissary Saloon"
+kind = "saloon"
+description = "Social contacts, job boards, and faction introduction hooks."
+
+[[stations.services]]
+id = "freebelt_board"
+name = "Job Board"
+kind = "contracts"
+description = "Future hauling, survey, and delivery contracts."
+
+[[stations]]
+id = "ember_watch_array"
+name = "Ember Watch Array"
+system = "frontier"
+position = [1420.0, -860.0]
+radius = 44.0
+icon = "station"
+texture = "./assets/stations/ember-watch-array.png"
+culture = "Signal watch crews"
+faction = "Frontier Beacon Authority"
+summary = "A sparse long-range antenna station that tracks route traffic, beacon drift, and unexplained signal returns."
+
+[[stations.services]]
+id = "ember_watch_beacon"
+name = "Beacon Control"
+kind = "navigation"
+description = "Navigation, autopilot, and route-discovery hooks."
+
+[[stations.services]]
+id = "ember_watch_listening_post"
+name = "Listening Post"
+kind = "bar"
+description = "Rumors, strange signals, and remote-system discovery hooks."

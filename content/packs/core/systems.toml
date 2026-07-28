@@ -1,0 +1,19 @@
+[[systems]]
+id = "frontier"
+name = "Frontier"
+region = "cinder_reaches"
+galaxy = "ember_spiral"
+universe = "frontier_universe"
+primary_star = "frontier_primary"
+arrival = [0.0, 0.0]
+description = "The starter local system for early mining, smelting, fabrication, and survey work."
+tags = ["starter", "industrial", "surveyed-route"]
+
+[[stars]]
+id = "frontier_primary"
+name = "Frontier Primary"
+system = "frontier"
+classification = "K-type main sequence"
+color = [255, 196, 120]
+radius = 180.0
+position = [-900.0, -700.0]

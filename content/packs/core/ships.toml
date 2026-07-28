@@ -1,0 +1,14 @@
+[[ships]]
+id = "frontier_cargo_ship_01"
+name = "Frontier Cargo Ship"
+texture = "./assets/ships/frontier-cargo-ship-01.png"
+mass = 85000.0
+forward_acceleration = 420.0
+reverse_acceleration = 280.0
+turn_acceleration = 4.8
+energy_capacity = 100.0
+energy_recharge = 8.0
+linear_drag = 0.985
+hull_capacity = 100.0
+shield_capacity = 100.0
+power_modules = ["compact_fission_cell"]

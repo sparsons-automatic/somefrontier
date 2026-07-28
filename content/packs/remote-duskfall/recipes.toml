@@ -1,0 +1,18 @@
+[[recipes]]
+id = "vanadium_plate"
+station = "core:smelting"
+output = { item = "vanadium_plate", count = 1 }
+ingredients = [
+  { item = "vanadium_ore", count = 2 },
+]
+purpose = "Remote-system refined material for heat-tolerant frames and future warp hardware."
+
+[[recipes]]
+id = "vanadium_frame"
+station = "core:crafting"
+output = { item = "vanadium_frame", count = 1 }
+ingredients = [
+  { item = "vanadium_plate", count = 2 },
+  { item = "core:structural_alloy", count = 1 },
+]
+purpose = "Rigid heat-tolerant frame that gives Duskfall resources a practical fabrication reason."

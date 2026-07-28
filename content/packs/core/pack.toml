@@ -1,0 +1,6 @@
+id = "core"
+name = "Some Frontier Core"
+version = "0.1.0"
+description = "Built-in items, recipes, planets, and starter progression content."
+depends_on = []
+optional_depends_on = []

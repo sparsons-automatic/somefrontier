@@ -1,0 +1,63 @@
+[[upgrades]]
+id = "engine"
+costs = [
+  { item = "core:fusion_drive_core", base_count = 0, per_level = 1, per_levels = 4 },
+  { item = "core:gear", base_count = 2, per_level = 1 },
+  { item = "core:circuit", base_count = 1, per_level = 1, per_levels = 2 },
+]
+
+[[upgrades]]
+id = "thrusters"
+costs = [
+  { item = "core:cobalt_alloy", base_count = 0, per_level = 1, per_levels = 2 },
+  { item = "core:gear", base_count = 2, per_level = 1 },
+  { item = "core:copper_wire", base_count = 4, per_level = 2 },
+]
+
+[[upgrades]]
+id = "energy_core"
+costs = [
+  { item = "core:fuel_canister", base_count = 1, per_level = 1 },
+  { item = "core:copper_plate", base_count = 3, per_level = 1 },
+  { item = "core:circuit", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "shields"
+costs = [
+  { item = "core:jump_core", base_count = 0, per_level = 1, per_levels = 3 },
+  { item = "core:copper_wire", base_count = 6, per_level = 2 },
+  { item = "core:circuit", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "drone_bay"
+costs = [
+  { item = "core:improved_survey_drone", base_count = 1, per_level = 1 },
+  { item = "core:electronics", base_count = 1, per_level = 1 },
+  { item = "core:structural_alloy", base_count = 0, per_level = 1, per_levels = 2 },
+]
+
+[[upgrades]]
+id = "fuel_systems"
+costs = [
+  { item = "core:fuel_canister", base_count = 1, per_level = 1 },
+  { item = "core:plasma_torch_cell", base_count = 0, per_level = 1, per_levels = 2 },
+  { item = "core:coolant", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "scanner_array"
+costs = [
+  { item = "core:advanced_scanner_core", base_count = 0, per_level = 1, per_levels = 2 },
+  { item = "core:electronics", base_count = 2, per_level = 1 },
+  { item = "core:silver_contact", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "cargo_hold"
+costs = [
+  { item = "core:structural_alloy", base_count = 1, per_level = 1 },
+  { item = "core:aluminum_plate", base_count = 4, per_level = 2 },
+  { item = "core:gear", base_count = 1, per_level = 1, per_levels = 2 },
+]

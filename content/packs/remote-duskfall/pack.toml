@@ -1,0 +1,6 @@
+id = "remote-duskfall"
+name = "Duskfall Reach"
+version = "0.1.0"
+description = "First-party example remote destination pack for testing plugin-provided warp systems."
+depends_on = ["core"]
+optional_depends_on = []

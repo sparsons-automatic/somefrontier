@@ -1,0 +1,80 @@
+[[planets]]
+id = "duskfall_vanadium_shard"
+system = "duskfall_reach"
+classification = "Duskfall Vanadium Shard"
+texture = "./assets/planets/frontier-planet-18.png"
+position = [820.0, -940.0]
+radius = 62.0
+is_poi = true
+mineables = [
+  "vanadium_ore",
+  "core:titanium_ore",
+  "core:cobalt_ore",
+]
+hazards = [
+  "Thermal shadow cycling",
+  "Vanadium dust abrasion",
+  "Cobalt-charged fracture seams",
+]
+summary = "A dark metallic shard in Duskfall Reach with vanadium-rich splinters fused through titanium and cobalt-bearing impact rock."
+
+[[planets]]
+id = "redwake_reactor_moon"
+system = "duskfall_reach"
+classification = "Redwake Reactor Moon"
+texture = "./assets/planets/frontier-planet-15.png"
+position = [-1180.0, 760.0]
+radius = 68.0
+is_poi = true
+mineables = [
+  "vanadium_ore",
+  "core:uranium_ore",
+  "core:helium_3",
+]
+hazards = [
+  "Radiation wake turbulence",
+  "Thin-atmosphere plasma drag",
+  "Helium-3 storm pockets",
+]
+hazard_effects = { shield_drain_per_second = 1.4, mining_speed_multiplier = 1.3 }
+summary = "A hazardous red-lit moon where vanadium seams and uranium-blackstone vents sit beneath helium-3 skim layers."
+
+[[planets]]
+id = "ashen_vanadium_reef"
+system = "duskfall_reach"
+classification = "Ashen Vanadium Reef"
+texture = "./assets/planets/frontier-planet-17.png"
+position = [1460.0, 420.0]
+radius = 58.0
+is_poi = true
+mineables = [
+  "vanadium_ore",
+  "core:rare_earths",
+  "core:silver_ore",
+]
+hazards = [
+  "Needle-like reef spalls",
+  "Electrostatic dust sheets",
+  "Rare-earth sensor bloom",
+]
+summary = "A brittle metallic reef where ashen vanadium plates grow through silver veins and rare-earth crystals that overload weak survey gear."
+
+[[planets]]
+id = "gloam_pressure_belt"
+system = "duskfall_reach"
+classification = "Gloam Pressure Belt"
+texture = "./assets/planets/frontier-planet-19.png"
+position = [-460.0, 1340.0]
+radius = 74.0
+is_poi = true
+mineables = [
+  "vanadium_ore",
+  "core:platinum_group_metals",
+  "core:helium_3",
+]
+hazards = [
+  "Pressure-wave shear",
+  "Platinum dust flares",
+  "Helium-3 pocket collapse",
+]
+summary = "A dense orbital belt with pressure-packed vanadium knots, platinum-white impact dust, and volatile helium-3 pockets trapped in gloam-lit debris."
