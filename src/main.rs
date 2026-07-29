@@ -15,6 +15,8 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 760;
 const STARFIELD_RADIUS: f32 = 9000.0;
 const SHIP_RADIUS: f32 = 22.0;
 const SHIP_SPRITE_SIZE: f32 = 72.0;
+const DEFENSE_THREAT_RADIUS: f32 = 18.0;
+const WEAPON_FIRE_EVENT_SECONDS: f32 = 0.18;
 const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
 const STATION_INTERACTION_PADDING: f32 = 86.0;
@@ -41,6 +43,7 @@ const PLANET_ACTION_RAIL_WIDTH: f32 = 156.0;
 const PLANET_ACTION_RAIL_GAP: f32 = 8.0;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
+const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
 const SAVE_VERSION: u32 = 1;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const GAME_DAY_SECONDS: f32 = 120.0;
@@ -132,6 +135,9 @@ struct GameState {
     credits: u32,
     ship: Ship,
     installed_power_modules: Vec<PowerModule>,
+    equipped_weapons: Vec<WeaponSystem>,
+    defense_threats: Vec<DefenseThreat>,
+    weapon_fire_events: Vec<WeaponFireEvent>,
     ship_texture: Option<Texture2D>,
     system_light_haze_texture: Option<Texture2D>,
     system_stars: Vec<SystemStar>,
@@ -172,6 +178,7 @@ struct GameState {
     starmap_resource_filter_index: usize,
     work_scroll: f32,
     inventory_scroll: f32,
+    upgrades_scroll: f32,
     last_window_size: (i32, i32),
     window_save_delay: Option<f32>,
     save_delay: Option<f32>,
@@ -325,6 +332,54 @@ struct PowerModule {
     fuel_per_minute: f32,
     heat: f32,
     risk: f32,
+}
+
+#[derive(Clone)]
+struct WeaponSystem {
+    id: String,
+    name: String,
+    kind: content::WeaponKind,
+    install_item: String,
+    range: f32,
+    cooldown_seconds: f32,
+    damage: f32,
+    energy_cost: f32,
+    tracking_degrees: f32,
+    cooldown_remaining: f32,
+    status: WeaponStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WeaponStatus {
+    Ready,
+    NoThreat,
+    Cooldown,
+    InsufficientEnergy,
+    Fired,
+}
+
+struct DefenseThreat {
+    id: String,
+    name: String,
+    system: String,
+    position: Vec2,
+    radius: f32,
+    disposition: ThreatDisposition,
+    hull: ShipResource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThreatDisposition {
+    Hostile,
+    Neutral,
+    Owned,
+    Environmental,
+}
+
+struct WeaponFireEvent {
+    from: Vec2,
+    to: Vec2,
+    timer: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -488,6 +543,8 @@ struct SaveData {
     orbiting_planet: Option<String>,
     #[serde(default)]
     installed_power_modules: Vec<String>,
+    #[serde(default)]
+    weapon_slots: Vec<String>,
     #[serde(default)]
     system_destinations: Vec<SaveSystemDestination>,
     #[serde(default)]
@@ -734,6 +791,11 @@ impl GameState {
             .as_ref()
             .map(|ship| installed_power_modules_from_ids(&content_registry, &ship.power_modules))
             .unwrap_or_default();
+        let equipped_weapons = starter_ship_def
+            .as_ref()
+            .map(|ship| equipped_weapons_from_ids(&content_registry, &ship.weapon_slots))
+            .unwrap_or_default();
+        let defense_threats = make_defense_threats();
 
         let mut game = Self {
             content_registry,
@@ -750,6 +812,9 @@ impl GameState {
                 .map(Ship::from_content)
                 .unwrap_or_else(Ship::starter),
             installed_power_modules,
+            equipped_weapons,
+            defense_threats,
+            weapon_fire_events: Vec::new(),
             ship_texture,
             system_light_haze_texture,
             system_stars,
@@ -790,6 +855,7 @@ impl GameState {
             starmap_resource_filter_index: 0,
             work_scroll: 0.0,
             inventory_scroll: 0.0,
+            upgrades_scroll: 0.0,
             last_window_size: current_window_size(),
             window_save_delay: None,
             save_delay: Some(AUTOSAVE_SECONDS),
@@ -845,6 +911,11 @@ impl GameState {
             default_installed_power_modules(&self.content_registry)
         } else {
             installed_power_modules_from_ids(&self.content_registry, &save.installed_power_modules)
+        };
+        self.equipped_weapons = if save.weapon_slots.is_empty() {
+            default_equipped_weapons(&self.content_registry)
+        } else {
+            equipped_weapons_from_ids(&self.content_registry, &save.weapon_slots)
         };
 
         self.inventory = Inventory::from_save(&self.content_registry, &save.inventory);
@@ -966,6 +1037,11 @@ impl GameState {
                 .iter()
                 .map(|module| module.id.clone())
                 .collect(),
+            weapon_slots: self
+                .equipped_weapons
+                .iter()
+                .map(|weapon| weapon.id.clone())
+                .collect(),
             system_destinations: save_system_destinations(self),
             content_pack_options: self.content_pack_options.clone(),
             purchased_recipe_unlocks: self.purchased_recipe_unlocks.clone(),
@@ -1031,6 +1107,9 @@ impl GameState {
             .current
             .min(self.ship.systems.energy.max)
             .max(0.0);
+        if self.equipped_weapons.is_empty() {
+            self.equipped_weapons = default_equipped_weapons(&self.content_registry);
+        }
     }
 }
 
@@ -1038,10 +1117,11 @@ fn load_game_content_registry() -> content::ContentRegistry {
     match content::load_content_packs(Path::new("content/packs")) {
         Ok(registry) => {
             println!(
-                "Loaded {} content pack(s), {} item(s), {} ship(s), {} recipe(s), {} system(s), {} planet(s)",
+                "Loaded {} content pack(s), {} item(s), {} ship(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
                 registry.packs.len(),
                 registry.items.len(),
                 registry.ships.len(),
+                registry.weapons.len(),
                 registry.recipes.len(),
                 registry.systems.len(),
                 registry.planets.len()
@@ -1602,6 +1682,45 @@ impl PowerModule {
     }
 }
 
+impl WeaponSystem {
+    fn from_def(weapon: &content::WeaponDef) -> Self {
+        Self {
+            id: weapon.id.clone(),
+            name: weapon.name.clone(),
+            kind: weapon.kind,
+            install_item: weapon.install_item.clone(),
+            range: weapon.range,
+            cooldown_seconds: weapon.cooldown_seconds,
+            damage: weapon.damage,
+            energy_cost: weapon.energy_cost,
+            tracking_degrees: weapon.tracking_degrees,
+            cooldown_remaining: 0.0,
+            status: WeaponStatus::Ready,
+        }
+    }
+
+    fn readiness_label(&self) -> &'static str {
+        match self.status {
+            WeaponStatus::Ready => "ready",
+            WeaponStatus::NoThreat => "no threats",
+            WeaponStatus::Cooldown => "cooldown",
+            WeaponStatus::InsufficientEnergy => "low energy",
+            WeaponStatus::Fired => "fired",
+        }
+    }
+}
+
+impl ThreatDisposition {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Hostile => "hostile",
+            Self::Neutral => "neutral",
+            Self::Owned => "owned",
+            Self::Environmental => "environmental",
+        }
+    }
+}
+
 fn registry_item(content_registry: &content::ContentRegistry, item_id: &str) -> Option<ItemRef> {
     content_registry.items.get(item_id).map(ItemRef::from_def)
 }
@@ -1638,6 +1757,127 @@ fn default_installed_power_modules(
         .get(STARTER_SHIP_ID)
         .map(|ship| installed_power_modules_from_ids(content_registry, &ship.power_modules))
         .unwrap_or_default()
+}
+
+fn equipped_weapons_from_ids(
+    content_registry: &content::ContentRegistry,
+    weapon_ids: &[String],
+) -> Vec<WeaponSystem> {
+    weapon_ids
+        .iter()
+        .filter_map(|weapon_id| {
+            content_registry
+                .weapons
+                .get(weapon_id)
+                .map(WeaponSystem::from_def)
+        })
+        .collect()
+}
+
+fn default_equipped_weapons(content_registry: &content::ContentRegistry) -> Vec<WeaponSystem> {
+    content_registry
+        .ships
+        .get(STARTER_SHIP_ID)
+        .map(|ship| equipped_weapons_from_ids(content_registry, &ship.weapon_slots))
+        .unwrap_or_default()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WeaponInstallError {
+    InvalidSlot,
+    UnknownWeapon,
+    MissingInstallItem,
+}
+
+fn weapon_slot_capacity(game: &GameState) -> usize {
+    game.content_registry
+        .ships
+        .get(STARTER_SHIP_ID)
+        .map(|ship| ship.weapon_slots.len())
+        .unwrap_or(0)
+        .max(game.equipped_weapons.len())
+}
+
+fn install_weapon_in_slot(
+    game: &mut GameState,
+    slot_index: usize,
+    weapon_id: &str,
+) -> Result<(), WeaponInstallError> {
+    if slot_index >= weapon_slot_capacity(game) {
+        return Err(WeaponInstallError::InvalidSlot);
+    }
+
+    if game
+        .equipped_weapons
+        .get(slot_index)
+        .is_some_and(|weapon| weapon.id == weapon_id)
+    {
+        return Ok(());
+    }
+
+    let Some(weapon_def) = game.content_registry.weapons.get(weapon_id).cloned() else {
+        return Err(WeaponInstallError::UnknownWeapon);
+    };
+    let install_item = required_item(&game.content_registry, &weapon_def.install_item);
+    if game.inventory.count(&install_item) == 0 {
+        return Err(WeaponInstallError::MissingInstallItem);
+    }
+
+    game.inventory.remove_item(&install_item, 1);
+    if let Some(previous_weapon) = game.equipped_weapons.get(slot_index) {
+        let previous_item = required_item(&game.content_registry, &previous_weapon.install_item);
+        game.inventory.add_item(previous_item, 1);
+    }
+
+    let installed_weapon = WeaponSystem::from_def(&weapon_def);
+    if slot_index < game.equipped_weapons.len() {
+        game.equipped_weapons[slot_index] = installed_weapon;
+    } else {
+        game.equipped_weapons.push(installed_weapon);
+    }
+    game.save_dirty = true;
+    Ok(())
+}
+
+fn make_defense_threats() -> Vec<DefenseThreat> {
+    vec![
+        DefenseThreat {
+            id: "core:raider_probe_alpha".to_string(),
+            name: "Raider probe alpha".to_string(),
+            system: STARTER_SYSTEM_ID.to_string(),
+            position: vec2(620.0, -220.0),
+            radius: DEFENSE_THREAT_RADIUS,
+            disposition: ThreatDisposition::Hostile,
+            hull: ShipResource::full(36.0),
+        },
+        DefenseThreat {
+            id: "core:frontier_beacon_drone".to_string(),
+            name: "Frontier beacon drone".to_string(),
+            system: STARTER_SYSTEM_ID.to_string(),
+            position: vec2(-360.0, 260.0),
+            radius: DEFENSE_THREAT_RADIUS,
+            disposition: ThreatDisposition::Neutral,
+            hull: ShipResource::full(24.0),
+        },
+        DefenseThreat {
+            id: "core:owned_survey_drone".to_string(),
+            name: "Owned survey drone".to_string(),
+            system: STARTER_SYSTEM_ID.to_string(),
+            position: vec2(-520.0, -260.0),
+            radius: DEFENSE_THREAT_RADIUS,
+            disposition: ThreatDisposition::Owned,
+            hull: ShipResource::full(18.0),
+        },
+        DefenseThreat {
+            id: "core:static_hazard_echo".to_string(),
+            name: "Static hazard echo".to_string(),
+            system: STARTER_SYSTEM_ID.to_string(),
+            position: vec2(240.0, 520.0),
+            radius: DEFENSE_THREAT_RADIUS,
+            disposition: ThreatDisposition::Environmental,
+            hull: ShipResource::full(18.0),
+        },
+    ]
 }
 
 fn ship_energy_recharge(ship: &Ship, installed_power_modules: &[PowerModule]) -> f32 {
@@ -4641,6 +4881,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_production(game, dt);
     update_mining(game, dt);
     update_orbital_hazards(game, dt);
+    update_weapon_systems(game, dt);
 
     let wheel = mouse_wheel().1;
     if game.map_open {
@@ -4664,6 +4905,9 @@ fn update_game(game: &mut GameState, dt: f32) {
 
     if game.upgrades_open {
         let mouse = vec2(mouse_position().0, mouse_position().1);
+        if wheel != 0.0 {
+            handle_ship_upgrades_scroll(game, mouse, wheel);
+        }
         click_handled = handle_ship_upgrades_input(game, mouse);
     }
 
@@ -4693,7 +4937,9 @@ fn update_game(game: &mut GameState, dt: f32) {
         } else if let Some(station_index) = game.selected_station {
             click_handled = handle_station_service_input(game, station_index, mouse);
         } else {
-            if is_mouse_button_pressed(MouseButton::Left)
+            if handle_ship_weapon_slot_input(game, mouse) {
+                click_handled = true;
+            } else if is_mouse_button_pressed(MouseButton::Left)
                 && ship_detail_preview_rect().contains(mouse)
             {
                 game.upgrades_open = true;
@@ -5325,6 +5571,14 @@ fn clamp_inventory_scrolls(game: &mut GameState) {
         0.0,
         max_scroll_offset(inventory_rows, INVENTORY_ROW_HEIGHT, table_height),
     );
+    game.upgrades_scroll = game.upgrades_scroll.clamp(
+        0.0,
+        max_scroll_offset(
+            game.ship_upgrades.len(),
+            SHIP_UPGRADE_ROW_HEIGHT,
+            ship_upgrades_table_viewport_height(),
+        ),
+    );
 }
 
 fn update_save_state(game: &mut GameState, dt: f32) {
@@ -5449,7 +5703,9 @@ fn handle_skills_table_input(game: &mut GameState, mouse: Vec2) -> bool {
 }
 
 fn handle_ship_upgrades_input(game: &mut GameState, mouse: Vec2) -> bool {
-    let Some(upgrade_index) = hovered_ship_upgrade_plus(mouse, game.ship_upgrades.len()) else {
+    let Some(upgrade_index) =
+        hovered_ship_upgrade_plus(mouse, game.ship_upgrades.len(), game.upgrades_scroll)
+    else {
         return false;
     };
     if !is_mouse_button_pressed(MouseButton::Left) {
@@ -5463,6 +5719,58 @@ fn handle_ship_upgrades_input(game: &mut GameState, mouse: Vec2) -> bool {
         }
     }
     true
+}
+
+fn handle_ship_upgrades_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
+    let origin = ship_upgrade_table_origin();
+    let (_, _, panel_width, _) = ship_upgrades_panel_rect();
+    let viewport_top = ship_upgrades_table_viewport_top();
+    let viewport_height = ship_upgrades_table_viewport_height();
+    let viewport = Rect::new(origin.x, viewport_top, panel_width - 56.0, viewport_height);
+
+    if viewport.contains(mouse) {
+        game.upgrades_scroll = content_scrolled_offset(
+            game.upgrades_scroll,
+            wheel,
+            game.ship_upgrades.len(),
+            SHIP_UPGRADE_ROW_HEIGHT,
+            viewport_height,
+        );
+    }
+}
+
+fn handle_ship_weapon_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+
+    (0..weapon_slot_capacity(game))
+        .find(|slot_index| ship_weapon_slot_rect(*slot_index).contains(mouse))
+        .is_some_and(|slot_index| install_first_available_weapon_for_slot(game, slot_index))
+}
+
+fn install_first_available_weapon_for_slot(game: &mut GameState, slot_index: usize) -> bool {
+    let current_weapon_id = game
+        .equipped_weapons
+        .get(slot_index)
+        .map(|weapon| weapon.id.as_str());
+    let Some(weapon_id) = game
+        .content_registry
+        .weapon_order
+        .iter()
+        .find_map(|weapon_id| {
+            if current_weapon_id == Some(weapon_id.as_str()) {
+                return None;
+            }
+            let weapon = game.content_registry.weapons.get(weapon_id)?;
+            let install_item = registry_item(&game.content_registry, &weapon.install_item)?;
+            (game.inventory.count(&install_item) > 0).then(|| weapon_id.clone())
+        })
+    else {
+        return false;
+    };
+
+    install_weapon_in_slot(game, slot_index, &weapon_id).is_ok()
 }
 
 fn handle_production_table_input(game: &mut GameState, mouse: Vec2, wheel: f32) -> bool {
@@ -6219,6 +6527,104 @@ fn update_orbital_hazards(game: &mut GameState, dt: f32) {
     }
 }
 
+fn update_weapon_systems(game: &mut GameState, dt: f32) {
+    game.weapon_fire_events.retain_mut(|event| {
+        event.timer -= dt;
+        event.timer > 0.0
+    });
+
+    for weapon_index in 0..game.equipped_weapons.len() {
+        {
+            let weapon = &mut game.equipped_weapons[weapon_index];
+            weapon.cooldown_remaining = (weapon.cooldown_remaining - dt).max(0.0);
+            if weapon.cooldown_remaining > 0.0 {
+                weapon.status = WeaponStatus::Cooldown;
+                continue;
+            }
+        }
+
+        let target_index = defense_turret_target_index(
+            &game.ship,
+            &game.equipped_weapons[weapon_index],
+            &game.defense_threats,
+            &game.current_system_id,
+        );
+        let Some(target_index) = target_index else {
+            game.equipped_weapons[weapon_index].status = WeaponStatus::NoThreat;
+            continue;
+        };
+
+        let weapon = &mut game.equipped_weapons[weapon_index];
+        if game.ship.systems.energy.current < weapon.energy_cost {
+            weapon.status = WeaponStatus::InsufficientEnergy;
+            continue;
+        }
+
+        let target = &mut game.defense_threats[target_index];
+        game.ship.systems.energy.spend(weapon.energy_cost);
+        target.hull.spend(weapon.damage);
+        weapon.cooldown_remaining = weapon.cooldown_seconds;
+        weapon.status = WeaponStatus::Fired;
+        game.weapon_fire_events.push(WeaponFireEvent {
+            from: game.ship.position,
+            to: target.position,
+            timer: WEAPON_FIRE_EVENT_SECONDS,
+        });
+        game.save_dirty = true;
+    }
+}
+
+fn defense_turret_target_index(
+    ship: &Ship,
+    weapon: &WeaponSystem,
+    threats: &[DefenseThreat],
+    current_system_id: &str,
+) -> Option<usize> {
+    if weapon.kind != content::WeaponKind::TurretDefense {
+        return None;
+    }
+
+    threats
+        .iter()
+        .enumerate()
+        .filter(|(_, threat)| {
+            defense_threat_is_valid_target(ship, weapon, threat, current_system_id)
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.position
+                .distance_squared(ship.position)
+                .total_cmp(&b.position.distance_squared(ship.position))
+        })
+        .map(|(index, _)| index)
+}
+
+fn defense_threat_is_valid_target(
+    ship: &Ship,
+    weapon: &WeaponSystem,
+    threat: &DefenseThreat,
+    current_system_id: &str,
+) -> bool {
+    threat.disposition == ThreatDisposition::Hostile
+        && threat.system == current_system_id
+        && threat.hull.current > 0.0
+        && ship.position.distance(threat.position) <= weapon.range + threat.radius
+        && target_within_tracking_arc(ship, weapon, threat.position)
+}
+
+fn target_within_tracking_arc(ship: &Ship, weapon: &WeaponSystem, target_position: Vec2) -> bool {
+    if weapon.tracking_degrees >= 359.0 {
+        return true;
+    }
+    let to_target = target_position - ship.position;
+    if to_target.length_squared() <= f32::EPSILON {
+        return true;
+    }
+    let forward = vec2(ship.angle.cos(), ship.angle.sin());
+    let target_direction = to_target.normalize();
+    let angle = forward.dot(target_direction).clamp(-1.0, 1.0).acos();
+    angle <= weapon.tracking_degrees.to_radians() * 0.5
+}
+
 fn next_mining_bill_index(inventory: &Inventory, planet: &Planet) -> Option<usize> {
     planet
         .info
@@ -6405,6 +6811,16 @@ fn draw_scene(game: &GameState, background: &UniverseBackground) {
         .filter(|station| station_is_in_system(station, &game.current_system_id))
     {
         draw_station(center, ship, station, zoom);
+    }
+    for threat in game
+        .defense_threats
+        .iter()
+        .filter(|threat| threat.system == game.current_system_id && threat.hull.current > 0.0)
+    {
+        draw_defense_threat(center, ship, threat, zoom);
+    }
+    for event in &game.weapon_fire_events {
+        draw_weapon_fire_event(center, ship, event, zoom);
     }
     draw_poi_indicator(
         center,
@@ -7221,6 +7637,68 @@ fn draw_station(center: Vec2, ship: &Ship, station: &StationDestination, zoom: f
         } else {
             Color::from_rgba(205, 226, 230, 210)
         },
+    );
+}
+
+fn draw_defense_threat(center: Vec2, ship: &Ship, threat: &DefenseThreat, zoom: f32) {
+    let screen_pos = world_to_screen(threat.position, center, ship, zoom);
+    let size = (threat.radius * zoom).clamp(10.0, 24.0);
+    let cull_padding = size + 80.0;
+
+    if screen_pos.x < -cull_padding
+        || screen_pos.x > screen_width() + cull_padding
+        || screen_pos.y < -cull_padding
+        || screen_pos.y > screen_height() + cull_padding
+    {
+        return;
+    }
+
+    let color = match threat.disposition {
+        ThreatDisposition::Hostile => Color::from_rgba(226, 104, 96, 245),
+        ThreatDisposition::Neutral => Color::from_rgba(150, 221, 226, 205),
+        ThreatDisposition::Owned => Color::from_rgba(113, 235, 138, 205),
+        ThreatDisposition::Environmental => Color::from_rgba(226, 190, 150, 205),
+    };
+    draw_poly(screen_pos.x, screen_pos.y, 4, size, 45.0, color);
+    draw_circle_lines(
+        screen_pos.x,
+        screen_pos.y,
+        size + 5.0,
+        1.0,
+        Color { a: 0.5, ..color },
+    );
+    let label = format!(
+        "{} {} {}",
+        threat.name,
+        local_content_id(&threat.id),
+        threat.disposition.label()
+    );
+    draw_text(
+        &fit_debug_text(&label, 180.0, 14),
+        screen_pos.x + size + 8.0,
+        screen_pos.y + 5.0,
+        14.0,
+        color,
+    );
+}
+
+fn draw_weapon_fire_event(center: Vec2, ship: &Ship, event: &WeaponFireEvent, zoom: f32) {
+    let from = world_to_screen(event.from, center, ship, zoom);
+    let to = world_to_screen(event.to, center, ship, zoom);
+    let alpha = (event.timer / WEAPON_FIRE_EVENT_SECONDS).clamp(0.0, 1.0);
+    draw_line(
+        from.x,
+        from.y,
+        to.x,
+        to.y,
+        2.5,
+        Color::new(0.95, 0.34, 0.28, alpha),
+    );
+    draw_circle(
+        to.x,
+        to.y,
+        5.0 + alpha * 5.0,
+        Color::new(1.0, 0.72, 0.35, alpha),
     );
 }
 
@@ -8618,6 +9096,19 @@ fn ship_detail_preview_rect() -> Rect {
     )
 }
 
+fn ship_weapon_slot_rect(slot_index: usize) -> Rect {
+    let (panel_x, panel_y, panel_width, _) = inventory_panel_rect(false);
+    let detail_width = 340.0_f32.min(panel_width * 0.34);
+    let detail_x = panel_x + panel_width - detail_width - 24.0;
+    let detail_y = panel_y + 66.0;
+    let stats_y = detail_y + 190.0 + 28.0;
+    let power_y = stats_y + 132.0;
+    let weapons_y = power_y + 132.0;
+    let row_y = weapons_y + 28.0 + slot_index as f32 * 44.0;
+
+    Rect::new(detail_x, row_y - 18.0, detail_width, 40.0)
+}
+
 fn planet_scan_button_rect() -> Rect {
     let rail = planet_action_rail_rect();
     Rect::new(rail.x + 12.0, rail.y + 118.0, rail.w - 24.0, 36.0)
@@ -8719,15 +9210,17 @@ fn draw_ship_upgrades_overlay(game: &GameState) {
         Color::from_rgba(126, 156, 164, 220),
     );
 
-    draw_ship_upgrades_table(
-        &game.content_registry,
-        &game.ship_upgrades,
-        &game.inventory,
-        panel_x + 28.0,
-        panel_y + 84.0,
-        panel_width - 56.0,
+    draw_ship_upgrades_table(ShipUpgradeTableRender {
+        content_registry: &game.content_registry,
+        upgrades: &game.ship_upgrades,
+        inventory: &game.inventory,
+        x: panel_x + 28.0,
+        y: panel_y + 84.0,
+        width: panel_width - 56.0,
+        scroll: game.upgrades_scroll,
+        viewport_height: ship_upgrades_table_viewport_height(),
         mouse,
-    );
+    });
 }
 
 fn draw_content_debug_overlay(game: &GameState) {
@@ -8768,10 +9261,11 @@ fn draw_content_debug_overlay(game: &GameState) {
         .map(|asset| asset.texture.width() * asset.texture.height())
         .sum::<f32>();
     let summary = format!(
-        "{} pack(s) / {} item(s) / {} recipe(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
+        "{} pack(s) / {} item(s) / {} recipe(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
         registry.packs.len(),
         registry.items.len(),
         registry.recipes.len(),
+        registry.weapons.len(),
         registry.systems.len(),
         registry.stars.len(),
         registry.planets.len(),
@@ -9043,9 +9537,10 @@ fn fit_debug_text(text: &str, width: f32, font_size: u16) -> String {
 
 fn ship_upgrades_panel_rect() -> (f32, f32, f32, f32) {
     let width = (screen_width() - 48.0).min(900.0);
-    let height = 396.0_f32.min(screen_height() - 72.0);
+    let max_height = (screen_height() - 72.0).max(320.0);
+    let height = (screen_height() * 0.8).min(max_height).max(320.0);
     let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5 + 10.0;
+    let y = (screen_height() - height) * 0.5;
     (x, y, width, height)
 }
 
@@ -9054,13 +9549,28 @@ fn ship_upgrade_table_origin() -> Vec2 {
     vec2(panel_x + 28.0, panel_y + 84.0)
 }
 
-fn hovered_ship_upgrade_plus(mouse: Vec2, row_count: usize) -> Option<usize> {
+fn ship_upgrades_table_viewport_top() -> f32 {
+    ship_upgrade_table_origin().y + 18.0
+}
+
+fn ship_upgrades_table_viewport_height() -> f32 {
+    let (_, _, _, panel_height) = ship_upgrades_panel_rect();
+    (panel_height - 126.0).max(0.0)
+}
+
+fn hovered_ship_upgrade_plus(mouse: Vec2, row_count: usize, scroll: f32) -> Option<usize> {
     let origin = ship_upgrade_table_origin();
     let (_, _, panel_width, _) = ship_upgrades_panel_rect();
-    let row_height = 54.0;
-    let first_row_y = origin.y + 42.0;
-    let plus_x = origin.x + panel_width - 110.0;
+    let table_width = panel_width - 56.0;
+    let row_height = SHIP_UPGRADE_ROW_HEIGHT;
+    let viewport_top = ship_upgrades_table_viewport_top();
+    let viewport_bottom = viewport_top + ship_upgrades_table_viewport_height();
+    let first_row_y = origin.y + 42.0 - scroll;
+    let plus_x = origin.x + table_width - 66.0;
 
+    if mouse.y < viewport_top || mouse.y > viewport_bottom {
+        return None;
+    }
     if mouse.x < plus_x - 10.0 || mouse.x > plus_x + 28.0 {
         return None;
     }
@@ -9074,26 +9584,35 @@ fn hovered_ship_upgrade_plus(mouse: Vec2, row_count: usize) -> Option<usize> {
     (mouse.y >= row_y - 25.0 && mouse.y <= row_y + 14.0).then_some(row as usize)
 }
 
-fn draw_ship_upgrades_table(
-    content_registry: &content::ContentRegistry,
-    upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
-    inventory: &Inventory,
-    x: f32,
-    y: f32,
-    width: f32,
-    mouse: Vec2,
-) {
-    let row_height = 54.0;
+fn draw_ship_upgrades_table(table: ShipUpgradeTableRender<'_>) {
+    let ShipUpgradeTableRender {
+        content_registry,
+        upgrades,
+        inventory,
+        x,
+        y,
+        width,
+        scroll,
+        viewport_height,
+        mouse,
+    } = table;
+    let row_height = SHIP_UPGRADE_ROW_HEIGHT;
     let name_x = x + 8.0;
     let level_x = x + 278.0;
     let cost_x = x + 382.0;
-    let plus_x = x + width - 56.0;
+    let plus_x = x + width - 66.0;
+    let viewport_top = y + 18.0;
+    let viewport_bottom = viewport_top + viewport_height;
     let header = Color::from_rgba(168, 204, 210, 255);
     let text = Color::from_rgba(205, 226, 230, 255);
     let detail = Color::from_rgba(178, 197, 203, 255);
     let active = Color::from_rgba(150, 221, 226, 255);
     let unavailable = Color::from_rgba(126, 143, 148, 255);
-    let hovered = hovered_ship_upgrade_plus(mouse, upgrades.len());
+    let scroll = scroll.clamp(
+        0.0,
+        max_scroll_offset(upgrades.len(), row_height, viewport_height),
+    );
+    let hovered = hovered_ship_upgrade_plus(mouse, upgrades.len(), scroll);
 
     draw_text("Upgrade", name_x, y, 16.0, header);
     draw_text("Level", level_x, y, 16.0, header);
@@ -9101,7 +9620,10 @@ fn draw_ship_upgrades_table(
     draw_text("+", plus_x + 2.0, y, 16.0, header);
 
     for (row, upgrade) in upgrades.iter().enumerate() {
-        let row_y = y + 42.0 + row as f32 * row_height;
+        let row_y = y + 42.0 + row as f32 * row_height - scroll;
+        if row_y + 24.0 < viewport_top || row_y - 28.0 > viewport_bottom {
+            continue;
+        }
         let cost = upgrade.next_cost(content_registry);
         let affordable = can_afford_cost(inventory, &cost);
         let is_hovered = hovered == Some(row);
@@ -9134,6 +9656,26 @@ fn draw_ship_upgrades_table(
 
         draw_plus_button(plus_x - 8.0, row_y - 24.0, affordable, active, unavailable);
     }
+    draw_scrollbar(
+        x + width - 4.0,
+        viewport_top,
+        viewport_height,
+        upgrades.len(),
+        row_height,
+        scroll,
+    );
+}
+
+struct ShipUpgradeTableRender<'a> {
+    content_registry: &'a content::ContentRegistry,
+    upgrades: &'a [ShipUpgrade; SHIP_UPGRADE_COUNT],
+    inventory: &'a Inventory,
+    x: f32,
+    y: f32,
+    width: f32,
+    scroll: f32,
+    viewport_height: f32,
+    mouse: Vec2,
 }
 
 fn format_cost(cost: &[ItemStack]) -> String {
@@ -9720,14 +10262,17 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
         }
     }
 
-    draw_ship_detail(
-        &game.ship,
-        &game.installed_power_modules,
-        game.ship_texture.as_ref(),
+    draw_ship_detail(ShipDetailView {
+        ship: &game.ship,
+        power_modules: &game.installed_power_modules,
+        weapons: &game.equipped_weapons,
+        threats: &game.defense_threats,
+        current_system_id: &game.current_system_id,
+        texture: game.ship_texture.as_ref(),
         x,
         y,
         width,
-    );
+    });
 }
 
 fn draw_station_service_list(
@@ -10563,14 +11108,18 @@ fn draw_planet_action_rail(
     );
 }
 
-fn draw_ship_detail(
-    ship: &Ship,
-    power_modules: &[PowerModule],
-    texture: Option<&Texture2D>,
-    x: f32,
-    y: f32,
-    width: f32,
-) {
+fn draw_ship_detail(view: ShipDetailView<'_>) {
+    let ShipDetailView {
+        ship,
+        power_modules,
+        weapons,
+        threats,
+        current_system_id,
+        texture,
+        x,
+        y,
+        width,
+    } = view;
     let label = Color::from_rgba(88, 116, 126, 180);
     let text = Color::from_rgba(205, 226, 230, 255);
     let accent = Color::from_rgba(150, 221, 226, 255);
@@ -10720,6 +11269,71 @@ fn draw_ship_detail(
     } else {
         draw_text("No module installed", right_x, power_y + 28.0, 18.0, text);
     }
+
+    let weapons_y = power_y + 132.0;
+    draw_line(
+        x,
+        weapons_y - 18.0,
+        x + width,
+        weapons_y - 18.0,
+        1.0,
+        Color::from_rgba(82, 114, 124, 95),
+    );
+    draw_text("Turret defense", x, weapons_y, 15.0, label);
+    let hostile_count = threats
+        .iter()
+        .filter(|threat| {
+            threat.system == current_system_id
+                && threat.disposition == ThreatDisposition::Hostile
+                && threat.hull.current > 0.0
+        })
+        .count();
+    let threat_label = format!("Threats {hostile_count}");
+    draw_text(
+        &fit_debug_text(&threat_label, width - (right_x - x), 15),
+        right_x,
+        weapons_y,
+        15.0,
+        label,
+    );
+    if weapons.is_empty() {
+        draw_text("No turret slots equipped", x, weapons_y + 28.0, 18.0, text);
+        return;
+    }
+
+    for (index, weapon) in weapons.iter().take(3).enumerate() {
+        let row_y = weapons_y + 28.0 + index as f32 * 44.0;
+        draw_text(
+            &fit_debug_text(&weapon.name, width, 17),
+            x,
+            row_y,
+            17.0,
+            accent,
+        );
+        let cooldown = if weapon.cooldown_remaining > 0.0 {
+            format!(" {:.1}s", weapon.cooldown_remaining)
+        } else {
+            String::new()
+        };
+        let status = format!(
+            "{}{}  {:.0}u  {:.0}e",
+            weapon.readiness_label(),
+            cooldown,
+            weapon.range,
+            weapon.energy_cost
+        );
+        draw_text(
+            &fit_debug_text(&status, width, 15),
+            x,
+            row_y + 19.0,
+            15.0,
+            if weapon.status == WeaponStatus::InsufficientEnergy {
+                Color::from_rgba(226, 190, 150, 245)
+            } else {
+                text
+            },
+        );
+    }
 }
 
 struct WorkRow {
@@ -10728,6 +11342,18 @@ struct WorkRow {
     status: String,
     enabled: bool,
     active: bool,
+}
+
+struct ShipDetailView<'a> {
+    ship: &'a Ship,
+    power_modules: &'a [PowerModule],
+    weapons: &'a [WeaponSystem],
+    threats: &'a [DefenseThreat],
+    current_system_id: &'a str,
+    texture: Option<&'a Texture2D>,
+    x: f32,
+    y: f32,
+    width: f32,
 }
 
 fn work_row_status(current: u32, keep: u32, queued: u32) -> String {
@@ -11213,6 +11839,10 @@ mod tests {
             &game.content_registry,
             &["core:compact_fission_cell".to_string()],
         );
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
 
         let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
         let restored = toml::from_str::<SaveData>(&serialized).expect("save should deserialize");
@@ -11225,6 +11855,10 @@ mod tests {
         assert_eq!(
             restored.installed_power_modules,
             vec!["core:compact_fission_cell".to_string()]
+        );
+        assert_eq!(
+            restored.weapon_slots,
+            vec!["core:point_defense_turret".to_string()]
         );
     }
 
@@ -11293,6 +11927,200 @@ mod tests {
         assert_eq!(power_modules[0].family, "Nuclear");
         assert_eq!(ship.attributes.energy_recharge, 8.0);
         assert_eq!(ship_energy_recharge(&ship, &power_modules), 22.0);
+
+        let weapons = equipped_weapons_from_ids(&registry, &ship_def.weapon_slots);
+        assert_eq!(weapons.len(), 1);
+        assert_eq!(weapons[0].name, "Point Defense Turret");
+        assert_eq!(weapons[0].install_item, "core:point_defense_turret");
+        assert_eq!(weapons[0].range, 460.0);
+        assert_eq!(weapons[0].energy_cost, 7.0);
+    }
+
+    #[test]
+    fn weapon_slots_swap_with_inventory_install_items() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.content_registry.items.insert(
+            "core:test_turret_item".to_string(),
+            content::ItemDef {
+                id: "core:test_turret_item".to_string(),
+                name: "Test turret item".to_string(),
+                tier: "weapon".to_string(),
+                xp_value: 1.0,
+                unit_mass: 100.0,
+            },
+        );
+        game.content_registry.weapons.insert(
+            "core:test_turret".to_string(),
+            content::WeaponDef {
+                id: "core:test_turret".to_string(),
+                name: "Test Turret".to_string(),
+                kind: content::WeaponKind::TurretDefense,
+                install_item: "core:test_turret_item".to_string(),
+                range: 240.0,
+                cooldown_seconds: 2.0,
+                damage: 6.0,
+                energy_cost: 3.0,
+                tracking_degrees: 360.0,
+                summary: None,
+            },
+        );
+
+        assert_eq!(
+            install_weapon_in_slot(&mut game, 1, "core:test_turret"),
+            Err(WeaponInstallError::InvalidSlot)
+        );
+        assert_eq!(
+            install_weapon_in_slot(&mut game, 0, "core:missing_turret"),
+            Err(WeaponInstallError::UnknownWeapon)
+        );
+        assert_eq!(
+            install_weapon_in_slot(&mut game, 0, "core:test_turret"),
+            Err(WeaponInstallError::MissingInstallItem)
+        );
+
+        let install_item = required_item(&game.content_registry, "core:test_turret_item");
+        let previous_item = required_item(&game.content_registry, "core:point_defense_turret");
+        game.inventory.add_item(install_item.clone(), 1);
+
+        install_weapon_in_slot(&mut game, 0, "core:test_turret")
+            .expect("crafted turret should install into the weapon slot");
+
+        assert_eq!(game.equipped_weapons[0].id, "core:test_turret");
+        assert_eq!(game.inventory.count(&install_item), 0);
+        assert_eq!(game.inventory.count(&previous_item), 1);
+        assert!(game.save_dirty);
+        assert_eq!(game.to_save().weapon_slots, vec!["core:test_turret"]);
+    }
+
+    #[test]
+    fn defensive_turrets_fire_at_hostile_threats_only() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.defense_threats = vec![
+            test_defense_threat(
+                "core:neutral",
+                ThreatDisposition::Neutral,
+                vec2(90.0, 0.0),
+                24.0,
+            ),
+            test_defense_threat(
+                "core:hostile",
+                ThreatDisposition::Hostile,
+                vec2(120.0, 0.0),
+                36.0,
+            ),
+        ];
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+        assert_eq!(game.ship.systems.energy.current, 93.0);
+        assert_eq!(game.defense_threats[0].hull.current, 24.0);
+        assert_eq!(game.defense_threats[1].hull.current, 18.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn defensive_turret_cooldown_blocks_repeated_fire() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.defense_threats = vec![test_defense_threat(
+            "core:hostile",
+            ThreatDisposition::Hostile,
+            vec2(120.0, 0.0),
+            60.0,
+        )];
+
+        update_weapon_systems(&mut game, 0.1);
+        let hull_after_first_shot = game.defense_threats[0].hull.current;
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Cooldown);
+        assert_eq!(game.defense_threats[0].hull.current, hull_after_first_shot);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+    }
+
+    #[test]
+    fn defensive_turret_requires_energy_to_fire() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 1.0;
+        game.defense_threats = vec![test_defense_threat(
+            "core:hostile",
+            ThreatDisposition::Hostile,
+            vec2(120.0, 0.0),
+            36.0,
+        )];
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(
+            game.equipped_weapons[0].status,
+            WeaponStatus::InsufficientEnergy
+        );
+        assert_eq!(game.ship.systems.energy.current, 1.0);
+        assert_eq!(game.defense_threats[0].hull.current, 36.0);
+        assert!(game.weapon_fire_events.is_empty());
+    }
+
+    #[test]
+    fn defensive_turret_ignores_owned_and_environmental_threats() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.defense_threats = vec![
+            test_defense_threat(
+                "core:owned",
+                ThreatDisposition::Owned,
+                vec2(90.0, 0.0),
+                24.0,
+            ),
+            test_defense_threat(
+                "core:hazard",
+                ThreatDisposition::Environmental,
+                vec2(120.0, 0.0),
+                24.0,
+            ),
+        ];
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::NoThreat);
+        assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert!(game
+            .defense_threats
+            .iter()
+            .all(|threat| threat.hull.current == 24.0));
+        assert!(game.weapon_fire_events.is_empty());
     }
 
     #[test]
@@ -12405,6 +13233,23 @@ mod tests {
         }
     }
 
+    fn test_defense_threat(
+        id: &str,
+        disposition: ThreatDisposition,
+        position: Vec2,
+        hull: f32,
+    ) -> DefenseThreat {
+        DefenseThreat {
+            id: id.to_string(),
+            name: "Test threat".to_string(),
+            system: STARTER_SYSTEM_ID.to_string(),
+            position,
+            radius: DEFENSE_THREAT_RADIUS,
+            disposition,
+            hull: ShipResource::full(hull),
+        }
+    }
+
     fn assert_vec2_near(actual: Vec2, expected: Vec2) {
         assert!(
             actual.distance(expected) < 0.01,
@@ -12428,6 +13273,9 @@ mod tests {
             credits: default_credits(),
             ship: Ship::starter(),
             installed_power_modules: Vec::new(),
+            equipped_weapons: Vec::new(),
+            defense_threats: Vec::new(),
+            weapon_fire_events: Vec::new(),
             ship_texture: None,
             system_light_haze_texture: None,
             system_stars: Vec::new(),
@@ -12470,6 +13318,7 @@ mod tests {
             starmap_resource_filter_index: 0,
             work_scroll: 0.0,
             inventory_scroll: 0.0,
+            upgrades_scroll: 0.0,
             last_window_size: (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
             window_save_delay: None,
             save_delay: None,
