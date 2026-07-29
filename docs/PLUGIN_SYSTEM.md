@@ -1,8 +1,8 @@
 # Plugin System
 
 Some Frontier plugins should start as local data packs. A pack can add items,
-recipes, ships, power modules, planets, stations, systems, upgrades, assets, and
-eventually events without compiling new Rust code.
+recipes, ships, power modules, weapons, planets, stations, systems, upgrades,
+assets, and eventually events without compiling new Rust code.
 
 The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
@@ -38,8 +38,8 @@ Core pack responsibilities:
 
 Plugin pack responsibilities:
 
-- Add new items, recipes, ships, power modules, planets, stations, systems, and
-  assets.
+- Add new items, recipes, ships, power modules, weapons, planets, stations,
+  systems, and assets.
 - Add compatibility recipes between packs.
 - Add alternate resource branches that use existing mechanics.
 - Add upgrade cost branches for base-game upgrade mechanics.
@@ -70,6 +70,7 @@ content/packs/core/
   config.toml
   items.toml
   power.toml
+  weapons.toml
   ships.toml
   recipes.toml
   universe.toml
@@ -88,6 +89,7 @@ content/packs/icy-frontier/
   config.toml
   items.toml
   power.toml
+  weapons.toml
   ships.toml
   recipes.toml
   universe.toml
@@ -472,11 +474,50 @@ Rules:
   a recipe.
 - `summary` is optional player-facing metadata.
 
+## `weapons.toml`
+
+Weapon files define ship-mounted weapon equipment. The first supported weapon
+type is automatic turret defense: the player does not manually target or fire
+these weapons. The base game owns threat scanning, cooldowns, energy spending,
+damage application, and future NPC/faction integration. Each weapon also points
+at an inventory install item, allowing crafted turret objects to be swapped into
+ship weapon slots as equipment UI is added.
+
+```toml
+[[weapons]]
+id = "point_defense_turret"
+name = "Point Defense Turret"
+kind = "turret_defense"
+install_item = "point_defense_turret"
+range = 460.0
+cooldown_seconds = 1.4
+damage = 18.0
+energy_cost = 7.0
+tracking_degrees = 360.0
+summary = "Automatic defensive turret that engages hostile threats near the ship."
+```
+
+Rules:
+
+- `id` resolves to a namespaced weapon ID.
+- `name` must not be empty.
+- `kind` must be `turret_defense`.
+- `install_item` must reference an existing item, usually something produced by
+  a crafting recipe. It is the inventory object consumed when this weapon is
+  installed and returned when the weapon is swapped out.
+- `range`, `cooldown_seconds`, and `damage` must be positive.
+- `energy_cost` defaults to 0.0 and must not be negative.
+- `tracking_degrees` defaults to 360.0 and must not be negative. Values at or
+  above 359 degrees behave as full-coverage defensive turrets.
+- Turret defense weapons only engage valid hostile threats. Neutral, owned, and
+  environmental entities are ignored by the base targeting rules.
+- `summary` is optional player-facing metadata.
+
 ## `ships.toml`
 
 Ship definitions provide data-driven hull and handling stats. The current
 starter ship uses this content metadata, while the base game still owns flight,
-damage, energy, save/load, and upgrade behavior.
+damage, energy, save/load, weapon slot behavior, and upgrade behavior.
 
 ```toml
 [[ships]]
@@ -493,6 +534,7 @@ linear_drag = 0.985
 hull_capacity = 100.0
 shield_capacity = 100.0
 power_modules = ["compact_fission_cell"]
+weapon_slots = ["point_defense_turret"]
 ```
 
 Rules:
@@ -504,6 +546,8 @@ Rules:
 - `mass`, acceleration, energy, drag, hull, and shield values must be positive.
 - `power_modules` defaults to an empty list. Entries resolve to namespaced power
   module IDs and must reference loaded power modules.
+- `weapon_slots` defaults to an empty list. Entries resolve to namespaced weapon
+  IDs and must reference loaded weapons.
 
 ## `starter.toml`
 
@@ -824,7 +868,11 @@ Reject startup when:
 - A power module references a missing install item or fuel item.
 - A power module has an empty name or family, non-positive generation or mass,
   or negative fuel use, heat, or risk.
+- A weapon references a missing install item, has an empty name, unsupported
+  kind, non-positive range, cooldown, or damage, or negative energy cost or
+  tracking degrees.
 - A ship references a missing power module.
+- A ship references a missing weapon.
 - A ship has an empty name or non-positive mass, acceleration, energy, drag,
   hull, or shield values.
 - A system references a missing region, galaxy, or universe.
@@ -907,6 +955,24 @@ struct ShipDef {
     hull_capacity: f32,
     shield_capacity: f32,
     power_modules: Vec<String>,
+    weapon_slots: Vec<String>,
+}
+
+struct WeaponDef {
+    id: String,
+    name: String,
+    kind: WeaponKind,
+    install_item: String,
+    range: f32,
+    cooldown_seconds: f32,
+    damage: f32,
+    energy_cost: f32,
+    tracking_degrees: f32,
+    summary: Option<String>,
+}
+
+enum WeaponKind {
+    TurretDefense,
 }
 
 struct PowerModuleDef {

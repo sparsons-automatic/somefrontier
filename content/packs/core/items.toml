@@ -368,3 +368,10 @@ name = "Improved survey drone"
 tier = "utility"
 xp_value = 12.0
 unit_mass = 48.0
+
+[[items]]
+id = "point_defense_turret"
+name = "Point defense turret"
+tier = "weapon"
+xp_value = 14.0
+unit_mass = 180.0

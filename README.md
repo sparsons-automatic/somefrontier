@@ -55,7 +55,8 @@ The game remembers the last window size after resizing. Window size is saved to
 Game progress autosaves to `$XDG_CONFIG_HOME/some-frontier/save.toml`, or
 `~/.config/some-frontier/save.toml` when `XDG_CONFIG_HOME` is not set. The save
 stores the world seed, ship state, inventory, skills, upgrades, active
-destination, production settings, scanned planets, and mining quotas.
+destination, equipped weapon slots, production settings, scanned planets, and
+mining quotas.
 
 New games generate a world seed that lightly rotates and offsets content-defined
 planet positions. Loading a save reuses its seed so the same world layout comes
@@ -109,10 +110,20 @@ Open the inventory panel, then click the ship preview to open ship upgrades.
 Upgrades consume crafted components and immediately improve ship systems such as
 engines, thrusters, energy, and shields.
 
+## Turret Defense
+
+Ships can mount automatic defensive turrets through weapon slots. Turrets scan
+for hostile threats near the ship, fire when they are ready, and spend ship
+energy for each shot. They ignore neutral, owned, and environmental objects, and
+do not require manual targeting or a fire button. Weapon definitions are backed
+by inventory install items, so future equipment screens can swap crafted turret
+objects in and out of ship weapon slots while saves preserve the equipped weapon
+IDs.
+
 ## Content Debugging
 
 Press `C` to open a compact content browser showing loaded packs, items,
-recipes, systems, stars, planets, and upgrades. The pack list is selectable:
+recipes, weapons, systems, stars, planets, and upgrades. The pack list is selectable:
 choose a pack to filter the item, recipe, and planet columns to that pack, and
 use the mouse wheel over a column to scroll longer lists.
 

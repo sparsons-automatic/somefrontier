@@ -17,6 +17,8 @@ pub struct ContentRegistry {
     pub item_order: Vec<String>,
     pub ships: HashMap<String, ShipDef>,
     pub ship_order: Vec<String>,
+    pub weapons: HashMap<String, WeaponDef>,
+    pub weapon_order: Vec<String>,
     pub power_modules: HashMap<String, PowerModuleDef>,
     pub power_module_order: Vec<String>,
     pub recipes: HashMap<String, RecipeDef>,
@@ -136,6 +138,41 @@ pub struct ShipDef {
     pub hull_capacity: f32,
     pub shield_capacity: f32,
     pub power_modules: Vec<String>,
+    pub weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WeaponDef {
+    pub id: String,
+    pub name: String,
+    pub kind: WeaponKind,
+    pub install_item: String,
+    pub range: f32,
+    pub cooldown_seconds: f32,
+    pub damage: f32,
+    pub energy_cost: f32,
+    pub tracking_degrees: f32,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponKind {
+    TurretDefense,
+}
+
+impl WeaponKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::TurretDefense => "turret_defense",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "turret_defense" => Some(Self::TurretDefense),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -426,6 +463,30 @@ struct ShipFileDef {
     shield_capacity: f32,
     #[serde(default)]
     power_modules: Vec<String>,
+    #[serde(default)]
+    weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WeaponsFile {
+    #[serde(default)]
+    weapons: Vec<WeaponFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WeaponFileDef {
+    id: String,
+    name: String,
+    kind: String,
+    install_item: String,
+    range: f32,
+    cooldown_seconds: f32,
+    damage: f32,
+    #[serde(default)]
+    energy_cost: f32,
+    #[serde(default = "default_full_tracking_degrees")]
+    tracking_degrees: f32,
+    summary: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1001,6 +1062,52 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         }
     }
 
+    let weapons = read_optional_toml::<WeaponsFile>(&raw_pack.path.join("weapons.toml"), errors);
+    for weapon in weapons.weapons {
+        let id = namespaced_id(&pack_id, &weapon.id);
+        validate_local_content_id(&id, "weapon", errors);
+        validate_required_name(&id, "Weapon", &weapon.name, errors);
+        validate_positive(weapon.range, "Weapon", &id, "range", errors);
+        validate_positive(weapon.cooldown_seconds, "Weapon", &id, "cooldown", errors);
+        validate_positive(weapon.damage, "Weapon", &id, "damage", errors);
+        if weapon.energy_cost < 0.0 {
+            errors.push(format!("Weapon `{id}` has negative energy cost"));
+        }
+        if weapon.tracking_degrees < 0.0 {
+            errors.push(format!("Weapon `{id}` has negative tracking degrees"));
+        }
+        let Some(kind) = WeaponKind::from_id(&weapon.kind) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported kind `{}`",
+                weapon.kind
+            ));
+            continue;
+        };
+        let inserted = registry
+            .weapons
+            .insert(
+                id.clone(),
+                WeaponDef {
+                    id: id.clone(),
+                    name: weapon.name,
+                    kind,
+                    install_item: namespaced_id(&pack_id, &weapon.install_item),
+                    range: weapon.range,
+                    cooldown_seconds: weapon.cooldown_seconds,
+                    damage: weapon.damage,
+                    energy_cost: weapon.energy_cost,
+                    tracking_degrees: weapon.tracking_degrees,
+                    summary: weapon.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.weapon_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate weapon id `{id}`"));
+        }
+    }
+
     let ships = read_optional_toml::<ShipsFile>(&raw_pack.path.join("ships.toml"), errors);
     for ship in ships.ships {
         let id = namespaced_id(&pack_id, &ship.id);
@@ -1057,6 +1164,11 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                         .power_modules
                         .into_iter()
                         .map(|module| namespaced_id(&pack_id, &module))
+                        .collect(),
+                    weapon_slots: ship
+                        .weapon_slots
+                        .into_iter()
+                        .map(|weapon| namespaced_id(&pack_id, &weapon))
                         .collect(),
                 },
             )
@@ -1765,6 +1877,17 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         }
     }
 
+    for weapon in registry.weapons.values() {
+        validate_reference(
+            registry.items.contains_key(&weapon.install_item),
+            "Weapon",
+            &weapon.id,
+            "install item",
+            &weapon.install_item,
+            errors,
+        );
+    }
+
     for ship in registry.ships.values() {
         for module in &ship.power_modules {
             validate_reference(
@@ -1773,6 +1896,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 &ship.id,
                 "power module",
                 module,
+                errors,
+            );
+        }
+        for weapon in &ship.weapon_slots {
+            validate_reference(
+                registry.weapons.contains_key(weapon),
+                "Ship",
+                &ship.id,
+                "weapon",
+                weapon,
                 errors,
             );
         }
@@ -2295,6 +2428,10 @@ fn default_station_icon() -> String {
     "station".to_string()
 }
 
+fn default_full_tracking_degrees() -> f32 {
+    360.0
+}
+
 impl Default for HazardEffectsFileDef {
     fn default() -> Self {
         Self {
@@ -2328,6 +2465,7 @@ mod tests {
         }));
         assert!(registry.items.contains_key("core:iron_ore"));
         assert!(registry.items.contains_key("core:survey_drone"));
+        assert!(registry.items.contains_key("core:point_defense_turret"));
         assert!(registry
             .ships
             .get("core:frontier_cargo_ship_01")
@@ -2336,12 +2474,25 @@ mod tests {
                     && ship.mass == 85000.0
                     && ship.forward_acceleration == 420.0
                     && ship.power_modules == ["core:compact_fission_cell"]
+                    && ship.weapon_slots == ["core:point_defense_turret"]
                     && ship.texture.as_deref().is_some_and(|texture| {
                         texture.contains(
                             "content/packs/core/./assets/ships/frontier-cargo-ship-01.png",
                         )
                     })
             }));
+        assert!(registry
+            .weapons
+            .get("core:point_defense_turret")
+            .is_some_and(|weapon| {
+                weapon.kind == WeaponKind::TurretDefense
+                    && weapon.install_item == "core:point_defense_turret"
+                    && weapon.range == 460.0
+                    && weapon.cooldown_seconds == 1.4
+                    && weapon.damage == 18.0
+                    && weapon.energy_cost == 7.0
+            }));
+        assert!(registry.recipes.contains_key("core:point_defense_turret"));
         assert!(registry.power_modules.contains_key("core:film_solar_sail"));
         assert!(registry
             .power_modules
@@ -2657,6 +2808,13 @@ name = "Iron ore"
 tier = "raw"
 xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+xp_value = 4.0
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
@@ -2719,6 +2877,13 @@ name = "Iron ore"
 tier = "raw"
 xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+xp_value = 4.0
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
@@ -2786,6 +2951,13 @@ name = "Iron ore"
 tier = "raw"
 xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+xp_value = 4.0
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
@@ -3119,9 +3291,31 @@ name = "Iron ore"
 tier = "raw"
 xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+xp_value = 4.0
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
+        fs::write(
+            pack_path.join("weapons.toml"),
+            r#"
+[[weapons]]
+id = "point_defense"
+name = "Point Defense"
+kind = "turret_defense"
+install_item = "point_defense"
+range = 300.0
+cooldown_seconds = 1.0
+damage = 12.0
+energy_cost = 5.0
+"#,
+        )
+        .expect("weapons should be written");
         fs::write(
             pack_path.join("ships.toml"),
             r#"
@@ -3316,6 +3510,20 @@ fuel_item = "missing_fuel"
         )
         .expect("power modules should be written");
         fs::write(
+            pack_path.join("weapons.toml"),
+            r#"
+[[weapons]]
+id = "point_defense"
+name = "Point Defense"
+kind = "turret_defense"
+install_item = "missing_turret_item"
+range = 300.0
+cooldown_seconds = 1.0
+damage = 12.0
+"#,
+        )
+        .expect("weapons should be written");
+        fs::write(
             pack_path.join("ships.toml"),
             r#"
 [[ships]]
@@ -3331,6 +3539,7 @@ linear_drag = 0.9
 hull_capacity = 100.0
 shield_capacity = 50.0
 power_modules = ["bad_reactor", "missing_module"]
+weapon_slots = ["point_defense", "missing_weapon"]
 "#,
         )
         .expect("ships should be written");
@@ -3347,7 +3556,15 @@ power_modules = ["bad_reactor", "missing_module"]
         }));
         assert!(errors.iter().any(|error| {
             error
+                == "Weapon `bad-ship-pack:point_defense` references missing install item `bad-ship-pack:missing_turret_item`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
                 == "Ship `bad-ship-pack:bad_ship` references missing power module `bad-ship-pack:missing_module`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship `bad-ship-pack:bad_ship` references missing weapon `bad-ship-pack:missing_weapon`"
         }));
 
         fs::remove_dir_all(root).ok();

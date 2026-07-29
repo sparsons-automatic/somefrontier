@@ -224,6 +224,18 @@ ingredients = [
 purpose = "Deeper scan capability."
 
 [[recipes]]
+id = "point_defense_turret"
+station = "crafting"
+output = { item = "core:point_defense_turret", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 1 },
+  { item = "core:circuit", count = 1 },
+  { item = "core:gear", count = 2 },
+  { item = "core:copper_wire", count = 4 },
+]
+purpose = "Craftable ship weapon for automatic defensive turret slots."
+
+[[recipes]]
 id = "rare_earth_magnet"
 station = "crafting"
 output = { item = "core:rare_earth_magnet", count = 1 }

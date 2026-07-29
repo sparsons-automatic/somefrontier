@@ -1,0 +1,11 @@
+[[weapons]]
+id = "point_defense_turret"
+name = "Point Defense Turret"
+kind = "turret_defense"
+install_item = "point_defense_turret"
+range = 460.0
+cooldown_seconds = 1.4
+damage = 18.0
+energy_cost = 7.0
+tracking_degrees = 360.0
+summary = "Automatic defensive turret that engages hostile threats near the ship."
