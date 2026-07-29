@@ -41,7 +41,7 @@ cargo run --release
 - Mouse wheel in flight view: zoom camera in/out
 - `PageUp` / `PageDown`: zoom camera in/out
 - `Space`: inspect/select a planet when the ship is over it
-- `Esc`: close map or clear the selected planet
+- `Esc`: close the topmost menu or open the pause menu for manual save, title menu, or desktop quit
 - Left click a visible planet: select it and open the planet panel
 - Left click a planet in the starmap: set it as the active destination
 - Left click the ship in the inventory panel: open ship upgrades
