@@ -9,7 +9,7 @@ This document tracks current and planned material chains for Some Frontier.
 | Raw resource | Mined directly from planets | Iron ore, copper ore, nickel ore |
 | Refined material | Smelted from raw resources | Iron plate, copper plate |
 | Component | Fabricated from refined materials | Copper wire, gear, circuit |
-| Utility item | Enables exploration or operations | Survey drone |
+| Utility item | Enables exploration or operations | Survey drone, shield matrix |
 | Fuel and energy | Powers travel or advanced systems | Reactor cell, hydrogen fuel |
 
 ## Space Mining Resource Pool
@@ -109,6 +109,8 @@ larger drone/drive parts range from 35-48 kg.
 | Circuit | Component | Fabricate iron plate and copper wire | Survey drones, upgrades |
 | Survey drone | Utility item | Fabricate components | Planet scanning |
 | Improved survey drone | Utility item | Upgrade survey drone with electronics and alloy | Future deeper scan capability |
+| Balanced shield matrix | Utility item | Craft components and alloy | Default swappable shield module |
+| Hazard shield matrix | Utility item | Upgrade balanced shield matrix with contacts and coolant | Hazard-resistant shield module |
 
 ## Current Recipes
 
@@ -142,6 +144,8 @@ larger drone/drive parts range from 35-48 kg.
 | Advanced scanner core x1 | Electronics x1, rare earth magnet x1, silver contact x1 | Crafting | High-tier survey upgrade component |
 | Fusion drive core x1 | Helium-3 cell x1, reactor pellet x1, gold conductor x1 | Crafting | Long-range engine upgrade component |
 | Jump core x1 | Exotic matter capsule x1, advanced scanner core x1, eldridium nodule x1 | Crafting | Late-game jump upgrade component |
+| Balanced shield matrix x1 | Circuit x2, copper wire x6, structural alloy x1 | Crafting | Balanced ship shield module |
+| Hazard shield matrix x1 | Balanced shield matrix x1, silver contact x1, coolant x2 | Crafting | Hazard-tuned shield module |
 
 ## Planet Resource Map
 

@@ -55,8 +55,8 @@ The game remembers the last window size after resizing. Window size is saved to
 Game progress autosaves to `$XDG_CONFIG_HOME/some-frontier/save.toml`, or
 `~/.config/some-frontier/save.toml` when `XDG_CONFIG_HOME` is not set. The save
 stores the world seed, ship state, inventory, skills, upgrades, active
-destination, equipped weapon slots, production settings, scanned planets, and
-mining quotas.
+destination, equipped shield and weapon slots, production settings, scanned
+planets, and mining quotas.
 
 New games generate a world seed that lightly rotates and offsets content-defined
 planet positions. Loading a save reuses its seed so the same world layout comes
@@ -110,6 +110,15 @@ Open the inventory panel, then click the ship preview to open ship upgrades.
 Upgrades consume crafted components and immediately improve ship systems such as
 engines, thrusters, energy, and shields.
 
+## Shield Modules
+
+Ships can mount shield modules through shield slots. Shield modules define
+capacity, recharge delay, recharge rate, damage resistance, and hazard
+resistance. The ship detail view shows the installed shield, current strength,
+recharge status, and resistance values. Crafted shield modules can be swapped
+through the ship detail panel while saves preserve the equipped shield IDs and
+recharge state.
+
 ## Turret Defense
 
 Ships can mount automatic defensive turrets through weapon slots. Turrets scan
@@ -123,9 +132,9 @@ IDs.
 ## Content Debugging
 
 Press `C` to open a compact content browser showing loaded packs, items,
-recipes, weapons, systems, stars, planets, and upgrades. The pack list is selectable:
-choose a pack to filter the item, recipe, and planet columns to that pack, and
-use the mouse wheel over a column to scroll longer lists.
+recipes, shields, weapons, systems, stars, planets, and upgrades. The pack list
+is selectable: choose a pack to filter the item, recipe, and planet columns to
+that pack, and use the mouse wheel over a column to scroll longer lists.
 
 ## Startup Transition
 
@@ -167,9 +176,9 @@ systems and assets.
 
 Built-in world content lives under `content/packs/core/`, and optional
 first-party/plugin packs live beside it under `content/packs/`. The game
-currently loads items, recipes, ships, planets, stations, systems, stars, and
-starter inventory from discovered packs. Inventory, recipes, mining, and UI
-labels use registry-backed item IDs.
+currently loads items, recipes, ships, shields, weapons, planets, stations,
+systems, stars, and starter inventory from discovered packs. Inventory, recipes,
+mining, and UI labels use registry-backed item IDs.
 
 ## Development
 

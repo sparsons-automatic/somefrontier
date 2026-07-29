@@ -1,0 +1,21 @@
+[[shields]]
+id = "balanced_shield_matrix"
+name = "Balanced Shield Matrix"
+install_item = "balanced_shield_matrix"
+capacity = 100.0
+recharge_delay = 4.0
+recharge_rate = 7.5
+damage_resistance = 0.10
+hazard_resistance = 0.15
+summary = "Balanced shield matrix with steady recharge and modest all-around resistance."
+
+[[shields]]
+id = "hazard_shield_matrix"
+name = "Hazard Shield Matrix"
+install_item = "hazard_shield_matrix"
+capacity = 85.0
+recharge_delay = 3.0
+recharge_rate = 6.0
+damage_resistance = 0.05
+hazard_resistance = 0.55
+summary = "Hazard-tuned shield matrix that sacrifices capacity for strong environmental mitigation."
