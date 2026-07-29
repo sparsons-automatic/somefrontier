@@ -165,6 +165,7 @@ struct GameState {
     skills_open: bool,
     upgrades_open: bool,
     content_open: bool,
+    content_browser: ContentBrowserState,
     escape_dialog_open: bool,
     quit_to_title_requested: bool,
     starmap_filter: StarmapFilter,
@@ -177,6 +178,15 @@ struct GameState {
     save_dirty: bool,
     save_status_timer: f32,
     save_status_manual: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ContentBrowserState {
+    selected_pack_index: Option<usize>,
+    packs_scroll: f32,
+    items_scroll: f32,
+    recipes_scroll: f32,
+    planets_scroll: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -759,6 +769,7 @@ impl GameState {
             skills_open: false,
             upgrades_open: false,
             content_open: false,
+            content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
             starmap_filter: StarmapFilter::All,
@@ -4642,6 +4653,14 @@ fn update_game(game: &mut GameState, dt: f32) {
         click_handled = handle_ship_upgrades_input(game, mouse);
     }
 
+    if game.content_open {
+        let mouse = vec2(mouse_position().0, mouse_position().1);
+        if wheel != 0.0 {
+            handle_content_browser_scroll(game, mouse, wheel);
+        }
+        click_handled = handle_content_browser_input(game, mouse);
+    }
+
     if game.inventory_open
         && !game.map_open
         && !game.skills_open
@@ -4913,6 +4932,160 @@ fn transition_target_system_id(
                 .find(|system_id| system_id.as_str() != current_system_id)
         })
         .cloned()
+}
+
+struct ContentBrowserLayout {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    column_y: f32,
+    column_width: f32,
+    column_gap: f32,
+    row_height: f32,
+    viewport_height: f32,
+}
+
+struct ContentColumnRender<'a> {
+    title: &'a str,
+    x: f32,
+    y: f32,
+    width: f32,
+    row_height: f32,
+    viewport_height: f32,
+    scroll: f32,
+    rows: &'a [String],
+    selected_row: Option<usize>,
+}
+
+fn content_browser_layout() -> ContentBrowserLayout {
+    let width = (screen_width() - 48.0).min(1120.0);
+    let height = (screen_height() - 64.0).min(620.0);
+    let x = (screen_width() - width) * 0.5;
+    let y = (screen_height() - height) * 0.5 + 10.0;
+    let column_gap = 18.0;
+    let column_width = (width - 48.0 - column_gap * 3.0) / 4.0;
+    let column_y = y + 110.0;
+    let row_height = 23.0;
+    let viewport_height = (height - 150.0).max(row_height);
+
+    ContentBrowserLayout {
+        x,
+        y,
+        width,
+        height,
+        column_y,
+        column_width,
+        column_gap,
+        row_height,
+        viewport_height,
+    }
+}
+
+fn content_browser_column_rect(layout: &ContentBrowserLayout, column: usize) -> Rect {
+    Rect::new(
+        layout.x + 24.0 + (layout.column_width + layout.column_gap) * column as f32,
+        layout.column_y + 18.0,
+        layout.column_width,
+        layout.viewport_height,
+    )
+}
+
+fn handle_content_browser_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
+    let layout = content_browser_layout();
+    let selected_pack_id = selected_content_pack_id(game).map(str::to_string);
+    let item_count = filtered_content_item_rows(game, selected_pack_id.as_deref()).len();
+    let recipe_count = filtered_content_recipe_rows(game, selected_pack_id.as_deref()).len();
+    let planet_count = filtered_content_planet_rows(game, selected_pack_id.as_deref()).len();
+
+    if content_browser_column_rect(&layout, 0).contains(mouse) {
+        game.content_browser.packs_scroll = content_scrolled_offset(
+            game.content_browser.packs_scroll,
+            wheel,
+            game.content_registry.packs.len() + 1,
+            layout.row_height,
+            layout.viewport_height,
+        );
+    } else if content_browser_column_rect(&layout, 1).contains(mouse) {
+        game.content_browser.items_scroll = content_scrolled_offset(
+            game.content_browser.items_scroll,
+            wheel,
+            item_count,
+            layout.row_height,
+            layout.viewport_height,
+        );
+    } else if content_browser_column_rect(&layout, 2).contains(mouse) {
+        game.content_browser.recipes_scroll = content_scrolled_offset(
+            game.content_browser.recipes_scroll,
+            wheel,
+            recipe_count,
+            layout.row_height,
+            layout.viewport_height,
+        );
+    } else if content_browser_column_rect(&layout, 3).contains(mouse) {
+        game.content_browser.planets_scroll = content_scrolled_offset(
+            game.content_browser.planets_scroll,
+            wheel,
+            planet_count,
+            layout.row_height,
+            layout.viewport_height,
+        );
+    }
+}
+
+fn handle_content_browser_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+
+    let layout = content_browser_layout();
+    let packs_rect = content_browser_column_rect(&layout, 0);
+    if !packs_rect.contains(mouse) {
+        return false;
+    }
+
+    let row = ((mouse.y - packs_rect.y + game.content_browser.packs_scroll) / layout.row_height)
+        .floor() as isize;
+    if row < 0 {
+        return false;
+    }
+
+    let row = row as usize;
+    if row == 0 {
+        game.content_browser.selected_pack_index = None;
+    } else if row - 1 < game.content_registry.packs.len() {
+        game.content_browser.selected_pack_index = Some(row - 1);
+    } else {
+        return false;
+    }
+
+    game.content_browser.items_scroll = 0.0;
+    game.content_browser.recipes_scroll = 0.0;
+    game.content_browser.planets_scroll = 0.0;
+    true
+}
+
+fn content_scrolled_offset(
+    current: f32,
+    wheel: f32,
+    row_count: usize,
+    row_height: f32,
+    viewport_height: f32,
+) -> f32 {
+    let max_scroll = max_scroll_offset(row_count, row_height, viewport_height);
+    (current - wheel * row_height * 2.0).clamp(0.0, max_scroll)
+}
+
+fn selected_content_pack_id(game: &GameState) -> Option<&str> {
+    game.content_browser
+        .selected_pack_index
+        .and_then(|index| game.content_registry.packs.get(index))
+        .map(|pack| pack.id.as_str())
+}
+
+fn content_id_belongs_to_pack(id: &str, pack_id: &str) -> bool {
+    id.split_once(':')
+        .is_some_and(|(id_pack, _)| id_pack == pack_id)
 }
 
 fn system_is_known(registry: &content::ContentRegistry, system_id: &str) -> bool {
@@ -8448,10 +8621,11 @@ fn draw_ship_upgrades_overlay(game: &GameState) {
 }
 
 fn draw_content_debug_overlay(game: &GameState) {
-    let width = (screen_width() - 48.0).min(1120.0);
-    let height = (screen_height() - 64.0).min(620.0);
-    let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5 + 10.0;
+    let layout = content_browser_layout();
+    let width = layout.width;
+    let height = layout.height;
+    let x = layout.x;
+    let y = layout.y;
     let registry = &game.content_registry;
 
     draw_rectangle(x, y, width, height, Color::from_rgba(6, 12, 18, 236));
@@ -8527,46 +8701,91 @@ fn draw_content_debug_overlay(game: &GameState) {
         );
     }
 
-    let column_gap = 18.0;
-    let column_width = (width - 48.0 - column_gap * 3.0) / 4.0;
-    let column_y = y + 110.0;
-    let row_height = 23.0;
-    let max_rows = ((height - 132.0) / row_height).floor().max(1.0) as usize;
-
-    draw_content_debug_column(
-        "Packs",
+    let selected_pack_id = selected_content_pack_id(game);
+    let filter_label = selected_pack_id
+        .map(|pack_id| format!("Showing pack: {pack_id}"))
+        .unwrap_or_else(|| "Showing all packs".to_string());
+    draw_text(
+        &fit_debug_text(&filter_label, width - 48.0, 15),
         x + 24.0,
-        column_y,
-        column_width,
-        row_height,
-        max_rows,
-        registry
-            .packs
-            .iter()
-            .map(|pack| format!("{} {}", pack.id, pack.version))
-            .collect::<Vec<_>>()
-            .as_slice(),
+        y + 108.0,
+        15.0,
+        Color::from_rgba(226, 190, 150, 235),
     );
 
-    let item_rows = registry
+    draw_content_pack_column(
+        game,
+        &layout,
+        x + 24.0,
+        layout.column_y,
+        layout.column_width,
+    );
+
+    let item_rows = filtered_content_item_rows(game, selected_pack_id);
+    draw_content_debug_column(ContentColumnRender {
+        title: "Items",
+        x: x + 24.0 + (layout.column_width + layout.column_gap),
+        y: layout.column_y,
+        width: layout.column_width,
+        row_height: layout.row_height,
+        viewport_height: layout.viewport_height,
+        scroll: game.content_browser.items_scroll,
+        rows: &item_rows,
+        selected_row: None,
+    });
+
+    let recipe_rows = filtered_content_recipe_rows(game, selected_pack_id);
+    draw_content_debug_column(ContentColumnRender {
+        title: "Recipes",
+        x: x + 24.0 + (layout.column_width + layout.column_gap) * 2.0,
+        y: layout.column_y,
+        width: layout.column_width,
+        row_height: layout.row_height,
+        viewport_height: layout.viewport_height,
+        scroll: game.content_browser.recipes_scroll,
+        rows: &recipe_rows,
+        selected_row: None,
+    });
+
+    let planet_rows = filtered_content_planet_rows(game, selected_pack_id);
+    draw_content_debug_column(ContentColumnRender {
+        title: "Planets",
+        x: x + 24.0 + (layout.column_width + layout.column_gap) * 3.0,
+        y: layout.column_y,
+        width: layout.column_width,
+        row_height: layout.row_height,
+        viewport_height: layout.viewport_height,
+        scroll: game.content_browser.planets_scroll,
+        rows: &planet_rows,
+        selected_row: None,
+    });
+}
+
+fn filtered_content_item_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
+    let registry = &game.content_registry;
+    registry
         .item_order
         .iter()
+        .filter(|item_id| {
+            selected_pack_id
+                .map(|pack_id| content_id_belongs_to_pack(item_id, pack_id))
+                .unwrap_or(true)
+        })
         .filter_map(|item_id| registry.items.get(item_id))
         .map(|item| format!("{}  {}", item.name, item.tier))
-        .collect::<Vec<_>>();
-    draw_content_debug_column(
-        "Items",
-        x + 24.0 + (column_width + column_gap),
-        column_y,
-        column_width,
-        row_height,
-        max_rows,
-        &item_rows,
-    );
+        .collect()
+}
 
-    let recipe_rows = registry
+fn filtered_content_recipe_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
+    let registry = &game.content_registry;
+    registry
         .recipe_order
         .iter()
+        .filter(|recipe_id| {
+            selected_pack_id
+                .map(|pack_id| content_id_belongs_to_pack(recipe_id, pack_id))
+                .unwrap_or(true)
+        })
         .filter_map(|recipe_id| registry.recipes.get(recipe_id))
         .map(|recipe| {
             let output_name = registry
@@ -8574,22 +8793,24 @@ fn draw_content_debug_overlay(game: &GameState) {
                 .get(&recipe.output.item)
                 .map(|item| item.name.as_str())
                 .unwrap_or(recipe.output.item.as_str());
-            format!("{} x{}", output_name, recipe.output.count)
+            format!(
+                "{} x{}  {}",
+                output_name, recipe.output.count, recipe.station
+            )
         })
-        .collect::<Vec<_>>();
-    draw_content_debug_column(
-        "Recipes",
-        x + 24.0 + (column_width + column_gap) * 2.0,
-        column_y,
-        column_width,
-        row_height,
-        max_rows,
-        &recipe_rows,
-    );
+        .collect()
+}
 
-    let planet_rows = registry
+fn filtered_content_planet_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
+    let registry = &game.content_registry;
+    registry
         .planet_order
         .iter()
+        .filter(|planet_id| {
+            selected_pack_id
+                .map(|pack_id| content_id_belongs_to_pack(planet_id, pack_id))
+                .unwrap_or(true)
+        })
         .filter_map(|planet_id| registry.planets.get(planet_id))
         .map(|planet| {
             format!(
@@ -8599,69 +8820,103 @@ fn draw_content_debug_overlay(game: &GameState) {
                 planet.mineables.len()
             )
         })
-        .collect::<Vec<_>>();
-    draw_content_debug_column(
-        "Planets",
-        x + 24.0 + (column_width + column_gap) * 3.0,
-        column_y,
-        column_width,
-        row_height,
-        max_rows,
-        &planet_rows,
-    );
+        .collect()
 }
 
-fn draw_content_debug_column(
-    title: &str,
+fn draw_content_pack_column(
+    game: &GameState,
+    layout: &ContentBrowserLayout,
     x: f32,
     y: f32,
     width: f32,
-    row_height: f32,
-    max_rows: usize,
-    rows: &[String],
 ) {
-    let title_color = Color::from_rgba(235, 242, 226, 255);
-    let header = Color::from_rgba(168, 204, 210, 255);
-    let text = Color::from_rgba(205, 226, 230, 245);
-    draw_text(
-        &format!("{title} ({})", rows.len()),
+    let rows = std::iter::once("All packs".to_string())
+        .chain(
+            game.content_registry
+                .packs
+                .iter()
+                .map(|pack| format!("{} {}", pack.id, pack.version)),
+        )
+        .collect::<Vec<_>>();
+    draw_content_debug_column(ContentColumnRender {
+        title: "Packs",
         x,
         y,
+        width,
+        row_height: layout.row_height,
+        viewport_height: layout.viewport_height,
+        scroll: game.content_browser.packs_scroll,
+        rows: &rows,
+        selected_row: game
+            .content_browser
+            .selected_pack_index
+            .map(|index| index + 1)
+            .or(Some(0)),
+    });
+}
+
+fn draw_content_debug_column(column: ContentColumnRender<'_>) {
+    let title_color = Color::from_rgba(235, 242, 226, 255);
+    let text = Color::from_rgba(205, 226, 230, 245);
+    let selected_text = Color::from_rgba(235, 242, 226, 255);
+    let scroll = column.scroll.clamp(
+        0.0,
+        max_scroll_offset(column.rows.len(), column.row_height, column.viewport_height),
+    );
+    let viewport_top = column.y + 18.0;
+    let viewport_bottom = viewport_top + column.viewport_height;
+    draw_text(
+        &format!("{} ({})", column.title, column.rows.len()),
+        column.x,
+        column.y,
         18.0,
         title_color,
     );
     draw_line(
-        x,
-        y + 12.0,
-        x + width,
-        y + 12.0,
+        column.x,
+        column.y + 12.0,
+        column.x + column.width,
+        column.y + 12.0,
         1.0,
         Color::from_rgba(96, 137, 150, 205),
     );
 
-    for (index, row) in rows.iter().take(max_rows).enumerate() {
-        let row_y = y + 38.0 + index as f32 * row_height;
-        if index % 2 == 0 {
+    for (index, row) in column.rows.iter().enumerate() {
+        let row_y =
+            viewport_top + column.row_height - 5.0 + index as f32 * column.row_height - scroll;
+        if row_y - 17.0 < viewport_top || row_y + 6.0 > viewport_bottom {
+            continue;
+        }
+        let selected = column.selected_row == Some(index);
+        if index % 2 == 0 || selected {
             draw_rectangle(
-                x,
+                column.x,
                 row_y - 17.0,
-                width,
-                row_height,
-                Color::from_rgba(10, 18, 24, 94),
+                column.width,
+                column.row_height,
+                if selected {
+                    Color::from_rgba(24, 58, 66, 215)
+                } else {
+                    Color::from_rgba(10, 18, 24, 94)
+                },
             );
         }
-        draw_text(&fit_debug_text(row, width, 15), x + 6.0, row_y, 15.0, text);
-    }
-
-    if rows.len() > max_rows {
         draw_text(
-            &format!("+{} more", rows.len() - max_rows),
-            x + 6.0,
-            y + 38.0 + max_rows as f32 * row_height,
+            &fit_debug_text(row, column.width - 10.0, 15),
+            column.x + 6.0,
+            row_y,
             15.0,
-            header,
+            if selected { selected_text } else { text },
         );
     }
+    draw_scrollbar(
+        column.x + column.width - 4.0,
+        viewport_top,
+        column.viewport_height,
+        column.rows.len(),
+        column.row_height,
+        scroll,
+    );
 }
 
 fn fit_debug_text(text: &str, width: f32, font_size: u16) -> String {
@@ -11964,6 +12219,7 @@ mod tests {
             skills_open: false,
             upgrades_open: false,
             content_open: false,
+            content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
             starmap_filter: StarmapFilter::All,

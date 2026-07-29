@@ -320,9 +320,31 @@ struct PackManifest {
     version: String,
     description: Option<String>,
     #[serde(default)]
-    depends_on: Vec<String>,
+    depends_on: Vec<PackDependencyFileDef>,
     #[serde(default)]
-    optional_depends_on: Vec<String>,
+    optional_depends_on: Vec<PackDependencyFileDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum PackDependencyFileDef {
+    Id(String),
+    Detailed { id: String, version: Option<String> },
+}
+
+impl PackDependencyFileDef {
+    fn id(&self) -> &str {
+        match self {
+            Self::Id(id) | Self::Detailed { id, .. } => id,
+        }
+    }
+
+    fn version(&self) -> Option<&str> {
+        match self {
+            Self::Id(_) => None,
+            Self::Detailed { version, .. } => version.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -664,17 +686,20 @@ struct RawPack {
 
 pub fn load_content_packs(root: &Path) -> Result<ContentRegistry, Vec<String>> {
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
     let raw_packs = discover_packs(root, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
 
+    let raw_packs = select_loadable_packs(raw_packs, &mut warnings);
     let ordered_packs = sort_packs(raw_packs, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
 
     let mut registry = ContentRegistry::default();
+    registry.warnings.extend(warnings);
     for raw_pack in ordered_packs {
         load_pack(raw_pack, &mut registry, &mut errors);
     }
@@ -725,11 +750,69 @@ fn discover_packs(root: &Path, errors: &mut Vec<String>) -> Vec<RawPack> {
         if manifest.version.trim().is_empty() {
             errors.push(format!("Pack `{}` has an empty version", manifest.id));
         }
+        validate_pack_dependency_declarations(&manifest, errors);
 
         packs.push(RawPack { manifest, path });
     }
 
     packs
+}
+
+fn select_loadable_packs(raw_packs: Vec<RawPack>, warnings: &mut Vec<String>) -> Vec<RawPack> {
+    let versions_by_id = raw_packs
+        .iter()
+        .map(|pack| (pack.manifest.id.clone(), pack.manifest.version.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut loadable_ids = versions_by_id.keys().cloned().collect::<HashSet<_>>();
+
+    loop {
+        let mut changed = false;
+        for pack in &raw_packs {
+            if !loadable_ids.contains(&pack.manifest.id) {
+                continue;
+            }
+            for dependency in &pack.manifest.optional_depends_on {
+                let dependency_id = dependency.id();
+                let Some(installed_version) = versions_by_id.get(dependency_id) else {
+                    warnings.push(format!(
+                        "Skipping pack `{}` because optional dependency `{dependency_id}` is not installed",
+                        pack.manifest.id
+                    ));
+                    loadable_ids.remove(&pack.manifest.id);
+                    changed = true;
+                    break;
+                };
+                if !loadable_ids.contains(dependency_id) {
+                    warnings.push(format!(
+                        "Skipping pack `{}` because optional dependency `{dependency_id}` is not loaded",
+                        pack.manifest.id
+                    ));
+                    loadable_ids.remove(&pack.manifest.id);
+                    changed = true;
+                    break;
+                }
+                if let Some(required_version) = dependency.version() {
+                    if installed_version != required_version {
+                        warnings.push(format!(
+                            "Skipping pack `{}` because optional dependency `{dependency_id}` requires version `{required_version}` but installed version is `{installed_version}`",
+                            pack.manifest.id
+                        ));
+                        loadable_ids.remove(&pack.manifest.id);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    raw_packs
+        .into_iter()
+        .filter(|pack| loadable_ids.contains(&pack.manifest.id))
+        .collect()
 }
 
 fn sort_packs(raw_packs: Vec<RawPack>, errors: &mut Vec<String>) -> Vec<RawPack> {
@@ -779,15 +862,30 @@ fn visit_pack(
         return;
     };
 
-    for dependency in &pack.manifest.depends_on {
-        if !by_id.contains_key(dependency) {
+    for dependency in pack
+        .manifest
+        .depends_on
+        .iter()
+        .chain(pack.manifest.optional_depends_on.iter())
+    {
+        let dependency_id = dependency.id();
+        let Some(dependency_pack) = by_id.get(dependency_id) else {
             errors.push(format!(
-                "Pack `{}` depends on missing pack `{dependency}`",
+                "Pack `{}` depends on missing pack `{dependency_id}`",
                 pack.manifest.id
             ));
             continue;
+        };
+        if let Some(required_version) = dependency.version() {
+            if dependency_pack.manifest.version != required_version {
+                errors.push(format!(
+                    "Pack `{}` depends on `{dependency_id}` version `{required_version}` but installed version is `{}`",
+                    pack.manifest.id, dependency_pack.manifest.version
+                ));
+                continue;
+            }
         }
-        visit_pack(dependency, by_id, visiting, visited, ordered, errors);
+        visit_pack(dependency_id, by_id, visiting, visited, ordered, errors);
     }
 
     visiting.remove(id);
@@ -805,8 +903,18 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         version: raw_pack.manifest.version,
         description: raw_pack.manifest.description,
         path: raw_pack.path.clone(),
-        depends_on: raw_pack.manifest.depends_on,
-        optional_depends_on: raw_pack.manifest.optional_depends_on,
+        depends_on: raw_pack
+            .manifest
+            .depends_on
+            .into_iter()
+            .map(|dependency| dependency.id().to_string())
+            .collect(),
+        optional_depends_on: raw_pack
+            .manifest
+            .optional_depends_on
+            .into_iter()
+            .map(|dependency| dependency.id().to_string())
+            .collect(),
         options,
     });
 
@@ -1951,6 +2059,34 @@ fn collect_duplicate_recipe_output_warnings(registry: &mut ContentRegistry) {
     }
 }
 
+fn validate_pack_dependency_declarations(manifest: &PackManifest, errors: &mut Vec<String>) {
+    for dependency in manifest
+        .depends_on
+        .iter()
+        .chain(manifest.optional_depends_on.iter())
+    {
+        let dependency_id = dependency.id();
+        if !valid_pack_id(dependency_id) {
+            errors.push(format!(
+                "Pack `{}` has invalid dependency id `{dependency_id}`",
+                manifest.id
+            ));
+        }
+        if dependency_id == manifest.id {
+            errors.push(format!("Pack `{}` cannot depend on itself", manifest.id));
+        }
+        if dependency
+            .version()
+            .is_some_and(|version| version.trim().is_empty())
+        {
+            errors.push(format!(
+                "Pack `{}` dependency `{dependency_id}` has an empty version",
+                manifest.id
+            ));
+        }
+    }
+}
+
 fn validate_reference(
     exists: bool,
     source_kind: &str,
@@ -2391,6 +2527,109 @@ mod tests {
                 && warning.contains("core:uranium_reactor_pellet")
                 && warning.contains("core:thorium_reactor_pellet")
         }));
+    }
+
+    #[test]
+    fn loads_optional_compatibility_pack_when_dependencies_match() {
+        let root = make_temp_content_root("compat-enabled");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.1.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:addon_item",
+        );
+
+        let registry = load_content_packs(&root).expect("compatibility pack should load");
+        assert!(registry.packs.iter().any(|pack| pack.id == "compat-pack"));
+        assert!(registry.items.contains_key("compat-pack:hybrid_item"));
+        assert!(registry.recipes.contains_key("compat-pack:hybrid_item"));
+        assert!(registry.warnings.is_empty());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skips_optional_compatibility_pack_when_dependency_is_missing() {
+        let root = make_temp_content_root("compat-missing");
+        write_minimal_core_pack(&root);
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:addon_item",
+        );
+
+        let registry =
+            load_content_packs(&root).expect("missing optional dependency should not fail startup");
+        assert!(!registry.packs.iter().any(|pack| pack.id == "compat-pack"));
+        assert!(!registry.items.contains_key("compat-pack:hybrid_item"));
+        assert!(!registry.recipes.contains_key("compat-pack:hybrid_item"));
+        assert!(registry.warnings.iter().any(|warning| {
+            warning == "Skipping pack `compat-pack` because optional dependency `addon-pack` is not installed"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skips_optional_compatibility_pack_when_dependency_version_mismatches() {
+        let root = make_temp_content_root("compat-version");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.2.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:addon_item",
+        );
+
+        let registry =
+            load_content_packs(&root).expect("optional version mismatch should not fail startup");
+        assert!(!registry.packs.iter().any(|pack| pack.id == "compat-pack"));
+        assert!(registry.warnings.iter().any(|warning| {
+            warning == "Skipping pack `compat-pack` because optional dependency `addon-pack` requires version `0.1.0` but installed version is `0.2.0`"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn validates_enabled_compatibility_pack_references() {
+        let root = make_temp_content_root("compat-invalid");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.1.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:missing_item",
+        );
+
+        let errors =
+            load_content_packs(&root).expect_err("enabled invalid compat pack should fail");
+        assert!(errors.iter().any(|error| {
+            error == "Recipe `compat-pack:hybrid_item` uses missing item `addon-pack:missing_item`"
+        }));
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -3009,5 +3248,119 @@ choices = ["standard"]
             .expect("system time should be after Unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("some-frontier-{label}-{nanos}"))
+    }
+
+    fn write_minimal_core_pack(root: &Path) {
+        let pack_path = root.join("core");
+        fs::create_dir_all(&pack_path).expect("core pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            r#"
+id = "core"
+name = "Core"
+version = "0.1.0"
+"#,
+        )
+        .expect("core manifest should be written");
+        fs::write(
+            pack_path.join("items.toml"),
+            r#"
+[[items]]
+id = "core_item"
+name = "Core item"
+tier = "component"
+xp_value = 1.0
+unit_mass = 1.0
+"#,
+        )
+        .expect("core items should be written");
+        fs::write(
+            pack_path.join("stations.toml"),
+            r#"
+[[stations]]
+id = "crafting"
+name = "Crafting"
+skill = "crafting"
+base_seconds = 1.0
+"#,
+        )
+        .expect("core stations should be written");
+    }
+
+    fn write_addon_pack(root: &Path, version: &str, item_id: &str) {
+        let pack_path = root.join("addon-pack");
+        fs::create_dir_all(&pack_path).expect("addon pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            format!(
+                r#"
+id = "addon-pack"
+name = "Addon Pack"
+version = "{version}"
+depends_on = ["core"]
+"#
+            ),
+        )
+        .expect("addon manifest should be written");
+        fs::write(
+            pack_path.join("items.toml"),
+            format!(
+                r#"
+[[items]]
+id = "{item_id}"
+name = "Addon item"
+tier = "component"
+xp_value = 1.0
+unit_mass = 1.0
+"#
+            ),
+        )
+        .expect("addon items should be written");
+    }
+
+    fn write_compat_pack(root: &Path, dependencies: &str, addon_item: &str) {
+        let pack_path = root.join("compat-pack");
+        fs::create_dir_all(&pack_path).expect("compat pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            format!(
+                r#"
+id = "compat-pack"
+name = "Compatibility Pack"
+version = "0.1.0"
+{dependencies}
+"#
+            ),
+        )
+        .expect("compat manifest should be written");
+        fs::write(
+            pack_path.join("items.toml"),
+            r#"
+[[items]]
+id = "hybrid_item"
+name = "Hybrid item"
+tier = "component"
+xp_value = 1.0
+unit_mass = 1.0
+"#,
+        )
+        .expect("compat items should be written");
+        fs::write(
+            pack_path.join("recipes.toml"),
+            format!(
+                r#"
+[[recipes]]
+id = "hybrid_item"
+station = "core:crafting"
+output = {{ item = "hybrid_item", count = 1 }}
+ingredients = [
+  {{ item = "core:core_item", count = 1 }},
+  {{ item = "{addon_item}", count = 1 }},
+]
+purpose = "Compatibility recipe."
+"#
+            ),
+        )
+        .expect("compat recipes should be written");
     }
 }

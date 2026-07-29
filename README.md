@@ -112,7 +112,9 @@ engines, thrusters, energy, and shields.
 ## Content Debugging
 
 Press `C` to open a compact content browser showing loaded packs, items,
-recipes, systems, stars, planets, and upgrades.
+recipes, systems, stars, planets, and upgrades. The pack list is selectable:
+choose a pack to filter the item, recipe, and planet columns to that pack, and
+use the mouse wheel over a column to scroll longer lists.
 
 ## Startup Transition
 
