@@ -270,6 +270,20 @@ enum TitleAction {
     QuitDesktop,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EscapeDialogAction {
+    Resume,
+    SaveNow,
+    SaveToTitle,
+    QuitDesktop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EscapeDialogResult {
+    Continue,
+    QuitDesktop,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct AppSettings {
     #[serde(default = "default_ui_scale")]
@@ -4512,6 +4526,11 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_window_size_memory(game, dt);
     update_save_state(game, dt);
     clamp_inventory_scrolls(game);
+    if game.escape_dialog_open {
+        handle_escape_dialog_input(game);
+        return;
+    }
+
     update_scene_transition(game, dt);
     update_pending_warp(game, dt);
     advance_world_time_and_planets(game, dt);
@@ -4536,11 +4555,6 @@ fn update_game(game: &mut GameState, dt: f32) {
                 TransitionAction::SwitchSystem(target_system_id),
             );
         }
-    }
-
-    if game.escape_dialog_open {
-        handle_escape_dialog_input(game);
-        return;
     }
 
     if is_key_pressed(KeyCode::M) {
@@ -4733,44 +4747,59 @@ fn update_game(game: &mut GameState, dt: f32) {
 }
 
 fn handle_escape_pressed(game: &mut GameState) {
+    if close_topmost_gameplay_overlay(game) {
+        return;
+    }
+
+    game.escape_dialog_open = true;
+}
+
+fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
     if game.content_open {
         game.content_open = false;
+        true
     } else if game.upgrades_open {
         game.upgrades_open = false;
+        true
     } else if game.skills_open {
         game.skills_open = false;
+        true
     } else if game.map_open {
         game.map_open = false;
+        true
     } else if game.inventory_open {
         game.inventory_open = false;
         game.selected_planet = None;
         game.selected_station = None;
         game.selected_station_service = None;
+        true
     } else {
-        game.escape_dialog_open = true;
+        false
     }
 }
 
 fn handle_escape_dialog_input(game: &mut GameState) {
     if is_key_pressed(KeyCode::Escape) {
-        game.escape_dialog_open = false;
+        apply_escape_dialog_action(game, EscapeDialogAction::Resume);
         return;
     }
 
     if is_key_pressed(KeyCode::S) {
-        save_game_now(game, SaveFeedback::Manual);
+        apply_escape_dialog_action(game, EscapeDialogAction::SaveNow);
         return;
     }
 
     if is_key_pressed(KeyCode::T) {
-        save_game_now(game, SaveFeedback::Manual);
-        game.quit_to_title_requested = true;
+        apply_escape_dialog_action(game, EscapeDialogAction::SaveToTitle);
         return;
     }
 
     if is_key_pressed(KeyCode::Q) {
-        save_game_now(game, SaveFeedback::Manual);
-        macroquad::miniquad::window::quit();
+        if apply_escape_dialog_action(game, EscapeDialogAction::QuitDesktop)
+            == EscapeDialogResult::QuitDesktop
+        {
+            macroquad::miniquad::window::quit();
+        }
         return;
     }
 
@@ -4780,15 +4809,42 @@ fn handle_escape_dialog_input(game: &mut GameState) {
 
     let mouse = vec2(mouse_position().0, mouse_position().1);
     if escape_dialog_resume_button_rect().contains(mouse) {
-        game.escape_dialog_open = false;
+        apply_escape_dialog_action(game, EscapeDialogAction::Resume);
     } else if escape_dialog_save_button_rect().contains(mouse) {
-        save_game_now(game, SaveFeedback::Manual);
+        apply_escape_dialog_action(game, EscapeDialogAction::SaveNow);
     } else if escape_dialog_title_button_rect().contains(mouse) {
-        save_game_now(game, SaveFeedback::Manual);
-        game.quit_to_title_requested = true;
-    } else if escape_dialog_quit_button_rect().contains(mouse) {
-        save_game_now(game, SaveFeedback::Manual);
+        apply_escape_dialog_action(game, EscapeDialogAction::SaveToTitle);
+    } else if escape_dialog_quit_button_rect().contains(mouse)
+        && apply_escape_dialog_action(game, EscapeDialogAction::QuitDesktop)
+            == EscapeDialogResult::QuitDesktop
+    {
         macroquad::miniquad::window::quit();
+    }
+}
+
+fn apply_escape_dialog_action(
+    game: &mut GameState,
+    action: EscapeDialogAction,
+) -> EscapeDialogResult {
+    match action {
+        EscapeDialogAction::Resume => {
+            game.escape_dialog_open = false;
+            EscapeDialogResult::Continue
+        }
+        EscapeDialogAction::SaveNow => {
+            save_game_now(game, SaveFeedback::Manual);
+            EscapeDialogResult::Continue
+        }
+        EscapeDialogAction::SaveToTitle => {
+            save_game_now(game, SaveFeedback::Manual);
+            game.escape_dialog_open = false;
+            game.quit_to_title_requested = true;
+            EscapeDialogResult::Continue
+        }
+        EscapeDialogAction::QuitDesktop => {
+            save_game_now(game, SaveFeedback::Manual);
+            EscapeDialogResult::QuitDesktop
+        }
     }
 }
 
@@ -7578,9 +7634,9 @@ fn draw_inventory_hint(
     } else if skills_open {
         "K close skills"
     } else if inventory_open {
-        "E/Tab close inventory   M map   K skills   C content   T transition"
+        "E/Tab close inventory   M map   K skills   C content   Esc close"
     } else {
-        "E/Tab inventory   M map   K skills   C content   T transition"
+        "E/Tab inventory   M map   K skills   C content   Esc menu"
     }
     .to_string();
     if save_visible {
@@ -7666,8 +7722,8 @@ fn draw_save_confirmation(timer: f32, manual: bool) {
 }
 
 fn escape_dialog_rect() -> Rect {
-    let width = 548.0;
-    let height = 224.0;
+    let width = 660.0;
+    let height = 190.0;
     Rect::new(
         (screen_width() - width) * 0.5,
         (screen_height() - height) * 0.5,
@@ -7683,17 +7739,17 @@ fn escape_dialog_resume_button_rect() -> Rect {
 
 fn escape_dialog_save_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 146.0, panel.y + panel.h - 58.0, 112.0, 36.0)
+    Rect::new(panel.x + 150.0, panel.y + panel.h - 58.0, 120.0, 36.0)
 }
 
 fn escape_dialog_title_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 270.0, panel.y + panel.h - 58.0, 126.0, 36.0)
+    Rect::new(panel.x + 286.0, panel.y + panel.h - 58.0, 132.0, 36.0)
 }
 
 fn escape_dialog_quit_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 408.0, panel.y + panel.h - 58.0, 118.0, 36.0)
+    Rect::new(panel.x + 434.0, panel.y + panel.h - 58.0, 142.0, 36.0)
 }
 
 fn draw_escape_dialog(game: &GameState) {
@@ -7738,18 +7794,13 @@ fn draw_escape_dialog(game: &GameState) {
         18.0,
         if game.save_dirty { warning } else { detail },
     );
-    draw_text(
-        "Esc resume   S save now   T save to title   Q save and quit",
-        panel.x + 22.0,
-        panel.y + 104.0,
-        17.0,
-        detail,
-    );
 
     draw_escape_dialog_button(escape_dialog_resume_button_rect(), "Resume", accent);
     draw_escape_dialog_button(escape_dialog_save_button_rect(), "Save Now", accent);
-    draw_escape_dialog_button(escape_dialog_title_button_rect(), "Title", accent);
-    draw_escape_dialog_button(escape_dialog_quit_button_rect(), "Quit", warning);
+    draw_escape_dialog_button(escape_dialog_title_button_rect(), "Title Menu", accent);
+    draw_escape_dialog_button(escape_dialog_quit_button_rect(), "Quit Desktop", warning);
+
+    draw_escape_dialog_tooltip();
 }
 
 fn draw_escape_dialog_button(rect: Rect, label: &str, color: Color) {
@@ -7775,6 +7826,65 @@ fn draw_escape_dialog_button(rect: Rect, label: &str, color: Color) {
         17.0,
         color,
     );
+}
+
+fn draw_escape_dialog_tooltip() {
+    let mouse = mouse_vec2();
+    let tooltip = if escape_dialog_resume_button_rect().contains(mouse) {
+        Some((
+            "Resume",
+            "Esc",
+            "Close the pause menu and return to gameplay.",
+        ))
+    } else if escape_dialog_save_button_rect().contains(mouse) {
+        Some((
+            "Save Now",
+            "S",
+            "Write the current run to disk without leaving gameplay.",
+        ))
+    } else if escape_dialog_title_button_rect().contains(mouse) {
+        Some((
+            "Title Menu",
+            "T",
+            "Save the current run, leave gameplay, and return to the title menu.",
+        ))
+    } else if escape_dialog_quit_button_rect().contains(mouse) {
+        Some((
+            "Quit Desktop",
+            "Q",
+            "Save the current run, then close Some Frontier.",
+        ))
+    } else {
+        None
+    };
+
+    let Some((title, shortcut, detail)) = tooltip else {
+        return;
+    };
+    draw_ui_tooltip(title, shortcut, detail, mouse);
+}
+
+fn draw_ui_tooltip(title: &str, shortcut: &str, detail: &str, mouse: Vec2) {
+    let width = 330.0;
+    let height = 118.0;
+    let x = (mouse.x + 18.0)
+        .min(screen_width() - width - 18.0)
+        .max(18.0);
+    let y = (mouse.y + 18.0)
+        .min(screen_height() - height - 18.0)
+        .max(18.0);
+    let panel = Color::from_rgba(2, 6, 10, 255);
+    let border = Color::from_rgba(112, 151, 163, 170);
+    let label = Color::from_rgba(126, 156, 164, 220);
+    let text = Color::from_rgba(205, 226, 230, 255);
+    let active = Color::from_rgba(150, 221, 226, 255);
+
+    draw_rectangle(x, y, width, height, panel);
+    draw_rectangle_lines(x, y, width, height, 1.0, border);
+    draw_text(title, x + 14.0, y + 28.0, 21.0, text);
+    draw_text("Shortcut", x + 14.0, y + 54.0, 15.0, label);
+    draw_text(shortcut, x + 92.0, y + 54.0, 17.0, active);
+    draw_wrapped_text(detail, x + 14.0, y + 80.0, width - 28.0, 16, text);
 }
 
 fn draw_starmap_overlay(game: &GameState) {
@@ -11042,7 +11152,19 @@ fn draw_interaction_prompt(game: &GameState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process,
+    };
+
+    fn test_save_path(name: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "some-frontier-{name}-{}-{}.toml",
+            process::id(),
+            current_unix_seconds()
+        ))
+    }
 
     #[test]
     fn title_seed_parser_accepts_decimal_u64_values() {
@@ -11824,6 +11946,51 @@ mod tests {
     }
 
     #[test]
+    fn escape_closes_only_the_topmost_gameplay_overlay() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.inventory_open = true;
+        game.selected_planet = Some(0);
+        game.selected_station = Some(0);
+        game.selected_station_service = Some(0);
+        game.map_open = true;
+        game.skills_open = true;
+        game.upgrades_open = true;
+        game.content_open = true;
+
+        handle_escape_pressed(&mut game);
+        assert!(!game.content_open);
+        assert!(game.upgrades_open);
+        assert!(!game.escape_dialog_open);
+
+        handle_escape_pressed(&mut game);
+        assert!(!game.upgrades_open);
+        assert!(game.skills_open);
+        assert!(!game.escape_dialog_open);
+
+        handle_escape_pressed(&mut game);
+        assert!(!game.skills_open);
+        assert!(game.map_open);
+        assert!(!game.escape_dialog_open);
+
+        handle_escape_pressed(&mut game);
+        assert!(!game.map_open);
+        assert!(game.inventory_open);
+        assert!(!game.escape_dialog_open);
+
+        handle_escape_pressed(&mut game);
+        assert!(!game.inventory_open);
+        assert_eq!(game.selected_planet, None);
+        assert_eq!(game.selected_station, None);
+        assert_eq!(game.selected_station_service, None);
+        assert!(!game.escape_dialog_open);
+
+        handle_escape_pressed(&mut game);
+        assert!(game.escape_dialog_open);
+    }
+
+    #[test]
     fn escape_opens_dialog_when_no_menu_is_active() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -11840,6 +12007,83 @@ mod tests {
         handle_escape_pressed(&mut game);
 
         assert!(game.escape_dialog_open);
+    }
+
+    #[test]
+    fn escape_dialog_resume_closes_dialog() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.escape_dialog_open = true;
+
+        let result = apply_escape_dialog_action(&mut game, EscapeDialogAction::Resume);
+
+        assert_eq!(result, EscapeDialogResult::Continue);
+        assert!(!game.escape_dialog_open);
+        assert!(!game.quit_to_title_requested);
+    }
+
+    #[test]
+    fn escape_dialog_save_now_preserves_dialog_and_manual_save_feedback() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.save_path = test_save_path("escape-save-now");
+        game.escape_dialog_open = true;
+        game.save_dirty = true;
+
+        let result = apply_escape_dialog_action(&mut game, EscapeDialogAction::SaveNow);
+
+        assert_eq!(result, EscapeDialogResult::Continue);
+        assert!(game.escape_dialog_open);
+        assert!(!game.quit_to_title_requested);
+        assert!(!game.save_dirty);
+        assert!(game.save_status_manual);
+        assert!(game.save_status_timer > 0.0);
+        assert!(game.save_path.exists());
+
+        let _ = fs::remove_file(&game.save_path);
+    }
+
+    #[test]
+    fn escape_dialog_save_to_title_saves_and_requests_title_menu() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.save_path = test_save_path("escape-save-to-title");
+        game.escape_dialog_open = true;
+        game.save_dirty = true;
+
+        let result = apply_escape_dialog_action(&mut game, EscapeDialogAction::SaveToTitle);
+
+        assert_eq!(result, EscapeDialogResult::Continue);
+        assert!(!game.escape_dialog_open);
+        assert!(game.quit_to_title_requested);
+        assert!(!game.save_dirty);
+        assert!(game.save_status_manual);
+        assert!(game.save_path.exists());
+
+        let _ = fs::remove_file(&game.save_path);
+    }
+
+    #[test]
+    fn escape_dialog_quit_desktop_saves_before_quit_request() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.save_path = test_save_path("escape-quit-desktop");
+        game.escape_dialog_open = true;
+        game.save_dirty = true;
+
+        let result = apply_escape_dialog_action(&mut game, EscapeDialogAction::QuitDesktop);
+
+        assert_eq!(result, EscapeDialogResult::QuitDesktop);
+        assert!(!game.quit_to_title_requested);
+        assert!(!game.save_dirty);
+        assert!(game.save_status_manual);
+        assert!(game.save_path.exists());
+
+        let _ = fs::remove_file(&game.save_path);
     }
 
     #[test]
