@@ -163,8 +163,13 @@ NPC ships appear as moving contacts in local space. They have names, roles,
 archetypes, cargo defaults, stats, loadouts, faction ownership, and behavior
 modes such as patrol, traffic, trade-route travel, follow, flee, or hostile
 intercept. These behaviors make local space feel active while keeping ship
-interaction lightweight; NPC ships do not yet hail, dock, trade, or fire as full
-autonomous combatants.
+interaction lightweight.
+
+Fly near an NPC ship and press `Space`, or click a visible NPC ship, to inspect
+the contact. Nearby contacts can be identified from the interaction panel,
+revealing faction, disposition, systems, cargo summary, and supported hooks such
+as hail, dock, trade, or conflict. Some hooks are visible before their full
+mechanics exist, so unavailable rows describe the current blocker.
 
 Factions and societies own systems, planets, stations, and NPC ships. The UI can
 show faction names and default disposition such as friendly, neutral, hostile,

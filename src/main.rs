@@ -30,6 +30,7 @@ const NPC_FOLLOW_DISTANCE: f32 = 420.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
 const NPC_ROUTE_RADIUS: f32 = 520.0;
 const NPC_ROUTE_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+const NPC_INTERACTION_PADDING: f32 = 126.0;
 const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
 const STATION_INTERACTION_PADDING: f32 = 86.0;
@@ -162,6 +163,7 @@ struct GameState {
     purchased_recipe_unlocks: Vec<String>,
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
+    selected_npc_ship: Option<usize>,
     selected_station_service: Option<usize>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
@@ -480,6 +482,7 @@ struct NpcShip {
     behavior: NpcBehaviorMode,
     route_index: usize,
     anchor: Vec2,
+    identified: bool,
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
     hull: ShipResource,
@@ -522,6 +525,40 @@ impl NpcBehaviorMode {
             Self::HostileIntercept => NPC_HOSTILE_SPEED,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NpcInteractionAction {
+    Identify,
+    Hail,
+    Dock,
+    Trade,
+    Conflict,
+}
+
+impl NpcInteractionAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Identify => "Identify",
+            Self::Hail => "Hail",
+            Self::Dock => "Dock",
+            Self::Trade => "Trade",
+            Self::Conflict => "Conflict",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NpcInteractionState {
+    Available,
+    Complete,
+    Unavailable,
+}
+
+struct NpcInteractionRow {
+    action: NpcInteractionAction,
+    state: NpcInteractionState,
+    status: &'static str,
 }
 
 struct StationService {
@@ -925,6 +962,7 @@ impl GameState {
             purchased_recipe_unlocks,
             selected_planet: None,
             selected_station: None,
+            selected_npc_ship: None,
             selected_station_service: None,
             destination_planet: Some(1),
             orbiting_planet: None,
@@ -1497,6 +1535,7 @@ async fn make_npc_ships(
             behavior,
             route_index: npc_initial_route_index(&npc_ship_def.id),
             anchor: position,
+            identified: false,
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
             hull: ShipResource::full(npc_ship_def.hull_capacity),
@@ -5182,6 +5221,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.content_open = false;
             game.selected_planet = None;
             game.selected_station = None;
+            game.selected_npc_ship = None;
             game.selected_station_service = None;
         }
     }
@@ -5204,6 +5244,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         game.content_open = false;
         game.selected_planet = None;
         game.selected_station = None;
+        game.selected_npc_ship = None;
         game.selected_station_service = None;
         game.inventory_open = !game.inventory_open;
     }
@@ -5216,6 +5257,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.content_open = false;
             game.selected_planet = None;
             game.selected_station = None;
+            game.selected_npc_ship = None;
             game.selected_station_service = None;
         }
     }
@@ -5228,6 +5270,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.upgrades_open = false;
             game.selected_planet = None;
             game.selected_station = None;
+            game.selected_npc_ship = None;
             game.selected_station_service = None;
         }
     }
@@ -5247,7 +5290,11 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.content_open
     {
         select_nearby_destination(game);
-        if game.selected_planet.is_some() || game.selected_station.is_some() {
+        identify_selected_npc_ship(game);
+        if game.selected_planet.is_some()
+            || game.selected_station.is_some()
+            || game.selected_npc_ship.is_some()
+        {
             game.inventory_open = true;
         }
     }
@@ -5312,6 +5359,8 @@ fn update_game(game: &mut GameState, dt: f32) {
                 || handle_mining_table_input(game, planet_index, mouse, wheel);
         } else if let Some(station_index) = game.selected_station {
             click_handled = handle_station_service_input(game, station_index, mouse);
+        } else if let Some(npc_ship_index) = game.selected_npc_ship {
+            click_handled = handle_npc_ship_interaction_input(game, npc_ship_index, mouse);
         } else {
             if handle_ship_shield_slot_input(game, mouse)
                 || handle_ship_weapon_slot_input(game, mouse)
@@ -5340,6 +5389,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             set_destination_planet(game, Some(planet_index));
             game.selected_planet = None;
             game.selected_station = None;
+            game.selected_npc_ship = None;
             game.selected_station_service = None;
             click_handled = true;
         }
@@ -5354,7 +5404,11 @@ fn update_game(game: &mut GameState, dt: f32) {
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         select_clicked_destination(game, mouse);
-        if game.selected_planet.is_some() || game.selected_station.is_some() {
+        identify_selected_npc_ship(game);
+        if game.selected_planet.is_some()
+            || game.selected_station.is_some()
+            || game.selected_npc_ship.is_some()
+        {
             game.inventory_open = true;
         }
     }
@@ -5395,6 +5449,7 @@ fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
         game.inventory_open = false;
         game.selected_planet = None;
         game.selected_station = None;
+        game.selected_npc_ship = None;
         game.selected_station_service = None;
         true
     } else {
@@ -5843,6 +5898,7 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.current_system_id = target_system_id.to_string();
     game.selected_planet = None;
     game.selected_station = None;
+    game.selected_npc_ship = None;
     game.selected_station_service = None;
     game.orbiting_planet = None;
     game.destination_planet = destination_planet_for_system(
@@ -5863,6 +5919,7 @@ fn set_destination_planet(game: &mut GameState, destination_planet: Option<usize
     game.destination_planet =
         destination_planet.filter(|index| planet_in_active_system(game, *index));
     game.selected_station = None;
+    game.selected_npc_ship = None;
     game.selected_station_service = None;
     remember_current_system_destination(game);
 }
@@ -5871,6 +5928,11 @@ fn select_nearby_destination(game: &mut GameState) {
     game.selected_planet = ship_over_planet_index(game);
     game.selected_station = if game.selected_planet.is_none() {
         ship_over_station_index(game)
+    } else {
+        None
+    };
+    game.selected_npc_ship = if game.selected_planet.is_none() && game.selected_station.is_none() {
+        ship_over_npc_ship_index(game)
     } else {
         None
     };
@@ -5896,7 +5958,34 @@ fn select_clicked_destination(game: &mut GameState, mouse: Vec2) {
     } else {
         None
     };
+    game.selected_npc_ship = if game.selected_planet.is_none() && game.selected_station.is_none() {
+        clicked_npc_ship_index(
+            mouse,
+            &game.ship,
+            &game.npc_ships,
+            &game.current_system_id,
+            game.camera_zoom,
+        )
+    } else {
+        None
+    };
     game.selected_station_service = None;
+}
+
+fn identify_selected_npc_ship(game: &mut GameState) -> bool {
+    let Some(npc_ship_index) = game.selected_npc_ship else {
+        return false;
+    };
+    let Some(npc_ship) = game.npc_ships.get_mut(npc_ship_index) else {
+        return false;
+    };
+    if !npc_ship_is_in_system(npc_ship, &game.current_system_id)
+        || !npc_ship_in_interaction_range(&game.ship, npc_ship)
+    {
+        return false;
+    }
+    npc_ship.identified = true;
+    true
 }
 
 fn remember_current_system_destination(game: &mut GameState) {
@@ -6344,6 +6433,148 @@ fn handle_station_service_input(game: &mut GameState, station_index: usize, mous
     select_station_service(game, station_index, service_index)
 }
 
+fn handle_npc_ship_interaction_input(
+    game: &mut GameState,
+    npc_ship_index: usize,
+    mouse: Vec2,
+) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+    let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
+        return false;
+    };
+    if !npc_ship_is_in_system(npc_ship, &game.current_system_id) {
+        return false;
+    }
+    let rows = npc_interaction_rows(&game.content_registry, &game.ship, npc_ship);
+    let Some(row_index) = hovered_npc_interaction_row_index(mouse, rows.len()) else {
+        return false;
+    };
+    let Some(row) = rows.get(row_index) else {
+        return false;
+    };
+    if row.action == NpcInteractionAction::Identify && row.state == NpcInteractionState::Available {
+        identify_selected_npc_ship(game);
+    }
+    true
+}
+
+fn npc_interaction_rows(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    npc_ship: &NpcShip,
+) -> Vec<NpcInteractionRow> {
+    let in_range = npc_ship_in_interaction_range(ship, npc_ship);
+    let identified = npc_ship.identified;
+    let hostile = npc_ship_is_hostile(content_registry, npc_ship);
+    let trade_role = matches!(npc_ship.role.as_str(), "hauler" | "trader")
+        || npc_ship
+            .behavior_tags
+            .iter()
+            .any(|tag| tag == "trade-route");
+
+    vec![
+        NpcInteractionRow {
+            action: NpcInteractionAction::Identify,
+            state: if identified {
+                NpcInteractionState::Complete
+            } else if in_range {
+                NpcInteractionState::Available
+            } else {
+                NpcInteractionState::Unavailable
+            },
+            status: if identified {
+                "Known"
+            } else if in_range {
+                "Ready"
+            } else {
+                "Approach"
+            },
+        },
+        NpcInteractionRow {
+            action: NpcInteractionAction::Hail,
+            state: if in_range && identified && !hostile {
+                NpcInteractionState::Available
+            } else {
+                NpcInteractionState::Unavailable
+            },
+            status: if hostile {
+                "Hostile"
+            } else if !identified {
+                "Identify"
+            } else if in_range {
+                "Channel"
+            } else {
+                "Approach"
+            },
+        },
+        NpcInteractionRow {
+            action: NpcInteractionAction::Dock,
+            state: NpcInteractionState::Unavailable,
+            status: if !identified {
+                "Identify"
+            } else if hostile {
+                "Hostile"
+            } else {
+                "No dock"
+            },
+        },
+        NpcInteractionRow {
+            action: NpcInteractionAction::Trade,
+            state: NpcInteractionState::Unavailable,
+            status: if !identified {
+                "Identify"
+            } else if hostile {
+                "Hostile"
+            } else if trade_role {
+                "No exchange"
+            } else {
+                "No stock"
+            },
+        },
+        NpcInteractionRow {
+            action: NpcInteractionAction::Conflict,
+            state: NpcInteractionState::Unavailable,
+            status: if hostile {
+                "Auto defense"
+            } else {
+                "Unavailable"
+            },
+        },
+    ]
+}
+
+fn npc_ship_is_hostile(content_registry: &content::ContentRegistry, npc_ship: &NpcShip) -> bool {
+    npc_ship.role == "hostile"
+        || npc_ship.behavior_tags.iter().any(|tag| tag == "hostile")
+        || npc_ship.faction.as_deref().is_some_and(|faction_id| {
+            content_registry
+                .factions
+                .get(faction_id)
+                .is_some_and(|faction| {
+                    faction.default_disposition == content::FactionDisposition::Hostile
+                })
+        })
+}
+
+fn hovered_npc_interaction_row_index(mouse: Vec2, row_count: usize) -> Option<usize> {
+    let (panel_x, _, _, _) = inventory_panel_rect(false);
+    let work_x = panel_x + 24.0;
+    let y = work_table_y();
+    let width = 342.0;
+    (0..row_count).find(|index| npc_interaction_row_rect(work_x, y, width, *index).contains(mouse))
+}
+
+fn npc_interaction_row_rect(x: f32, y: f32, width: f32, index: usize) -> Rect {
+    Rect::new(
+        x,
+        y + 28.0 + index as f32 * WORK_ROW_HEIGHT,
+        width,
+        WORK_ROW_HEIGHT - 3.0,
+    )
+}
+
 fn handle_station_recipe_unlock_input(
     game: &mut GameState,
     station_index: usize,
@@ -6448,6 +6679,7 @@ fn select_station_service(
 
     game.selected_station = Some(station_index);
     game.selected_planet = None;
+    game.selected_npc_ship = None;
     game.selected_station_service = Some(service_index);
     true
 }
@@ -7524,8 +7756,10 @@ fn draw_scene(game: &GameState, background: &UniverseBackground) {
         ship,
         planets: &game.planets,
         stations: &game.stations,
+        npc_ships: &game.npc_ships,
         selected_planet: game.selected_planet,
         selected_station: game.selected_station,
+        selected_npc_ship: game.selected_npc_ship,
         destination_planet: game.destination_planet,
         orbiting_planet: game.orbiting_planet,
         current_system_id: &game.current_system_id,
@@ -7881,6 +8115,29 @@ fn clicked_station_index(
         .map(|(index, _)| index)
 }
 
+fn clicked_npc_ship_index(
+    mouse: Vec2,
+    ship: &Ship,
+    npc_ships: &[NpcShip],
+    current_system_id: &str,
+    zoom: f32,
+) -> Option<usize> {
+    let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
+
+    npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc_ship)| npc_ship_is_in_system(npc_ship, current_system_id))
+        .filter_map(|(index, npc_ship)| {
+            let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
+            let hit_radius = (npc_ship.radius * 2.0 * zoom).clamp(30.0, 74.0);
+            (mouse.distance(screen_pos) <= hit_radius)
+                .then_some((index, mouse.distance_squared(screen_pos)))
+        })
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index)
+}
+
 fn clicked_starmap_planet_index(mouse: Vec2, game: &GameState) -> Option<usize> {
     let (x, y, width, height) = starmap_panel_rect();
     if mouse.x < x || mouse.x > x + width || mouse.y < y || mouse.y > y + height {
@@ -7995,6 +8252,19 @@ fn ship_over_station_index(game: &GameState) -> Option<usize> {
         })
 }
 
+fn ship_over_npc_ship_index(game: &GameState) -> Option<usize> {
+    game.npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc_ship)| npc_ship_is_in_system(npc_ship, &game.current_system_id))
+        .filter_map(|(index, npc_ship)| {
+            npc_ship_in_interaction_range(&game.ship, npc_ship)
+                .then_some((index, npc_ship_surface_distance(&game.ship, npc_ship)))
+        })
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index)
+}
+
 fn planet_in_active_system(game: &GameState, planet_index: usize) -> bool {
     game.planets
         .get(planet_index)
@@ -8009,12 +8279,20 @@ fn station_is_in_system(station: &StationDestination, system_id: &str) -> bool {
     station.system == system_id
 }
 
+fn npc_ship_is_in_system(npc_ship: &NpcShip, system_id: &str) -> bool {
+    npc_ship.system == system_id && npc_ship.hull.current > 0.0
+}
+
 fn planet_interaction_radius(planet: &Planet) -> f32 {
     planet.radius + SHIP_RADIUS + PLANET_INTERACTION_PADDING
 }
 
 fn station_interaction_radius(station: &StationDestination) -> f32 {
     station.radius + SHIP_RADIUS + STATION_INTERACTION_PADDING
+}
+
+fn npc_ship_interaction_radius(npc_ship: &NpcShip) -> f32 {
+    npc_ship.radius + SHIP_RADIUS + NPC_INTERACTION_PADDING
 }
 
 fn planet_safe_orbit_radius(planet: &Planet) -> f32 {
@@ -8033,8 +8311,16 @@ fn station_surface_distance(ship: &Ship, station: &StationDestination) -> f32 {
     (ship.position.distance(station.position) - station.radius - SHIP_RADIUS).max(0.0)
 }
 
+fn npc_ship_surface_distance(ship: &Ship, npc_ship: &NpcShip) -> f32 {
+    (ship.position.distance(npc_ship.position) - npc_ship.radius - SHIP_RADIUS).max(0.0)
+}
+
 fn station_in_interaction_range(ship: &Ship, station: &StationDestination) -> bool {
     ship.position.distance(station.position) <= station_interaction_radius(station)
+}
+
+fn npc_ship_in_interaction_range(ship: &Ship, npc_ship: &NpcShip) -> bool {
+    ship.position.distance(npc_ship.position) <= npc_ship_interaction_radius(npc_ship)
 }
 
 fn planet_orbit_position(planet: &Planet, ship_position: Vec2) -> Vec2 {
@@ -9795,6 +10081,8 @@ fn draw_inventory_overlay(game: &GameState) {
         "Mining"
     } else if game.selected_station.is_some() {
         "Services"
+    } else if game.selected_npc_ship.is_some() {
+        "Interactions"
     } else {
         "Production"
     };
@@ -9805,7 +10093,10 @@ fn draw_inventory_overlay(game: &GameState) {
         26.0,
         Color::from_rgba(235, 242, 226, 255),
     );
-    if game.selected_planet.is_none() && game.selected_station.is_none() {
+    if game.selected_planet.is_none()
+        && game.selected_station.is_none()
+        && game.selected_npc_ship.is_none()
+    {
         draw_production_mode_tabs(game.production_mode, work_x + 132.0, panel_y + 19.0);
     }
     draw_text(
@@ -9852,6 +10143,15 @@ fn draw_inventory_overlay(game: &GameState) {
                 Rect::new(work_x, work_table_y(), work_width, work_table_height()),
             );
         }
+    } else if let Some(npc_ship_index) = game.selected_npc_ship {
+        if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
+            draw_npc_ship_interaction_list(
+                &game.content_registry,
+                &game.ship,
+                npc_ship,
+                Rect::new(work_x, work_table_y(), work_width, work_table_height()),
+            );
+        }
     } else {
         draw_production_text_table(
             game,
@@ -9889,7 +10189,10 @@ fn draw_inventory_overlay(game: &GameState) {
             );
         }
     }
-    if game.selected_planet.is_none() && game.selected_station.is_none() {
+    if game.selected_planet.is_none()
+        && game.selected_station.is_none()
+        && game.selected_npc_ship.is_none()
+    {
         if let Some(recipe) = hovered_production_recipe(game, mouse, game.work_scroll) {
             draw_recipe_tooltip(recipe, &game.inventory, mouse);
         }
@@ -11181,6 +11484,13 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
         }
     }
 
+    if let Some(npc_ship_index) = game.selected_npc_ship {
+        if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
+            draw_npc_ship_detail(&game.content_registry, &game.ship, npc_ship, x, y, width);
+            return;
+        }
+    }
+
     draw_ship_detail(ShipDetailView {
         ship: &game.ship,
         power_modules: &game.installed_power_modules,
@@ -11194,6 +11504,79 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
         y,
         width,
     });
+}
+
+fn draw_npc_ship_interaction_list(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    npc_ship: &NpcShip,
+    rect: Rect,
+) {
+    let Rect { x, y, w: width, .. } = rect;
+    draw_text(
+        "Action",
+        x + 6.0,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    draw_text(
+        "Status",
+        x + width - 96.0,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    draw_line(
+        x,
+        y + 24.0,
+        x + width,
+        y + 24.0,
+        1.0,
+        Color::from_rgba(96, 137, 150, 220),
+    );
+
+    let rows = npc_interaction_rows(content_registry, ship, npc_ship);
+    for (index, row) in rows.iter().enumerate() {
+        let row_rect = npc_interaction_row_rect(x, y, width, index);
+        let hovered = row_rect.contains(mouse_vec2());
+        draw_rectangle(
+            row_rect.x,
+            row_rect.y,
+            row_rect.w,
+            row_rect.h,
+            if hovered {
+                Color::from_rgba(13, 32, 40, 210)
+            } else if index % 2 == 0 {
+                Color::from_rgba(8, 18, 24, 118)
+            } else {
+                Color::from_rgba(6, 12, 18, 82)
+            },
+        );
+        let color = match row.state {
+            NpcInteractionState::Available => Color::from_rgba(150, 221, 226, 255),
+            NpcInteractionState::Complete => Color::from_rgba(235, 242, 226, 255),
+            NpcInteractionState::Unavailable => Color::from_rgba(126, 143, 148, 220),
+        };
+        draw_text(row.action.label(), x + 6.0, row_rect.y + 20.0, 16.0, color);
+        draw_text(row.status, x + width - 96.0, row_rect.y + 20.0, 15.0, color);
+    }
+
+    let hint = if npc_ship.identified {
+        "Known contacts expose available hooks. Disabled rows indicate systems that are not implemented yet."
+    } else if npc_ship_in_interaction_range(ship, npc_ship) {
+        "Identify this contact to reveal faction, loadout, and supported interaction hooks."
+    } else {
+        "Approach this contact to identify it."
+    };
+    draw_wrapped_text(
+        hint,
+        x + 6.0,
+        y + 28.0 + rows.len() as f32 * WORK_ROW_HEIGHT + 22.0,
+        width - 12.0,
+        15,
+        Color::from_rgba(178, 197, 203, 235),
+    );
 }
 
 fn draw_station_service_list(
@@ -12065,6 +12448,209 @@ fn draw_planet_action_rail(
     );
 }
 
+fn draw_npc_ship_detail(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    npc_ship: &NpcShip,
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let label = Color::from_rgba(88, 116, 126, 180);
+    let text = Color::from_rgba(205, 226, 230, 255);
+    let active = Color::from_rgba(150, 221, 226, 255);
+    let warning = Color::from_rgba(226, 190, 150, 255);
+    let preview_size = 118.0;
+    let in_range = npc_ship_in_interaction_range(ship, npc_ship);
+    let distance = npc_ship_surface_distance(ship, npc_ship);
+    let identified = npc_ship.identified;
+
+    draw_text(
+        if identified {
+            "NPC Ship"
+        } else {
+            "Unknown Contact"
+        },
+        x,
+        y - 28.0,
+        26.0,
+        Color::from_rgba(235, 242, 226, 255),
+    );
+
+    if let Some(texture) = &npc_ship.texture {
+        draw_texture_ex(
+            texture,
+            x,
+            y,
+            if identified {
+                WHITE
+            } else {
+                Color::from_rgba(150, 170, 176, 190)
+            },
+            DrawTextureParams {
+                dest_size: Some(vec2(preview_size, preview_size)),
+                rotation: npc_ship.angle + std::f32::consts::FRAC_PI_2,
+                ..Default::default()
+            },
+        );
+    } else {
+        draw_ship_model(
+            vec2(x + preview_size * 0.5, y + preview_size * 0.5),
+            preview_size * 0.18,
+            false,
+            npc_ship.angle + std::f32::consts::FRAC_PI_2,
+        );
+    }
+
+    let data_y = y + preview_size + 34.0;
+    draw_text(
+        if identified {
+            npc_ship.name.as_str()
+        } else {
+            "Unidentified transponder"
+        },
+        x,
+        data_y,
+        18.0,
+        text,
+    );
+    draw_text(
+        &fit_debug_text(
+            &format!(
+                "{} / {:.0}u / {}",
+                if in_range { "scan range" } else { "approach" },
+                distance,
+                npc_ship.behavior.label()
+            ),
+            width,
+            16,
+        ),
+        x,
+        data_y + 30.0,
+        16.0,
+        if in_range { active } else { warning },
+    );
+
+    let mut detail_y = data_y + 62.0;
+    draw_text("Identity", x, detail_y, 16.0, label);
+    let identity = if identified {
+        format!(
+            "{} / {} / {}",
+            local_content_id(&npc_ship.id),
+            npc_ship.archetype,
+            npc_ship.role
+        )
+    } else {
+        "Run identification scan from interaction range.".to_string()
+    };
+    draw_text(
+        &fit_debug_text(&identity, width, 16),
+        x,
+        detail_y + 26.0,
+        16.0,
+        text,
+    );
+    detail_y += 64.0;
+
+    draw_text("Disposition", x, detail_y, 16.0, label);
+    let disposition = if identified {
+        npc_ship
+            .faction
+            .as_deref()
+            .map(|faction| {
+                format!(
+                    "{} / {}",
+                    faction_name(content_registry, faction),
+                    faction_disposition_label(content_registry, faction)
+                )
+            })
+            .unwrap_or_else(|| "Independent / unknown".to_string())
+    } else {
+        "Unknown".to_string()
+    };
+    draw_text(
+        &fit_debug_text(&disposition, width, 16),
+        x,
+        detail_y + 26.0,
+        16.0,
+        if identified { text } else { warning },
+    );
+    detail_y += 64.0;
+
+    draw_text("Systems", x, detail_y, 16.0, label);
+    let systems = if identified {
+        format!(
+            "H{:.0}/{:.0}  S{:.0}/{:.0}  E{:.0}/{:.0}",
+            npc_ship.hull.current,
+            npc_ship.hull.max,
+            npc_ship.shields.current,
+            npc_ship.shields.max,
+            npc_ship.energy.current,
+            npc_ship.energy.max
+        )
+    } else {
+        "Unscanned".to_string()
+    };
+    draw_text(
+        &fit_debug_text(&systems, width, 16),
+        x,
+        detail_y + 26.0,
+        16.0,
+        text,
+    );
+    detail_y += 64.0;
+
+    draw_text("Loadout", x, detail_y, 16.0, label);
+    let loadout = if identified {
+        format!(
+            "{} shield / {} weapon / cargo {}",
+            npc_ship.shield_slots.len(),
+            npc_ship.weapon_slots.len(),
+            format_mass(npc_ship.cargo_capacity)
+        )
+    } else {
+        "Unknown".to_string()
+    };
+    draw_text(
+        &fit_debug_text(&loadout, width, 16),
+        x,
+        detail_y + 26.0,
+        16.0,
+        text,
+    );
+    detail_y += 64.0;
+
+    if identified {
+        let cargo_units = npc_ship
+            .cargo_defaults
+            .iter()
+            .map(|stack| stack.count)
+            .sum::<u32>();
+        let cargo = format!(
+            "{} manifest item(s), {} unit(s)",
+            npc_ship.cargo_defaults.len(),
+            cargo_units
+        );
+        draw_text("Cargo", x, detail_y, 16.0, label);
+        draw_text(
+            &fit_debug_text(&cargo, width, 16),
+            x,
+            detail_y + 26.0,
+            16.0,
+            text,
+        );
+        detail_y += 64.0;
+    }
+
+    draw_text("Summary", x, detail_y, 16.0, label);
+    let summary = if identified {
+        npc_ship.summary.as_str()
+    } else {
+        "Contact details are not available until identification completes."
+    };
+    draw_wrapped_text(summary, x, detail_y + 26.0, width, 15, text);
+}
+
 fn draw_ship_detail(view: ShipDetailView<'_>) {
     let ShipDetailView {
         ship,
@@ -12643,8 +13229,10 @@ struct HudView<'a> {
     ship: &'a Ship,
     planets: &'a [Planet],
     stations: &'a [StationDestination],
+    npc_ships: &'a [NpcShip],
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
+    selected_npc_ship: Option<usize>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
     current_system_id: &'a str,
@@ -12657,8 +13245,10 @@ fn draw_hud(view: HudView<'_>) {
         ship,
         planets,
         stations,
+        npc_ships,
         selected_planet,
         selected_station,
+        selected_npc_ship,
         destination_planet,
         orbiting_planet,
         current_system_id,
@@ -12754,6 +13344,36 @@ fn draw_hud(view: HudView<'_>) {
         return;
     }
 
+    if let Some(npc_ship) = selected_npc_ship
+        .and_then(|index| npc_ships.get(index))
+        .filter(|npc_ship| npc_ship_is_in_system(npc_ship, current_system_id))
+    {
+        let in_range = npc_ship_in_interaction_range(ship, npc_ship);
+        let distance = npc_ship_surface_distance(ship, npc_ship);
+        draw_text(
+            &format!(
+                "contact {:>4.0}u   {}",
+                distance,
+                if npc_ship.identified {
+                    "identified"
+                } else if in_range {
+                    "scan"
+                } else {
+                    "approach"
+                }
+            ),
+            34.0,
+            184.0,
+            20.0,
+            if in_range {
+                Color::from_rgba(150, 221, 226, 255)
+            } else {
+                Color::from_rgba(226, 190, 150, 255)
+            },
+        );
+        return;
+    }
+
     if let Some(planet) = target_planet(
         ship,
         planets,
@@ -12809,6 +13429,17 @@ fn draw_interaction_prompt(game: &GameState) {
             "Space dock station"
         } else {
             "Space inspect station"
+        }
+    } else if let Some(npc_ship_index) = ship_over_npc_ship_index(game) {
+        let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
+            return;
+        };
+        if game.selected_npc_ship == Some(npc_ship_index) && npc_ship.identified {
+            "Space review contact"
+        } else if game.selected_npc_ship == Some(npc_ship_index) {
+            "Space identify contact"
+        } else {
+            "Space inspect ship"
         }
     } else {
         return;
@@ -13382,6 +14013,94 @@ mod tests {
 
         assert!(steering.x > 0.0);
         assert!(steering.y.abs() < 0.01);
+    }
+
+    #[test]
+    fn npc_ship_range_selection_and_identification_hooks_work() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        game.ship.position = Vec2::ZERO;
+
+        assert!(npc_ship_in_interaction_range(
+            &game.ship,
+            &game.npc_ships[0]
+        ));
+        assert_eq!(ship_over_npc_ship_index(&game), Some(0));
+
+        select_nearby_destination(&mut game);
+
+        assert_eq!(game.selected_planet, None);
+        assert_eq!(game.selected_station, None);
+        assert_eq!(game.selected_npc_ship, Some(0));
+        assert!(!game.npc_ships[0].identified);
+
+        assert!(identify_selected_npc_ship(&mut game));
+        assert!(game.npc_ships[0].identified);
+    }
+
+    #[test]
+    fn npc_identification_requires_interaction_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(2_000.0, 0.0))];
+        game.selected_npc_ship = Some(0);
+
+        assert!(!npc_ship_in_interaction_range(
+            &game.ship,
+            &game.npc_ships[0]
+        ));
+        assert!(!identify_selected_npc_ship(&mut game));
+        assert!(!game.npc_ships[0].identified);
+    }
+
+    #[test]
+    fn npc_interaction_rows_reflect_friendly_and_hostile_states() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let ship = Ship::starter();
+        let mut friendly = test_npc_ship(NpcBehaviorMode::TradeRoute, vec2(120.0, 0.0));
+        friendly.role = "hauler".to_string();
+        friendly.behavior_tags = vec!["trade-route".to_string(), "non-hostile".to_string()];
+        friendly.identified = true;
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile.role = "hostile".to_string();
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        hostile.identified = true;
+
+        let friendly_rows = npc_interaction_rows(&registry, &ship, &friendly);
+        assert_eq!(
+            friendly_rows
+                .iter()
+                .find(|row| row.action == NpcInteractionAction::Hail)
+                .map(|row| row.state),
+            Some(NpcInteractionState::Available)
+        );
+        assert_eq!(
+            friendly_rows
+                .iter()
+                .find(|row| row.action == NpcInteractionAction::Trade)
+                .map(|row| row.status),
+            Some("No exchange")
+        );
+
+        let hostile_rows = npc_interaction_rows(&registry, &ship, &hostile);
+        assert_eq!(
+            hostile_rows
+                .iter()
+                .find(|row| row.action == NpcInteractionAction::Hail)
+                .map(|row| row.status),
+            Some("Hostile")
+        );
+        assert_eq!(
+            hostile_rows
+                .iter()
+                .find(|row| row.action == NpcInteractionAction::Conflict)
+                .map(|row| row.status),
+            Some("Auto defense")
+        );
     }
 
     #[test]
@@ -14531,6 +15250,7 @@ mod tests {
             behavior,
             route_index: 0,
             anchor: position,
+            identified: false,
             cargo_capacity: 100.0,
             cargo_defaults: Vec::new(),
             hull: ShipResource::full(50.0),
@@ -14579,6 +15299,7 @@ mod tests {
             purchased_recipe_unlocks: Vec::new(),
             selected_planet: None,
             selected_station: None,
+            selected_npc_ship: None,
             selected_station_service: None,
             destination_planet: None,
             orbiting_planet: None,

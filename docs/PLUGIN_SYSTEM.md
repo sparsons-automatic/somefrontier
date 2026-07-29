@@ -603,9 +603,10 @@ Rules:
 NPC ship definitions provide data-driven non-player ship archetypes that can
 appear in local space independently of the player. The runtime derives a
 behavior mode from each ship's role, faction, and behavior tags, then moves the
-ship with lightweight steering and spacing rules. Scanning, hailing, docking,
-trade interactions, and full autonomous combat are owned by later base-game
-systems.
+ship with lightweight steering and spacing rules. Players can inspect nearby
+NPC ships and identify contacts to reveal faction, disposition, systems, loadout,
+and action hooks. Full hailing, docking, trade exchanges, and autonomous combat
+are owned by later base-game systems.
 
 ```toml
 [[npc_ships]]
