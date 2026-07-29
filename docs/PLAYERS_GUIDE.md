@@ -159,10 +159,12 @@ full mechanics exist.
 
 ## NPC Ships And Factions
 
-NPC ships appear as static contacts in local space. They have names, roles,
-archetypes, cargo defaults, stats, loadouts, and faction ownership. Their
-current purpose is presentation and future-system data support; they do not yet
-move, hail, dock, trade, chase, or fight as autonomous ships.
+NPC ships appear as moving contacts in local space. They have names, roles,
+archetypes, cargo defaults, stats, loadouts, faction ownership, and behavior
+modes such as patrol, traffic, trade-route travel, follow, flee, or hostile
+intercept. These behaviors make local space feel active while keeping ship
+interaction lightweight; NPC ships do not yet hail, dock, trade, or fire as full
+autonomous combatants.
 
 Factions and societies own systems, planets, stations, and NPC ships. The UI can
 show faction names and default disposition such as friendly, neutral, hostile,

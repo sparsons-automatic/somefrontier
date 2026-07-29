@@ -601,9 +601,11 @@ Rules:
 ## `npc_ships.toml`
 
 NPC ship definitions provide data-driven non-player ship archetypes that can
-appear in local space independently of the player. The current runtime renders
-them as static contacts; movement, faction ownership, scanning, interaction, and
-full behavior selection are owned by later base-game systems.
+appear in local space independently of the player. The runtime derives a
+behavior mode from each ship's role, faction, and behavior tags, then moves the
+ship with lightweight steering and spacing rules. Scanning, hailing, docking,
+trade interactions, and full autonomous combat are owned by later base-game
+systems.
 
 ```toml
 [[npc_ships]]
@@ -628,7 +630,7 @@ shield_capacity = 80.0
 energy_capacity = 90.0
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
-summary = "Local patrol craft that gives the system an early security presence without adding behavior yet."
+summary = "Local patrol craft that gives the system an early moving security presence."
 ```
 
 Rules:
@@ -639,13 +641,15 @@ Rules:
   ship textures.
 - `system` resolves to a namespaced system ID and must reference a loaded
   system.
-- `position` is the local-space position used for the initial static
-  presentation.
+- `position` is the local-space spawn and route anchor used by lightweight NPC
+  movement.
 - `radius` defaults to 28.0 and must be positive.
 - `faction` is optional. When present, it resolves to a namespaced faction ID
   and must reference a loaded faction record.
-- `behavior_tags` defaults to an empty list. Tags are descriptive hooks for
-  future behavior systems.
+- `behavior_tags` defaults to an empty list. The runtime currently recognizes
+  `patrol`, `traffic`, `trade-route`, `follow`, `flee`, and `hostile` as
+  behavior-selection hints. Faction default disposition and `role = "hostile"`
+  can also select hostile interception.
 - `spawn_weight` defaults to 1.0 and must be positive.
 - `spawn_count` defaults to 1 and must be greater than zero.
 - `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
