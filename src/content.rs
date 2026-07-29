@@ -17,6 +17,8 @@ pub struct ContentRegistry {
     pub item_order: Vec<String>,
     pub ships: HashMap<String, ShipDef>,
     pub ship_order: Vec<String>,
+    pub npc_ships: HashMap<String, NpcShipDef>,
+    pub npc_ship_order: Vec<String>,
     pub shields: HashMap<String, ShieldDef>,
     pub shield_order: Vec<String>,
     pub weapons: HashMap<String, WeaponDef>,
@@ -119,7 +121,7 @@ pub struct RecipeDef {
     pub allow_duplicate_output: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackDef {
     pub item: String,
     pub count: u32,
@@ -142,6 +144,30 @@ pub struct ShipDef {
     pub power_modules: Vec<String>,
     pub shield_slots: Vec<String>,
     pub weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NpcShipDef {
+    pub id: String,
+    pub name: String,
+    pub texture: Option<String>,
+    pub system: String,
+    pub position: [f32; 2],
+    pub radius: f32,
+    pub archetype: String,
+    pub role: String,
+    pub behavior_tags: Vec<String>,
+    pub spawn_weight: f32,
+    pub spawn_count: u32,
+    pub mass: f32,
+    pub cargo_capacity: f32,
+    pub cargo_defaults: Vec<StackDef>,
+    pub hull_capacity: f32,
+    pub shield_capacity: f32,
+    pub energy_capacity: f32,
+    pub shield_slots: Vec<String>,
+    pub weapon_slots: Vec<String>,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -483,6 +509,43 @@ struct ShipFileDef {
     shield_slots: Vec<String>,
     #[serde(default)]
     weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NpcShipsFile {
+    #[serde(default)]
+    npc_ships: Vec<NpcShipFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpcShipFileDef {
+    id: String,
+    name: String,
+    texture: Option<String>,
+    system: String,
+    position: [f32; 2],
+    #[serde(default = "default_npc_ship_radius")]
+    radius: f32,
+    archetype: String,
+    role: String,
+    #[serde(default)]
+    behavior_tags: Vec<String>,
+    #[serde(default = "default_spawn_weight")]
+    spawn_weight: f32,
+    #[serde(default = "default_spawn_count")]
+    spawn_count: u32,
+    mass: f32,
+    cargo_capacity: f32,
+    #[serde(default)]
+    cargo_defaults: Vec<StackFileDef>,
+    hull_capacity: f32,
+    shield_capacity: f32,
+    energy_capacity: f32,
+    #[serde(default)]
+    shield_slots: Vec<String>,
+    #[serde(default)]
+    weapon_slots: Vec<String>,
+    summary: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1276,6 +1339,111 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         }
     }
 
+    let npc_ships =
+        read_optional_toml::<NpcShipsFile>(&raw_pack.path.join("npc_ships.toml"), errors);
+    for npc_ship in npc_ships.npc_ships {
+        let id = namespaced_id(&pack_id, &npc_ship.id);
+        validate_local_content_id(&id, "NPC ship", errors);
+        validate_required_name(&id, "NPC ship", &npc_ship.name, errors);
+        validate_required_name(&id, "NPC ship archetype", &npc_ship.archetype, errors);
+        validate_required_name(&id, "NPC ship role", &npc_ship.role, errors);
+        validate_positive(npc_ship.radius, "NPC ship", &id, "radius", errors);
+        validate_positive(
+            npc_ship.spawn_weight,
+            "NPC ship",
+            &id,
+            "spawn weight",
+            errors,
+        );
+        if npc_ship.spawn_count == 0 {
+            errors.push(format!("NPC ship `{id}` has zero spawn count"));
+        }
+        validate_positive(npc_ship.mass, "NPC ship", &id, "mass", errors);
+        validate_positive(
+            npc_ship.cargo_capacity,
+            "NPC ship",
+            &id,
+            "cargo capacity",
+            errors,
+        );
+        validate_positive(
+            npc_ship.hull_capacity,
+            "NPC ship",
+            &id,
+            "hull capacity",
+            errors,
+        );
+        validate_positive(
+            npc_ship.shield_capacity,
+            "NPC ship",
+            &id,
+            "shield capacity",
+            errors,
+        );
+        validate_positive(
+            npc_ship.energy_capacity,
+            "NPC ship",
+            &id,
+            "energy capacity",
+            errors,
+        );
+        let texture = npc_ship
+            .texture
+            .map(|texture| resolve_texture_path(&raw_pack.path, &texture, &id, errors));
+        let cargo_defaults = npc_ship
+            .cargo_defaults
+            .into_iter()
+            .map(|stack| {
+                let stack = resolve_stack(&pack_id, stack);
+                if stack.count == 0 {
+                    errors.push(format!("NPC ship `{id}` has a zero-count cargo default"));
+                }
+                stack
+            })
+            .collect::<Vec<_>>();
+        let inserted = registry
+            .npc_ships
+            .insert(
+                id.clone(),
+                NpcShipDef {
+                    id: id.clone(),
+                    name: npc_ship.name,
+                    texture,
+                    system: namespaced_id(&pack_id, &npc_ship.system),
+                    position: npc_ship.position,
+                    radius: npc_ship.radius,
+                    archetype: npc_ship.archetype,
+                    role: npc_ship.role,
+                    behavior_tags: npc_ship.behavior_tags,
+                    spawn_weight: npc_ship.spawn_weight,
+                    spawn_count: npc_ship.spawn_count,
+                    mass: npc_ship.mass,
+                    cargo_capacity: npc_ship.cargo_capacity,
+                    cargo_defaults,
+                    hull_capacity: npc_ship.hull_capacity,
+                    shield_capacity: npc_ship.shield_capacity,
+                    energy_capacity: npc_ship.energy_capacity,
+                    shield_slots: npc_ship
+                        .shield_slots
+                        .into_iter()
+                        .map(|shield| namespaced_id(&pack_id, &shield))
+                        .collect(),
+                    weapon_slots: npc_ship
+                        .weapon_slots
+                        .into_iter()
+                        .map(|weapon| namespaced_id(&pack_id, &weapon))
+                        .collect(),
+                    summary: npc_ship.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.npc_ship_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate NPC ship id `{id}`"));
+        }
+    }
+
     for recipe in recipes.recipes {
         let id = namespaced_id(&pack_id, &recipe.id);
         validate_local_content_id(&id, "recipe", errors);
@@ -2028,6 +2196,47 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         }
     }
 
+    for npc_ship in registry.npc_ships.values() {
+        validate_reference(
+            registry.systems.contains_key(&npc_ship.system),
+            "NPC ship",
+            &npc_ship.id,
+            "system",
+            &npc_ship.system,
+            errors,
+        );
+        for cargo in &npc_ship.cargo_defaults {
+            validate_reference(
+                registry.items.contains_key(&cargo.item),
+                "NPC ship",
+                &npc_ship.id,
+                "cargo item",
+                &cargo.item,
+                errors,
+            );
+        }
+        for shield in &npc_ship.shield_slots {
+            validate_reference(
+                registry.shields.contains_key(shield),
+                "NPC ship",
+                &npc_ship.id,
+                "shield",
+                shield,
+                errors,
+            );
+        }
+        for weapon in &npc_ship.weapon_slots {
+            validate_reference(
+                registry.weapons.contains_key(weapon),
+                "NPC ship",
+                &npc_ship.id,
+                "weapon",
+                weapon,
+                errors,
+            );
+        }
+    }
+
     for planet in registry.planets.values() {
         validate_reference(
             registry.systems.contains_key(&planet.system),
@@ -2547,6 +2756,18 @@ fn default_station_radius() -> f32 {
     54.0
 }
 
+fn default_npc_ship_radius() -> f32 {
+    28.0
+}
+
+fn default_spawn_weight() -> f32 {
+    1.0
+}
+
+fn default_spawn_count() -> u32 {
+    1
+}
+
 fn default_station_icon() -> String {
     "station".to_string()
 }
@@ -2591,6 +2812,7 @@ mod tests {
         assert!(registry.items.contains_key("core:point_defense_turret"));
         assert!(registry.items.contains_key("core:balanced_shield_matrix"));
         assert!(registry.items.contains_key("core:hazard_shield_matrix"));
+        assert_eq!(registry.npc_ships.len(), 3);
         assert!(registry
             .ships
             .get("core:frontier_cargo_ship_01")
@@ -2628,6 +2850,26 @@ mod tests {
                     && shield.recharge_rate == 6.0
                     && shield.damage_resistance == 0.05
                     && shield.hazard_resistance == 0.55
+            }));
+        assert!(registry
+            .npc_ships
+            .get("core:frontier_patrol_cutter")
+            .is_some_and(|npc_ship| {
+                npc_ship.name == "Frontier Patrol Cutter"
+                    && npc_ship.system == "core:frontier"
+                    && npc_ship.archetype == "patrol-cutter"
+                    && npc_ship.role == "patrol"
+                    && npc_ship.spawn_count == 1
+                    && npc_ship.cargo_defaults
+                        == [StackDef {
+                            item: "core:fuel_canister".to_string(),
+                            count: 1,
+                        }]
+                    && npc_ship.shield_slots == ["core:balanced_shield_matrix"]
+                    && npc_ship.weapon_slots == ["core:point_defense_turret"]
+                    && npc_ship.texture.as_deref().is_some_and(|texture| {
+                        texture.contains("content/packs/core/./assets/ships/npc-scout-01.png")
+                    })
             }));
         assert!(registry.recipes.contains_key("core:point_defense_turret"));
         assert!(registry.recipes.contains_key("core:balanced_shield_matrix"));
@@ -3402,6 +3644,8 @@ choices = ["lean", "standard", "rich"]
             .expect("station asset should be written");
         fs::write(pack_path.join("assets/ships/local-ship.png"), b"fake")
             .expect("ship asset should be written");
+        fs::write(pack_path.join("assets/ships/local-npc.png"), b"fake")
+            .expect("npc ship asset should be written");
         fs::write(
             pack_path.join("pack.toml"),
             r#"
@@ -3475,6 +3719,29 @@ shield_capacity = 50.0
         )
         .expect("ships should be written");
         fs::write(
+            pack_path.join("npc_ships.toml"),
+            r#"
+[[npc_ships]]
+id = "local_npc"
+name = "Local NPC"
+texture = "./assets/ships/local-npc.png"
+system = "test_system"
+position = [40.0, -80.0]
+archetype = "test-courier"
+role = "hauler"
+behavior_tags = ["traffic"]
+mass = 500.0
+cargo_capacity = 100.0
+cargo_defaults = [
+  { item = "iron_ore", count = 1 },
+]
+hull_capacity = 25.0
+shield_capacity = 10.0
+energy_capacity = 20.0
+"#,
+        )
+        .expect("npc ships should be written");
+        fs::write(
             pack_path.join("planets.toml"),
             r#"
 [[planets]]
@@ -3527,6 +3794,11 @@ summary = "A station using a plugin-local asset."
             .get("asset-pack:local_ship")
             .and_then(|ship| ship.texture.as_deref())
             .is_some_and(|texture| texture.contains("asset-pack/./assets/ships/local-ship.png")));
+        assert!(registry
+            .npc_ships
+            .get("asset-pack:local_npc")
+            .and_then(|npc_ship| npc_ship.texture.as_deref())
+            .is_some_and(|texture| texture.contains("asset-pack/./assets/ships/local-npc.png")));
 
         fs::remove_dir_all(root).ok();
     }
@@ -3698,6 +3970,32 @@ weapon_slots = ["point_defense", "missing_weapon"]
 "#,
         )
         .expect("ships should be written");
+        fs::write(
+            pack_path.join("npc_ships.toml"),
+            r#"
+[[npc_ships]]
+id = "bad_npc"
+name = "Bad NPC"
+system = "missing_system"
+position = [0.0, 0.0]
+radius = 12.0
+archetype = "bad-archetype"
+role = "hostile"
+spawn_weight = 1.0
+spawn_count = 0
+mass = 100.0
+cargo_capacity = 50.0
+cargo_defaults = [
+  { item = "missing_cargo", count = 0 },
+]
+hull_capacity = 25.0
+shield_capacity = 10.0
+energy_capacity = 20.0
+shield_slots = ["missing_npc_shield"]
+weapon_slots = ["missing_npc_weapon"]
+"#,
+        )
+        .expect("npc ships should be written");
 
         let errors =
             load_content_packs(&root).expect_err("missing ship and power refs should fail");
@@ -3734,6 +4032,28 @@ weapon_slots = ["point_defense", "missing_weapon"]
         assert!(errors.iter().any(|error| {
             error
                 == "Ship `bad-ship-pack:bad_ship` references missing weapon `bad-ship-pack:missing_weapon`"
+        }));
+        assert!(errors
+            .iter()
+            .any(|error| error == "NPC ship `bad-ship-pack:bad_npc` has zero spawn count"));
+        assert!(errors.iter().any(|error| {
+            error == "NPC ship `bad-ship-pack:bad_npc` has a zero-count cargo default"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing system `bad-ship-pack:missing_system`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing cargo item `bad-ship-pack:missing_cargo`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing shield `bad-ship-pack:missing_npc_shield`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing weapon `bad-ship-pack:missing_npc_weapon`"
         }));
 
         fs::remove_dir_all(root).ok();

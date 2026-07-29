@@ -1,8 +1,9 @@
 # Plugin System
 
 Some Frontier plugins should start as local data packs. A pack can add items,
-recipes, ships, power modules, weapons, shields, planets, stations, systems,
-upgrades, assets, and eventually events without compiling new Rust code.
+recipes, ships, NPC ships, power modules, weapons, shields, planets, stations,
+systems, upgrades, assets, and eventually events without compiling new Rust
+code.
 
 The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
@@ -28,7 +29,7 @@ Core pack responsibilities:
 
 - Default items.
 - Default recipes.
-- Default ship, power-module, weapon, and shield definitions.
+- Default ship, NPC ship, power-module, weapon, and shield definitions.
 - Default planets and planet assets.
 - Default starting inventory.
 - Default station list.
@@ -38,8 +39,8 @@ Core pack responsibilities:
 
 Plugin pack responsibilities:
 
-- Add new items, recipes, ships, power modules, weapons, shields, planets, stations,
-  systems, and assets.
+- Add new items, recipes, ships, NPC ships, power modules, weapons, shields,
+  planets, stations, systems, and assets.
 - Add compatibility recipes between packs.
 - Add alternate resource branches that use existing mechanics.
 - Add upgrade cost branches for base-game upgrade mechanics.
@@ -73,6 +74,7 @@ content/packs/core/
   weapons.toml
   shields.toml
   ships.toml
+  npc_ships.toml
   recipes.toml
   universe.toml
   systems.toml
@@ -93,6 +95,7 @@ content/packs/icy-frontier/
   weapons.toml
   shields.toml
   ships.toml
+  npc_ships.toml
   recipes.toml
   universe.toml
   systems.toml
@@ -589,6 +592,62 @@ Rules:
 - `weapon_slots` defaults to an empty list. Entries resolve to namespaced weapon
   IDs and must reference loaded weapons.
 
+## `npc_ships.toml`
+
+NPC ship definitions provide data-driven non-player ship archetypes that can
+appear in local space independently of the player. The current runtime renders
+them as static contacts; movement, faction ownership, scanning, interaction, and
+full behavior selection are owned by later base-game systems.
+
+```toml
+[[npc_ships]]
+id = "frontier_patrol_cutter"
+name = "Frontier Patrol Cutter"
+texture = "./assets/ships/npc-scout-01.png"
+system = "frontier"
+position = [820.0, -520.0]
+radius = 28.0
+archetype = "patrol-cutter"
+role = "patrol"
+behavior_tags = ["security", "patrol", "non-hostile"]
+spawn_weight = 0.75
+spawn_count = 1
+mass = 42000.0
+cargo_capacity = 12000.0
+cargo_defaults = [
+  { item = "fuel_canister", count = 1 },
+]
+hull_capacity = 82.0
+shield_capacity = 80.0
+energy_capacity = 90.0
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret"]
+summary = "Local patrol craft that gives the system an early security presence without adding behavior yet."
+```
+
+Rules:
+
+- `id` resolves to a namespaced NPC ship ID.
+- `name`, `archetype`, and `role` must not be empty.
+- `texture` is optional and uses the same path rules as planet, station, and
+  ship textures.
+- `system` resolves to a namespaced system ID and must reference a loaded
+  system.
+- `position` is the local-space position used for the initial static
+  presentation.
+- `radius` defaults to 28.0 and must be positive.
+- `behavior_tags` defaults to an empty list. Tags are descriptive hooks for
+  future behavior systems.
+- `spawn_weight` defaults to 1.0 and must be positive.
+- `spawn_count` defaults to 1 and must be greater than zero.
+- `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
+  positive.
+- `cargo_defaults` defaults to an empty list. Entries resolve to namespaced item
+  IDs and must reference loaded items; counts must be greater than zero.
+- `shield_slots` and `weapon_slots` default to empty lists and must reference
+  loaded shields and weapons when present.
+- `summary` is optional player-facing metadata.
+
 ## `starter.toml`
 
 Starter files define default world startup content. The runtime resolves starter
@@ -876,17 +935,18 @@ validation as ordinary pack content.
 9. Load shield definitions.
 10. Load weapon definitions.
 11. Load ship definitions.
-12. Load recipe definitions.
-13. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
+12. Load NPC ship definitions.
+13. Load recipe definitions.
+14. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
     star metadata.
-14. Load planet definitions.
-15. Load station definitions and station services.
-16. Load upgrade cost definitions.
-17. Load starter inventory definitions.
-18. Validate cross-references.
-19. Record duplicate recipe-output warnings.
-20. Build runtime registries.
-21. Start the game only if validation succeeds.
+15. Load planet definitions.
+16. Load station definitions and station services.
+17. Load upgrade cost definitions.
+18. Load starter inventory definitions.
+19. Validate cross-references.
+20. Record duplicate recipe-output warnings.
+21. Build runtime registries.
+22. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -921,6 +981,10 @@ Reject startup when:
 - A ship references a missing weapon.
 - A ship has an empty name or non-positive mass, acceleration, energy, drag,
   hull, or shield values.
+- An NPC ship references a missing system, cargo item, shield, or weapon.
+- An NPC ship has an empty name, archetype, or role; non-positive radius,
+  spawn weight, mass, cargo capacity, hull, shield, or energy capacity; zero
+  spawn count; or a zero-count cargo default.
 - A system references a missing region, galaxy, or universe.
 - A system primary star is missing or belongs to another system.
 - A star references a missing system.
@@ -1003,6 +1067,29 @@ struct ShipDef {
     power_modules: Vec<String>,
     shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
+}
+
+struct NpcShipDef {
+    id: String,
+    name: String,
+    texture: Option<String>,
+    system: String,
+    position: [f32; 2],
+    radius: f32,
+    archetype: String,
+    role: String,
+    behavior_tags: Vec<String>,
+    spawn_weight: f32,
+    spawn_count: u32,
+    mass: f32,
+    cargo_capacity: f32,
+    cargo_defaults: Vec<StackDef>,
+    hull_capacity: f32,
+    shield_capacity: f32,
+    energy_capacity: f32,
+    shield_slots: Vec<String>,
+    weapon_slots: Vec<String>,
+    summary: Option<String>,
 }
 
 struct ShieldDef {

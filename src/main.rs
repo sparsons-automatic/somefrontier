@@ -137,6 +137,7 @@ struct GameState {
     installed_power_modules: Vec<PowerModule>,
     equipped_shields: Vec<ShieldSystem>,
     equipped_weapons: Vec<WeaponSystem>,
+    npc_ships: Vec<NpcShip>,
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
     ship_texture: Option<Texture2D>,
@@ -195,6 +196,7 @@ struct ContentBrowserState {
     packs_scroll: f32,
     items_scroll: f32,
     recipes_scroll: f32,
+    npc_ships_scroll: f32,
     planets_scroll: f32,
 }
 
@@ -446,6 +448,26 @@ struct StationDestination {
     faction: Option<String>,
     summary: String,
     services: Vec<StationService>,
+}
+
+struct NpcShip {
+    id: String,
+    name: String,
+    system: String,
+    position: Vec2,
+    radius: f32,
+    texture: Option<Texture2D>,
+    archetype: String,
+    role: String,
+    behavior_tags: Vec<String>,
+    cargo_capacity: f32,
+    cargo_defaults: Vec<ItemStack>,
+    hull: ShipResource,
+    shields: ShipResource,
+    energy: ShipResource,
+    shield_slots: Vec<String>,
+    weapon_slots: Vec<String>,
+    summary: String,
 }
 
 struct StationService {
@@ -800,6 +822,7 @@ impl GameState {
         let system_stars = make_system_stars(&content_registry);
         let planets = make_planets(&content_registry, world_seed, startup_background).await;
         let stations = make_station_destinations(&content_registry, startup_background).await;
+        let npc_ships = make_npc_ships(&content_registry, startup_background).await;
         let recipe_vendor_locked_recipes = recipe_vendor_locked_recipes(&stations);
         let purchased_recipe_unlocks = save_data
             .as_ref()
@@ -836,6 +859,7 @@ impl GameState {
             installed_power_modules,
             equipped_shields,
             equipped_weapons,
+            npc_ships,
             defense_threats,
             weapon_fire_events: Vec::new(),
             ship_texture,
@@ -1161,10 +1185,11 @@ fn load_game_content_registry() -> content::ContentRegistry {
     match content::load_content_packs(Path::new("content/packs")) {
         Ok(registry) => {
             println!(
-                "Loaded {} content pack(s), {} item(s), {} ship(s), {} shield(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
+                "Loaded {} content pack(s), {} item(s), {} ship(s), {} NPC ship(s), {} shield(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
                 registry.packs.len(),
                 registry.items.len(),
                 registry.ships.len(),
+                registry.npc_ships.len(),
                 registry.shields.len(),
                 registry.weapons.len(),
                 registry.recipes.len(),
@@ -1364,6 +1389,64 @@ async fn make_station_destinations(
         });
     }
     stations
+}
+
+async fn make_npc_ships(
+    content_registry: &content::ContentRegistry,
+    startup_background: Option<&Texture2D>,
+) -> Vec<NpcShip> {
+    let mut npc_ships = Vec::new();
+    for npc_ship_id in &content_registry.npc_ship_order {
+        let Some(npc_ship_def) = content_registry.npc_ships.get(npc_ship_id) else {
+            continue;
+        };
+        let texture = match npc_ship_def.texture.as_deref() {
+            Some(path) => {
+                draw_startup_transition(
+                    startup_background,
+                    &format!("Loading NPC ship asset ... {}", asset_file_name(path)),
+                    1.0,
+                );
+                next_frame().await;
+                load_asset_texture(path).await
+            }
+            None => None,
+        };
+        let cargo_defaults = npc_ship_def
+            .cargo_defaults
+            .iter()
+            .filter_map(|stack| {
+                registry_item(content_registry, &stack.item).map(|item| ItemStack {
+                    item,
+                    count: stack.count,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        npc_ships.push(NpcShip {
+            id: npc_ship_def.id.clone(),
+            name: npc_ship_def.name.clone(),
+            system: npc_ship_def.system.clone(),
+            position: vec2(npc_ship_def.position[0], npc_ship_def.position[1]),
+            radius: npc_ship_def.radius,
+            texture,
+            archetype: npc_ship_def.archetype.clone(),
+            role: npc_ship_def.role.clone(),
+            behavior_tags: npc_ship_def.behavior_tags.clone(),
+            cargo_capacity: npc_ship_def.cargo_capacity,
+            cargo_defaults,
+            hull: ShipResource::full(npc_ship_def.hull_capacity),
+            shields: ShipResource::full(npc_ship_def.shield_capacity),
+            energy: ShipResource::full(npc_ship_def.energy_capacity),
+            shield_slots: npc_ship_def.shield_slots.clone(),
+            weapon_slots: npc_ship_def.weapon_slots.clone(),
+            summary: npc_ship_def
+                .summary
+                .clone()
+                .unwrap_or_else(|| "Non-player ship contact.".to_string()),
+        });
+    }
+    npc_ships
 }
 
 fn recipe_vendor_locked_recipes(stations: &[StationDestination]) -> Vec<String> {
@@ -5446,12 +5529,12 @@ struct ContentColumnRender<'a> {
 }
 
 fn content_browser_layout() -> ContentBrowserLayout {
-    let width = (screen_width() - 48.0).min(1120.0);
-    let height = (screen_height() - 64.0).min(620.0);
+    let width = screen_width() * 0.8;
+    let height = screen_height() * 0.8;
     let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5 + 10.0;
-    let column_gap = 18.0;
-    let column_width = (width - 48.0 - column_gap * 3.0) / 4.0;
+    let y = (screen_height() - height) * 0.5;
+    let column_gap = 14.0;
+    let column_width = (width - 48.0 - column_gap * 4.0) / 5.0;
     let column_y = y + 110.0;
     let row_height = 23.0;
     let viewport_height = (height - 150.0).max(row_height);
@@ -5483,6 +5566,7 @@ fn handle_content_browser_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) 
     let selected_pack_id = selected_content_pack_id(game).map(str::to_string);
     let item_count = filtered_content_item_rows(game, selected_pack_id.as_deref()).len();
     let recipe_count = filtered_content_recipe_rows(game, selected_pack_id.as_deref()).len();
+    let npc_ship_count = filtered_content_npc_ship_rows(game, selected_pack_id.as_deref()).len();
     let planet_count = filtered_content_planet_rows(game, selected_pack_id.as_deref()).len();
 
     if content_browser_column_rect(&layout, 0).contains(mouse) {
@@ -5510,6 +5594,14 @@ fn handle_content_browser_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) 
             layout.viewport_height,
         );
     } else if content_browser_column_rect(&layout, 3).contains(mouse) {
+        game.content_browser.npc_ships_scroll = content_scrolled_offset(
+            game.content_browser.npc_ships_scroll,
+            wheel,
+            npc_ship_count,
+            layout.row_height,
+            layout.viewport_height,
+        );
+    } else if content_browser_column_rect(&layout, 4).contains(mouse) {
         game.content_browser.planets_scroll = content_scrolled_offset(
             game.content_browser.planets_scroll,
             wheel,
@@ -5548,6 +5640,7 @@ fn handle_content_browser_input(game: &mut GameState, mouse: Vec2) -> bool {
 
     game.content_browser.items_scroll = 0.0;
     game.content_browser.recipes_scroll = 0.0;
+    game.content_browser.npc_ships_scroll = 0.0;
     game.content_browser.planets_scroll = 0.0;
     true
 }
@@ -7048,6 +7141,13 @@ fn draw_scene(game: &GameState, background: &UniverseBackground) {
     {
         draw_station(center, ship, station, zoom);
     }
+    for npc_ship in game
+        .npc_ships
+        .iter()
+        .filter(|npc_ship| npc_ship.system == game.current_system_id)
+    {
+        draw_npc_ship(center, ship, npc_ship, zoom);
+    }
     for threat in game
         .defense_threats
         .iter()
@@ -7874,6 +7974,101 @@ fn draw_station(center: Vec2, ship: &Ship, station: &StationDestination, zoom: f
             Color::from_rgba(205, 226, 230, 210)
         },
     );
+}
+
+fn draw_npc_ship(center: Vec2, ship: &Ship, npc_ship: &NpcShip, zoom: f32) {
+    let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
+    let size = (npc_ship.radius * 2.0 * zoom).clamp(22.0, 72.0);
+    let cull_padding = size + 100.0;
+
+    if screen_pos.x < -cull_padding
+        || screen_pos.x > screen_width() + cull_padding
+        || screen_pos.y < -cull_padding
+        || screen_pos.y > screen_height() + cull_padding
+    {
+        return;
+    }
+
+    let color = npc_ship_role_color(&npc_ship.role);
+    draw_circle_lines(
+        screen_pos.x,
+        screen_pos.y,
+        size * 0.62,
+        1.0,
+        Color { a: 0.42, ..color },
+    );
+    if let Some(texture) = &npc_ship.texture {
+        draw_texture_ex(
+            texture,
+            screen_pos.x - size * 0.5,
+            screen_pos.y - size * 0.5,
+            Color { a: 0.92, ..WHITE },
+            DrawTextureParams {
+                dest_size: Some(vec2(size, size)),
+                rotation: -std::f32::consts::FRAC_PI_2,
+                pivot: Some(screen_pos),
+                ..Default::default()
+            },
+        );
+    } else {
+        draw_ship_model(screen_pos, size * 0.22, false, -std::f32::consts::FRAC_PI_2);
+    }
+
+    let status = format!(
+        "{}  {}  {}  {}",
+        npc_ship.name,
+        local_content_id(&npc_ship.id),
+        npc_ship.archetype,
+        npc_ship.role
+    );
+    draw_text(
+        &fit_debug_text(&status, 230.0, 14),
+        screen_pos.x + size * 0.44,
+        screen_pos.y + 4.0,
+        14.0,
+        color,
+    );
+    let cargo_units = npc_ship
+        .cargo_defaults
+        .iter()
+        .map(|stack| stack.count)
+        .sum::<u32>();
+    let metadata = format!(
+        "cargo {}/{}  tags {}  H{:.0} S{:.0} E{:.0}  loadout {}/{}",
+        cargo_units,
+        format_mass(npc_ship.cargo_capacity),
+        npc_ship.behavior_tags.len(),
+        npc_ship.hull.max,
+        npc_ship.shields.max,
+        npc_ship.energy.max,
+        npc_ship.shield_slots.len(),
+        npc_ship.weapon_slots.len()
+    );
+    draw_text(
+        &fit_debug_text(&metadata, 230.0, 12),
+        screen_pos.x + size * 0.44,
+        screen_pos.y + 20.0,
+        12.0,
+        Color { a: 0.78, ..color },
+    );
+    if !npc_ship.summary.is_empty() {
+        draw_text(
+            &fit_debug_text(&npc_ship.summary, 230.0, 12),
+            screen_pos.x + size * 0.44,
+            screen_pos.y + 35.0,
+            12.0,
+            Color { a: 0.62, ..color },
+        );
+    }
+}
+
+fn npc_ship_role_color(role: &str) -> Color {
+    match role {
+        "hostile" => Color::from_rgba(226, 104, 96, 235),
+        "patrol" | "security" => Color::from_rgba(150, 221, 226, 235),
+        "hauler" | "trader" => Color::from_rgba(226, 190, 150, 235),
+        _ => Color::from_rgba(205, 226, 230, 220),
+    }
 }
 
 fn draw_defense_threat(center: Vec2, ship: &Ship, threat: &DefenseThreat, zoom: f32) {
@@ -9517,10 +9712,11 @@ fn draw_content_debug_overlay(game: &GameState) {
         .map(|asset| asset.texture.width() * asset.texture.height())
         .sum::<f32>();
     let summary = format!(
-        "{} pack(s) / {} item(s) / {} recipe(s) / {} shield(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
+        "{} pack(s) / {} item(s) / {} recipe(s) / {} NPC ship(s) / {} shield(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
         registry.packs.len(),
         registry.items.len(),
         registry.recipes.len(),
+        registry.npc_ships.len(),
         registry.shields.len(),
         registry.weapons.len(),
         registry.systems.len(),
@@ -9608,10 +9804,23 @@ fn draw_content_debug_overlay(game: &GameState) {
         selected_row: None,
     });
 
+    let npc_ship_rows = filtered_content_npc_ship_rows(game, selected_pack_id);
     let planet_rows = filtered_content_planet_rows(game, selected_pack_id);
     draw_content_debug_column(ContentColumnRender {
-        title: "Planets",
+        title: "NPC Ships",
         x: x + 24.0 + (layout.column_width + layout.column_gap) * 3.0,
+        y: layout.column_y,
+        width: layout.column_width,
+        row_height: layout.row_height,
+        viewport_height: layout.viewport_height,
+        scroll: game.content_browser.npc_ships_scroll,
+        rows: &npc_ship_rows,
+        selected_row: None,
+    });
+
+    draw_content_debug_column(ContentColumnRender {
+        title: "Planets",
+        x: x + 24.0 + (layout.column_width + layout.column_gap) * 4.0,
         y: layout.column_y,
         width: layout.column_width,
         row_height: layout.row_height,
@@ -9657,6 +9866,26 @@ fn filtered_content_recipe_rows(game: &GameState, selected_pack_id: Option<&str>
             format!(
                 "{} x{}  {}",
                 output_name, recipe.output.count, recipe.station
+            )
+        })
+        .collect()
+}
+
+fn filtered_content_npc_ship_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
+    let registry = &game.content_registry;
+    registry
+        .npc_ship_order
+        .iter()
+        .filter(|npc_ship_id| {
+            selected_pack_id
+                .map(|pack_id| content_id_belongs_to_pack(npc_ship_id, pack_id))
+                .unwrap_or(true)
+        })
+        .filter_map(|npc_ship_id| registry.npc_ships.get(npc_ship_id))
+        .map(|npc_ship| {
+            format!(
+                "{}  {}  {}",
+                npc_ship.name, npc_ship.archetype, npc_ship.role
             )
         })
         .collect()
@@ -13735,6 +13964,7 @@ mod tests {
             installed_power_modules: Vec::new(),
             equipped_shields: Vec::new(),
             equipped_weapons: Vec::new(),
+            npc_ships: Vec::new(),
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
             ship_texture: None,
