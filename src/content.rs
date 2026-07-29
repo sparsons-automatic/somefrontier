@@ -3242,6 +3242,117 @@ choices = ["standard"]
         fs::remove_dir_all(root).ok();
     }
 
+    #[test]
+    fn rejects_station_destination_without_position_pair() {
+        let root = make_temp_content_root("bad-station-destination");
+        let pack_path = root.join("bad-station-pack");
+        fs::create_dir_all(&pack_path).expect("temp pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            r#"
+id = "bad-station-pack"
+name = "Bad Station Pack"
+version = "0.1.0"
+"#,
+        )
+        .expect("pack manifest should be written");
+        fs::write(
+            pack_path.join("systems.toml"),
+            r#"
+[[systems]]
+id = "test_system"
+name = "Test System"
+arrival = [0.0, 0.0]
+"#,
+        )
+        .expect("systems should be written");
+        fs::write(
+            pack_path.join("stations.toml"),
+            r#"
+[[stations]]
+id = "partial_destination"
+name = "Partial Destination"
+system = "test_system"
+radius = 48.0
+"#,
+        )
+        .expect("stations should be written");
+
+        let errors = load_content_packs(&root)
+            .expect_err("station with only system or position should fail validation");
+        assert!(errors.iter().any(|error| {
+            error == "Station `bad-station-pack:partial_destination` must define both system and position to become a destination"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rejects_missing_ship_and_power_module_references() {
+        let root = make_temp_content_root("bad-ship-power-refs");
+        let pack_path = root.join("bad-ship-pack");
+        fs::create_dir_all(&pack_path).expect("temp pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            r#"
+id = "bad-ship-pack"
+name = "Bad Ship Pack"
+version = "0.1.0"
+"#,
+        )
+        .expect("pack manifest should be written");
+        fs::write(
+            pack_path.join("power.toml"),
+            r#"
+[[power_modules]]
+id = "bad_reactor"
+name = "Bad Reactor"
+family = "Test"
+install_item = "missing_reactor"
+generation = 10.0
+mass = 100.0
+fuel_item = "missing_fuel"
+"#,
+        )
+        .expect("power modules should be written");
+        fs::write(
+            pack_path.join("ships.toml"),
+            r#"
+[[ships]]
+id = "bad_ship"
+name = "Bad Ship"
+mass = 1000.0
+forward_acceleration = 10.0
+reverse_acceleration = 5.0
+turn_acceleration = 2.0
+energy_capacity = 100.0
+energy_recharge = 10.0
+linear_drag = 0.9
+hull_capacity = 100.0
+shield_capacity = 50.0
+power_modules = ["bad_reactor", "missing_module"]
+"#,
+        )
+        .expect("ships should be written");
+
+        let errors =
+            load_content_packs(&root).expect_err("missing ship and power refs should fail");
+        assert!(errors.iter().any(|error| {
+            error
+                == "Power module `bad-ship-pack:bad_reactor` references missing install item `bad-ship-pack:missing_reactor`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Power module `bad-ship-pack:bad_reactor` references missing fuel item `bad-ship-pack:missing_fuel`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship `bad-ship-pack:bad_ship` references missing power module `bad-ship-pack:missing_module`"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
     fn make_temp_content_root(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
