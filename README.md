@@ -132,9 +132,10 @@ IDs.
 ## Content Debugging
 
 Press `C` to open a compact content browser showing loaded packs, items,
-recipes, shields, weapons, systems, stars, planets, and upgrades. The pack list
-is selectable: choose a pack to filter the item, recipe, and planet columns to
-that pack, and use the mouse wheel over a column to scroll longer lists.
+recipes, NPC ships, shields, weapons, systems, stars, planets, and upgrades.
+The pack list is selectable: choose a pack to filter the item, recipe, NPC ship,
+and planet columns to that pack, and use the mouse wheel over a column to scroll
+longer lists.
 
 ## Startup Transition
 
@@ -153,6 +154,7 @@ midpoint action hook, then fade back to gameplay.
 Runtime world-content assets live under `content/packs/<pack>/assets/`:
 
 - `content/packs/core/assets/ships/frontier-cargo-ship-01.png`
+- `content/packs/core/assets/ships/npc-scout-01.png`
 - `content/packs/core/assets/planets/frontier-planet-01.png` through
   `frontier-planet-20.png`
 - `content/packs/core/assets/stations/`
@@ -176,9 +178,9 @@ systems and assets.
 
 Built-in world content lives under `content/packs/core/`, and optional
 first-party/plugin packs live beside it under `content/packs/`. The game
-currently loads items, recipes, ships, shields, weapons, planets, stations,
-systems, stars, and starter inventory from discovered packs. Inventory, recipes,
-mining, and UI labels use registry-backed item IDs.
+currently loads items, recipes, ships, NPC ships, shields, weapons, planets,
+stations, systems, stars, and starter inventory from discovered packs.
+Inventory, recipes, mining, and UI labels use registry-backed item IDs.
 
 ## Development
 

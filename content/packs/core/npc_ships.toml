@@ -1,0 +1,70 @@
+[[npc_ships]]
+id = "frontier_freehauler"
+name = "Frontier Freehauler"
+texture = "./assets/ships/npc-scout-01.png"
+system = "frontier"
+position = [-760.0, 420.0]
+radius = 30.0
+archetype = "utility-hauler"
+role = "hauler"
+behavior_tags = ["traffic", "trade-route", "non-hostile"]
+spawn_weight = 1.0
+spawn_count = 2
+mass = 54000.0
+cargo_capacity = 32000.0
+cargo_defaults = [
+  { item = "iron_ore", count = 8 },
+  { item = "copper_ore", count = 6 },
+]
+hull_capacity = 70.0
+shield_capacity = 45.0
+energy_capacity = 60.0
+shield_slots = ["balanced_shield_matrix"]
+summary = "Independent cargo skiff moving starter ore and components through Frontier local space."
+
+[[npc_ships]]
+id = "frontier_patrol_cutter"
+name = "Frontier Patrol Cutter"
+texture = "./assets/ships/npc-scout-01.png"
+system = "frontier"
+position = [820.0, -520.0]
+radius = 28.0
+archetype = "patrol-cutter"
+role = "patrol"
+behavior_tags = ["security", "patrol", "non-hostile"]
+spawn_weight = 0.75
+spawn_count = 1
+mass = 42000.0
+cargo_capacity = 12000.0
+cargo_defaults = [
+  { item = "fuel_canister", count = 1 },
+]
+hull_capacity = 82.0
+shield_capacity = 80.0
+energy_capacity = 90.0
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret"]
+summary = "Local patrol craft that gives the system an early security presence without adding behavior yet."
+
+[[npc_ships]]
+id = "redwake_probe"
+name = "Redwake Probe"
+texture = "./assets/ships/npc-scout-01.png"
+system = "frontier"
+position = [1140.0, 240.0]
+radius = 22.0
+archetype = "raider-probe"
+role = "hostile"
+behavior_tags = ["hostile", "probe", "future-encounter"]
+spawn_weight = 0.45
+spawn_count = 1
+mass = 18000.0
+cargo_capacity = 2500.0
+cargo_defaults = [
+  { item = "circuit", count = 1 },
+]
+hull_capacity = 36.0
+shield_capacity = 20.0
+energy_capacity = 40.0
+weapon_slots = ["point_defense_turret"]
+summary = "Light hostile probe content reserved for future encounter and faction behavior."
