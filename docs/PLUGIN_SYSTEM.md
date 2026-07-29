@@ -195,8 +195,23 @@ Rules:
 - `id` must be unique.
 - `id` should use lowercase letters, numbers, and hyphens.
 - `depends_on` packs must load first.
-- `optional_depends_on` can be used later for compatibility recipes or bonus
-  content when another pack exists.
+- `depends_on` and `optional_depends_on` accept either string pack IDs or inline
+  tables with exact versions:
+
+```toml
+depends_on = [
+  { id = "core", version = "0.1.0" },
+]
+optional_depends_on = [
+  { id = "scanner-tech", version = "0.1.0" },
+]
+```
+
+- Required dependencies fail startup when missing or when an exact declared
+  version does not match.
+- Optional dependencies gate the whole pack. If any optional dependency is
+  missing or has the wrong exact version, the pack is skipped and startup
+  continues with a content warning.
 
 ## `items.toml`
 
@@ -544,14 +559,20 @@ Example:
 id = "icy-scanner-compat"
 name = "Icy Frontier + Scanner Tech Compatibility"
 version = "0.1.0"
-depends_on = ["core", "icy-frontier", "scanner-tech"]
+depends_on = [
+  { id = "core", version = "0.1.0" },
+]
+optional_depends_on = [
+  { id = "icy-frontier", version = "0.1.0" },
+  { id = "scanner-tech", version = "0.1.0" },
+]
 ```
 
 ```toml
 # recipes.toml
 [[recipes]]
 id = "cryo_survey_drone"
-station = "crafting"
+station = "core:crafting"
 output = { item = "scanner-tech:cryo_survey_drone", count = 1 }
 ingredients = [
   { item = "scanner-tech:improved_survey_drone", count = 1 },
@@ -560,21 +581,29 @@ ingredients = [
 purpose = "Improved survey drone with better icy-body hazard resistance."
 ```
 
+If either `icy-frontier` or `scanner-tech` is not installed, or if its declared
+version does not match exactly, the loader skips `icy-scanner-compat` before
+reading its item or recipe files. When both optional dependencies are present,
+the compatibility recipes use the same namespaced item, station, and recipe
+validation as ordinary pack content.
+
 ## Load Order
 
 1. Discover pack folders.
 2. Read all `pack.toml` files.
 3. Validate unique pack IDs.
-4. Sort packs by `depends_on`.
-5. Load item definitions.
-6. Load recipe definitions.
-7. Load universe, galaxy, region, system, and star metadata.
-8. Load planet definitions.
-9. Load station definitions.
-10. Load starter inventory definitions.
-11. Validate cross-references.
-12. Build runtime registries.
-13. Start the game only if validation succeeds.
+4. Skip packs whose `optional_depends_on` entries are missing or version
+   mismatched, recording content warnings.
+5. Sort remaining packs by `depends_on` and satisfied `optional_depends_on`.
+6. Load item definitions.
+7. Load recipe definitions.
+8. Load universe, galaxy, region, system, and star metadata.
+9. Load planet definitions.
+10. Load station definitions.
+11. Load starter inventory definitions.
+12. Validate cross-references.
+13. Build runtime registries.
+14. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -583,6 +612,8 @@ Reject startup when:
 - Two packs have the same pack ID.
 - Two definitions resolve to the same namespaced ID.
 - A dependency is missing.
+- A required dependency declares an exact version that does not match the
+  installed pack.
 - Dependencies contain a cycle.
 - A recipe references a missing item.
 - A recipe references a missing station.
@@ -602,7 +633,8 @@ Warnings are acceptable for:
 - Recipes that use stations not exposed in the UI yet.
 - Planets placed very far from existing content.
 - Systems or regions that are defined but not discoverable yet.
-- Optional dependencies that are not installed.
+- Optional dependencies that are not installed or whose exact version does not
+  match.
 
 ## Runtime Registry
 
@@ -692,7 +724,7 @@ struct ItemStack {
 6. [x] Convert inventory, recipes, mining, and UI labels to read from item IDs.
 7. [x] Remove hardcoded core content fallbacks from `main.rs` after parity is
    reached.
-8. Add support for optional compatibility packs.
+8. [x] Add support for optional compatibility packs.
 9. Add a simple in-game or startup content error screen.
 
 ## Authoring Guidelines
