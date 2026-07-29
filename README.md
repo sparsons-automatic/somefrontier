@@ -31,6 +31,9 @@ cargo run --release
 
 ## Controls
 
+For the full current gameplay reference, see
+[The Player's Guide to Some Frontier](docs/PLAYERS_GUIDE.md).
+
 - `W`: forward thrust
 - `S`: reverse thrust
 - `A` / `D` or left / right arrows: turn the ship
@@ -173,6 +176,8 @@ Additional asset organization notes are in [assets/README.md](assets/README.md).
 
 Gameplay planning docs live under [docs/](docs/), including recipe/material
 chains, broader game guidelines, and the file-based plugin/content-pack model.
+Player-facing instructions live in
+[The Player's Guide to Some Frontier](docs/PLAYERS_GUIDE.md).
 The intended pattern is that base game code owns mechanics and validation while
 `core` and plugin packs add world content such as items, recipes, factions,
 planets, systems, and assets.

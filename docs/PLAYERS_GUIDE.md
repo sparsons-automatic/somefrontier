@@ -1,0 +1,219 @@
+# The Player's Guide to Some Frontier
+
+This guide describes the current playable build of Some Frontier. It avoids
+future plans unless a feature is already visible in-game.
+
+## Getting Started
+
+Run the game from the project root:
+
+```sh
+cargo run
+```
+
+The title screen lets you start a new game, load an existing save, review
+content packs, adjust settings, or quit. New games use a world seed; choose one
+manually or randomize it before starting. Loading a save restores the seed,
+ship state, inventory, skills, upgrades, selected destination, equipped modules,
+production settings, scanned planets, mining quotas, and content-pack options.
+
+## Controls
+
+| Action | Control |
+|---|---|
+| Forward thrust | `W` |
+| Reverse thrust | `S` |
+| Turn | `A` / `D` or left / right arrows |
+| Open inventory and production | `Tab` or `E` |
+| Open map | `M` |
+| Open skills | `K` |
+| Open content browser | `C` |
+| Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
+| Inspect nearby planet or station | `Space` |
+| Select a visible planet | Left click the planet |
+| Set a starmap destination | Left click a planet in the map |
+| Open ship upgrades | Click the ship preview in inventory |
+| Close menu / pause actions | `Esc` |
+
+On the title screen, use the visible buttons or keyboard shortcuts shown beside
+them. `Esc` backs out of submenus or leaves the title flow when available.
+
+## Flight And Navigation
+
+You pilot the Frontier Cargo Ship in local space. Thrust and turning are manual.
+The camera follows the ship, and zoom helps inspect nearby planets, stations,
+NPC ships, orbit guides, and route context.
+
+The map shows the current system and known destinations. Systems tagged as
+starter, surveyed, known, or remote can appear in the known systems panel. Warp
+travel charges before switching systems, and non-starter routes can require fuel
+canisters. The starter system is always free to return to.
+
+Planets can be selected from local space or the map. When you are close enough,
+the planet panel shows available actions. You can enter orbit from the planet
+panel while in range; applying manual thrust or starting warp breaks orbit.
+
+## Surveying
+
+Planets begin unscanned. Before survey, the detail panel hides classification,
+resources, hazards, and ownership. Build survey drones from the crafting tab,
+fly within interaction range, and launch a drone from the planet panel.
+
+Survey levels reveal more information:
+
+- Surface scan: classification, summary, hazards, and ownership.
+- Composition scan: mineable resources.
+- Richness scan: resource richness and bonus-yield chances.
+
+Basic survey drones are consumed when launched. Improved survey drones and ship
+upgrades can increase scan depth. The drone bay upgrade can add a chance to
+recover survey drones.
+
+## Mining
+
+After a planet has composition data, selecting that planet changes the right
+side work table into mining rows. Click a mineable resource row to queue one
+mining bill. Mining completes one bill at a time from top to bottom.
+
+The `Keep` column sets an auto-maintained inventory target. Increase or
+decrease keep values with left click, right click, or mouse wheel over the keep
+cell. Hold `Shift` to adjust by 5 or `Control` to adjust by 10.
+
+Hazard effects are lightweight in the current build. Some planets can drain
+shields while the ship is close. Stable orbit mitigates configured shield drain.
+
+## Production
+
+Open inventory with `Tab` or `E`. The production table has three tabs:
+
+- `Smelt`: turn raw ore into plates and other refined materials.
+- `Craft`: build components, survey drones, ship modules, and upgrade parts.
+- `Process`: make fuel, coolant, reactor components, and related materials.
+
+Click a recipe row to queue one bill. Production consumes ingredients from
+inventory and completes one bill at a time. The `Keep` column works like mining:
+it keeps producing until the target stock level is reached, as long as inputs
+are available.
+
+Production actions award skill XP for the related mining, smelting, or
+fabrication skill.
+
+## Inventory And Cargo
+
+Inventory stores item stacks from mining, production, starter cargo, trading,
+and module swaps. Items have unit mass in kilograms. The inventory panel shows
+stack mass and total cargo mass; cargo mass is currently informational and does
+not change flight handling.
+
+Some crafted items are installable modules. Shield and weapon install items can
+be swapped through ship detail surfaces when a matching slot exists.
+
+## Skills
+
+Open skills with `K`. Mining, smelting, crafting, and processing actions award
+XP. Click `+` to spend XP on levels when affordable.
+
+Skill effects:
+
+- Levels 1-10: speed bonuses for the related activity.
+- Levels 11-20: chance for free extra output.
+
+Low-value actions grant less XP as a skill rises.
+
+## Ship Upgrades
+
+Open inventory, then click the ship preview to open ship upgrades. Upgrades
+consume crafted components and immediately improve ship systems such as thrust,
+turning, energy, shields, survey drone behavior, warp charge time, scan depth,
+and cargo rating.
+
+Upgrade costs scale by level. If you cannot afford an upgrade, its action is
+disabled until the required items are in inventory.
+
+## Shields And Weapons
+
+Ships can mount shield modules through shield slots. Shield modules define
+capacity, recharge delay, recharge rate, damage resistance, and hazard
+resistance. The ship detail panel shows installed shields, current shield
+strength, recharge state, and resistance values.
+
+Ships can also mount weapon modules through weapon slots. The current weapon
+type is automatic turret defense. Turrets scan for valid hostile threats in
+range, fire when ready, and spend ship energy. They ignore neutral, owned, and
+environmental threats. There is no manual targeting or fire button in the
+current build.
+
+## Stations And Services
+
+Stations appear as local-space destinations. Fly within dock range and inspect
+or select them with `Space` or left click where supported. The station panel
+shows name, range, summary, ownership, culture, disposition, and service groups.
+
+Current service groups can include trade stock and recipe unlocks. Trade rows
+let you buy one unit with left click or sell one unit with right click when the
+ship is in range and the offer is available. Recipe unlocks can expose
+additional production recipes after purchase.
+
+Some service groups are present as player-facing station context before their
+full mechanics exist.
+
+## NPC Ships And Factions
+
+NPC ships appear as static contacts in local space. They have names, roles,
+archetypes, cargo defaults, stats, loadouts, and faction ownership. Their
+current purpose is presentation and future-system data support; they do not yet
+move, hail, dock, trade, chase, or fight as autonomous ships.
+
+Factions and societies own systems, planets, stations, and NPC ships. The UI can
+show faction names and default disposition such as friendly, neutral, hostile,
+or unknown. Disposition is currently informational except where existing turret
+threat filtering already distinguishes hostile threats.
+
+## Content Packs
+
+Content packs live under `content/packs/`. The built-in `core` pack provides
+the default playable content. Optional first-party packs can add systems,
+planets, recipes, resources, and related data when enabled.
+
+Open the title screen Content Packs view to inspect available packs and options
+before starting a new game. In gameplay, press `C` to open the content browser.
+The content browser lists loaded packs, items, recipes, NPC ships, planets, and
+summary counts for other loaded content such as factions. Select a pack to
+narrow the visible rows and use the mouse wheel over a column to scroll.
+
+Removing a content pack can leave old saves pointing at missing content. For
+stable saves, keep the same pack set enabled.
+
+## Saving And Configuration
+
+The game autosaves progress and also saves when using pause-menu save actions.
+`Esc` closes the topmost open overlay first. When no overlay is open, `Esc`
+opens the pause dialog with actions such as resume, save now, title menu, and
+quit to desktop.
+
+Save files are stored under:
+
+```text
+$XDG_CONFIG_HOME/some-frontier/
+```
+
+If `XDG_CONFIG_HOME` is not set, the fallback is:
+
+```text
+~/.config/some-frontier/
+```
+
+Window size is saved in the same configuration area.
+
+## Troubleshooting
+
+- If the game does not start, run it from the repository root so `content/` and
+  `assets/` paths resolve correctly.
+- If startup reports content validation errors, check recently edited pack files
+  for missing IDs, missing textures, invalid references, or unsupported values.
+- If a save behaves strangely after pack changes, restore the previous pack set
+  or start a new game with the current pack configuration.
+- If production rows are unavailable, check that the required ingredients are in
+  inventory and that any needed recipe unlock has been purchased.
+- If a planet cannot be mined, survey it until composition data is visible and
+  keep the planet selected or stay in range.
