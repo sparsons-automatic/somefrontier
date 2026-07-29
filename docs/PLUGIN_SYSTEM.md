@@ -1,9 +1,9 @@
 # Plugin System
 
 Some Frontier plugins should start as local data packs. A pack can add items,
-recipes, ships, NPC ships, power modules, weapons, shields, planets, stations,
-systems, upgrades, assets, and eventually events without compiling new Rust
-code.
+recipes, ships, NPC ships, factions, power modules, weapons, shields, planets,
+stations, systems, upgrades, assets, and eventually events without compiling
+new Rust code.
 
 The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
@@ -29,7 +29,7 @@ Core pack responsibilities:
 
 - Default items.
 - Default recipes.
-- Default ship, NPC ship, power-module, weapon, and shield definitions.
+- Default ship, NPC ship, faction, power-module, weapon, and shield definitions.
 - Default planets and planet assets.
 - Default starting inventory.
 - Default station list.
@@ -39,8 +39,8 @@ Core pack responsibilities:
 
 Plugin pack responsibilities:
 
-- Add new items, recipes, ships, NPC ships, power modules, weapons, shields,
-  planets, stations, systems, and assets.
+- Add new items, recipes, ships, NPC ships, factions, power modules, weapons,
+  shields, planets, stations, systems, and assets.
 - Add compatibility recipes between packs.
 - Add alternate resource branches that use existing mechanics.
 - Add upgrade cost branches for base-game upgrade mechanics.
@@ -75,6 +75,7 @@ content/packs/core/
   shields.toml
   ships.toml
   npc_ships.toml
+  factions.toml
   recipes.toml
   universe.toml
   systems.toml
@@ -96,6 +97,7 @@ content/packs/icy-frontier/
   shields.toml
   ships.toml
   npc_ships.toml
+  factions.toml
   recipes.toml
   universe.toml
   systems.toml
@@ -397,8 +399,8 @@ position = [760.0, -420.0]
 radius = 58.0
 icon = "ring"
 texture = "./assets/stations/frontier-exchange.png"
-culture = "Freebelt dockworkers"
-faction = "Cinder Cooperative"
+culture = "freebelt_compact"
+faction = "cinder_cooperative"
 summary = "A modular trade station where refinery crews, haulers, and survey pilots exchange cargo and rumors."
 
 [[stations.services]]
@@ -433,7 +435,11 @@ Rules:
   textures.
 - `icon` defaults to `station`; currently supported values are interpreted by
   base-game rendering.
-- `culture`, `faction`, and `summary` are optional player-facing metadata.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
+- `culture` is optional. When present, it also resolves to a namespaced faction
+  or society record and must reference a loaded faction record.
+- `summary` is optional player-facing metadata.
 - Service `id` values resolve to namespaced IDs and must be unique within the
   station.
 - Service `name` and `kind` must not be empty.
@@ -636,6 +642,8 @@ Rules:
 - `position` is the local-space position used for the initial static
   presentation.
 - `radius` defaults to 28.0 and must be positive.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
 - `behavior_tags` defaults to an empty list. Tags are descriptive hooks for
   future behavior systems.
 - `spawn_weight` defaults to 1.0 and must be positive.
@@ -647,6 +655,40 @@ Rules:
 - `shield_slots` and `weapon_slots` default to empty lists and must reference
   loaded shields and weapons when present.
 - `summary` is optional player-facing metadata.
+
+## `factions.toml`
+
+Faction files define player-facing societies, cultures, authorities, crews, and
+hostile groups that can own or influence world content. Faction records are
+data hooks for ownership and disposition; behavior systems such as diplomacy,
+regional spawning, contracts, and combat rules remain owned by the base game.
+
+```toml
+[[factions]]
+id = "cinder_cooperative"
+name = "Cinder Cooperative"
+kind = "cooperative"
+default_disposition = "friendly"
+color = [150, 221, 226]
+tags = ["industrial", "security", "starter"]
+summary = "Frontier industrial cooperative that coordinates starter-system refining, patrol, and station logistics."
+```
+
+Rules:
+
+- `id` resolves to a namespaced faction ID.
+- `name` and `kind` must not be empty. `kind` is descriptive metadata such as
+  `cooperative`, `guild`, `authority`, `compact`, `union`, or `raider`.
+- `default_disposition` defaults to `neutral` and must be one of `friendly`,
+  `neutral`, `hostile`, or `unknown`.
+- `color` defaults to `[150, 221, 226]` and is used as display metadata.
+- `tags` defaults to an empty list and provides future hooks for spawning,
+  encounters, services, and route rules.
+- `summary` is optional player-facing metadata.
+- Systems, planets, stations, and NPC ships can reference factions with a
+  `faction` field.
+- Stations can also use `culture` to reference a faction or society record that
+  describes local dock culture separately from formal ownership.
 
 ## `starter.toml`
 
@@ -797,6 +839,8 @@ Rules:
 - `system` IDs are warp destination IDs.
 - `arrival` is the local-space ship position after warping into the system.
 - `primary_star` should reference a star in the same system when present.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
 - `tags` are optional and useful for discovery filters, route gating, and plugin
   compatibility.
 - Use `starter`, `surveyed-route`, `known`, or `remote` when the system should
@@ -857,6 +901,8 @@ Rules:
   the pack folder. Paths starting with `assets/` or `content/` resolve from the
   game root. Other relative paths resolve relative to the pack folder.
 - `system` is required and should reference an existing system.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
 - `mineables` must reference existing item IDs.
 - `orbit` is optional. If omitted, `position` remains a static local-space
   coordinate.
@@ -937,16 +983,17 @@ validation as ordinary pack content.
 11. Load ship definitions.
 12. Load NPC ship definitions.
 13. Load recipe definitions.
-14. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
+14. Load faction definitions.
+15. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
     star metadata.
-15. Load planet definitions.
-16. Load station definitions and station services.
-17. Load upgrade cost definitions.
-18. Load starter inventory definitions.
-19. Validate cross-references.
-20. Record duplicate recipe-output warnings.
-21. Build runtime registries.
-22. Start the game only if validation succeeds.
+16. Load planet definitions.
+17. Load station definitions and station services.
+18. Load upgrade cost definitions.
+19. Load starter inventory definitions.
+20. Validate cross-references.
+21. Record duplicate recipe-output warnings.
+22. Build runtime registries.
+23. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -981,18 +1028,21 @@ Reject startup when:
 - A ship references a missing weapon.
 - A ship has an empty name or non-positive mass, acceleration, energy, drag,
   hull, or shield values.
-- An NPC ship references a missing system, cargo item, shield, or weapon.
+- A faction has an empty name or kind, or an unsupported default disposition.
+- An NPC ship references a missing system, faction, cargo item, shield, or
+  weapon.
 - An NPC ship has an empty name, archetype, or role; non-positive radius,
   spawn weight, mass, cargo capacity, hull, shield, or energy capacity; zero
   spawn count; or a zero-count cargo default.
-- A system references a missing region, galaxy, or universe.
+- A system references a missing region, galaxy, universe, or faction.
 - A system primary star is missing or belongs to another system.
 - A star references a missing system.
-- A planet references a missing system after local systems are enabled.
+- A planet references a missing system or faction after local systems are
+  enabled.
 - A planet references a missing mineable item.
 - A planet orbit has a missing anchor, an anchor outside the planet's system,
   a non-positive radius, unsupported eccentricity, or invalid period.
-- A station references a missing system.
+- A station references a missing system, faction, or culture.
 - A station defines only one of `system` or `position`.
 - A station has an empty name, non-positive base seconds, or non-positive
   radius.
@@ -1078,6 +1128,7 @@ struct NpcShipDef {
     radius: f32,
     archetype: String,
     role: String,
+    faction: Option<String>,
     behavior_tags: Vec<String>,
     spawn_weight: f32,
     spawn_count: u32,
@@ -1090,6 +1141,23 @@ struct NpcShipDef {
     shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
     summary: Option<String>,
+}
+
+struct FactionDef {
+    id: String,
+    name: String,
+    kind: String,
+    default_disposition: FactionDisposition,
+    color: [u8; 3],
+    tags: Vec<String>,
+    summary: Option<String>,
+}
+
+enum FactionDisposition {
+    Friendly,
+    Neutral,
+    Hostile,
+    Unknown,
 }
 
 struct ShieldDef {
@@ -1138,6 +1206,7 @@ struct PowerModuleDef {
 struct PlanetDef {
     id: String,
     system: String,
+    faction: Option<String>,
     classification: String,
     texture: Option<String>,
     position: [f32; 2],
@@ -1155,6 +1224,7 @@ struct SystemDef {
     name: String,
     region: Option<String>,
     primary_star: Option<String>,
+    faction: Option<String>,
     arrival: Vec2,
     description: String,
     tags: Vec<String>,
@@ -1178,6 +1248,8 @@ struct StationDef {
     system: Option<String>,
     position: Option<[f32; 2]>,
     radius: f32,
+    culture: Option<String>,
+    faction: Option<String>,
     services: Vec<StationServiceDef>,
 }
 ```

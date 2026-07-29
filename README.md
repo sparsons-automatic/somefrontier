@@ -132,7 +132,8 @@ IDs.
 ## Content Debugging
 
 Press `C` to open a compact content browser showing loaded packs, items,
-recipes, NPC ships, shields, weapons, systems, stars, planets, and upgrades.
+recipes, factions, NPC ships, shields, weapons, systems, stars, planets, and
+upgrades.
 The pack list is selectable: choose a pack to filter the item, recipe, NPC ship,
 and planet columns to that pack, and use the mouse wheel over a column to scroll
 longer lists.
@@ -173,13 +174,13 @@ Additional asset organization notes are in [assets/README.md](assets/README.md).
 Gameplay planning docs live under [docs/](docs/), including recipe/material
 chains, broader game guidelines, and the file-based plugin/content-pack model.
 The intended pattern is that base game code owns mechanics and validation while
-`core` and plugin packs add world content such as items, recipes, planets, and
-systems and assets.
+`core` and plugin packs add world content such as items, recipes, factions,
+planets, systems, and assets.
 
 Built-in world content lives under `content/packs/core/`, and optional
 first-party/plugin packs live beside it under `content/packs/`. The game
-currently loads items, recipes, ships, NPC ships, shields, weapons, planets,
-stations, systems, stars, and starter inventory from discovered packs.
+currently loads items, recipes, ships, NPC ships, factions, shields, weapons,
+planets, stations, systems, stars, and starter inventory from discovered packs.
 Inventory, recipes, mining, and UI labels use registry-backed item IDs.
 
 ## Development

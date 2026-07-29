@@ -1,6 +1,7 @@
 [[planets]]
 id = "bleached_azure_world"
 system = "frontier"
+faction = "cinder_cooperative"
 classification = "Bleached Azure World"
 texture = "./assets/planets/frontier-planet-01.png"
 position = [-5513.3, -1282.8]
@@ -22,6 +23,7 @@ summary = "Dual-toned geology suggests oceanic and terrestrial processes intertw
 [[planets]]
 id = "ferric_copper_planetoid"
 system = "frontier"
+faction = "cinder_cooperative"
 classification = "Ferric Copper Planetoid"
 texture = "./assets/planets/frontier-planet-02.png"
 position = [1268.4, 4.6]
@@ -42,6 +44,7 @@ summary = "Oxidized copper veins cut through iron-rich crust, making this a prac
 [[planets]]
 id = "nickel_iron_shard"
 system = "frontier"
+faction = "cinder_cooperative"
 classification = "Nickel-Iron Shard"
 texture = "./assets/planets/frontier-planet-03.png"
 position = [4239.2, 4126.1]
@@ -62,6 +65,7 @@ summary = "A fractured metallic body with nickel-rich plates and exposed iron se
 [[planets]]
 id = "silicate_glass_world"
 system = "frontier"
+faction = "frontier_cartographers"
 classification = "Silicate Glass World"
 texture = "./assets/planets/frontier-planet-04.png"
 position = [8.5, 2096.1]
@@ -82,6 +86,7 @@ summary = "A rocky silicate planet with glassy mineral basins suitable for futur
 [[planets]]
 id = "fractured_ice_body"
 system = "frontier"
+faction = "freebelt_compact"
 classification = "Fractured Ice Body"
 texture = "./assets/planets/frontier-planet-05.png"
 position = [9089.9, 4792.0]
@@ -102,6 +107,7 @@ summary = "A water-rich frozen body with deep ice fractures that could support f
 [[planets]]
 id = "ember_nickel_drift"
 system = "frontier"
+faction = "cinder_cooperative"
 classification = "Ember Nickel Drift"
 texture = "./assets/planets/frontier-planet-06.png"
 position = [-2333.5, 6814.5]
@@ -123,6 +129,7 @@ summary = "A drifting metallic shard field welded into a rough planetoid, with n
 [[planets]]
 id = "pale_silica_reach"
 system = "frontier"
+faction = "frontier_cartographers"
 classification = "Pale Silica Reach"
 texture = "./assets/planets/frontier-planet-07.png"
 position = [-3199.2, -5586.1]
@@ -144,6 +151,7 @@ summary = "A pale glass-crusted silicate world where quartz basins, aluminum-ric
 [[planets]]
 id = "marrow_ice_comet"
 system = "frontier"
+faction = "freebelt_compact"
 classification = "Marrow Ice Comet"
 texture = "./assets/planets/frontier-planet-08.png"
 position = [-108.8, 11875.1]
@@ -165,6 +173,7 @@ summary = "A chipped cometary ice body with black carbon seams and sulfur-staine
 [[planets]]
 id = "kestrel_titanium_moon"
 system = "frontier"
+faction = "helioforge_yard_union"
 classification = "Kestrel Titanium Moon"
 texture = "./assets/planets/frontier-planet-09.png"
 position = [-8059.8, -5901.9]
@@ -186,6 +195,7 @@ summary = "A compact heavy-metal moon with titanium-silver ridges, magnesium-whi
 [[planets]]
 id = "brine_spark_body"
 system = "frontier"
+faction = "freebelt_compact"
 classification = "Brine Spark Body"
 texture = "./assets/planets/frontier-planet-10.png"
 position = [2395.3, -5892.6]
@@ -207,6 +217,7 @@ summary = "A frozen brine world where carbon seams split cyan ice fields around 
 [[planets]]
 id = "auric_needle_cluster"
 system = "frontier"
+faction = "frontier_cartographers"
 classification = "Auric Needle Cluster"
 texture = "./assets/planets/frontier-planet-11.png"
 position = [-297.2, -10281.1]
@@ -228,6 +239,7 @@ summary = "A jagged precious-metal asteroid cluster with gold veins, silver seam
 [[planets]]
 id = "argent_relay_rock"
 system = "frontier"
+faction = "frontier_beacon_authority"
 classification = "Argent Relay Rock"
 texture = "./assets/planets/frontier-planet-12.png"
 position = [8038.3, -5613.9]
@@ -249,6 +261,7 @@ summary = "A conductive asteroid body laced with silver veins, copper channels, 
 [[planets]]
 id = "cobalt_scar_planetoid"
 system = "frontier"
+faction = "cinder_cooperative"
 classification = "Cobalt Scar Planetoid"
 texture = "./assets/planets/frontier-planet-13.png"
 position = [-8570.7, 2337.0]
@@ -270,6 +283,7 @@ summary = "A magnetic industrial planetoid where cobalt-blue scars cut through i
 [[planets]]
 id = "thorium_quiet_moon"
 system = "frontier"
+faction = "helioforge_yard_union"
 classification = "Thorium Quiet Moon"
 texture = "./assets/planets/frontier-planet-14.png"
 position = [-11943.1, 7323.3]
@@ -291,6 +305,7 @@ summary = "A stable heavy-metal moon with muted thorium seams, titanium-silver e
 [[planets]]
 id = "uranium_blackstone"
 system = "frontier"
+faction = "helioforge_yard_union"
 classification = "Uranium Blackstone"
 texture = "./assets/planets/frontier-planet-15.png"
 position = [-14567.7, -6111.4]
@@ -313,6 +328,7 @@ summary = "A hazardous reactor moon with matte black crust, uranium-green fissur
 [[planets]]
 id = "helium_skimmer_belt"
 system = "frontier"
+faction = "frontier_beacon_authority"
 classification = "Helium Skimmer Belt"
 texture = "./assets/planets/frontier-planet-16.png"
 position = [-3879.4, -16318.4]
@@ -332,6 +348,7 @@ summary = "A gas-giant skimmer zone with pale gold cloud bands and cyan helium-3
 [[planets]]
 id = "basalt_magnesium_world"
 system = "frontier"
+faction = "cinder_cooperative"
 classification = "Basalt Magnesium World"
 texture = "./assets/planets/frontier-planet-17.png"
 position = [-3233.0, 2120.1]
@@ -353,6 +370,7 @@ summary = "A volcanic silicate world where dark basalt plains expose magnesium-w
 [[planets]]
 id = "platinum_wake_debris"
 system = "frontier"
+faction = "freebelt_compact"
 classification = "Platinum Wake Debris"
 texture = "./assets/planets/frontier-planet-18.png"
 position = [11565.4, -12405.8]
@@ -374,6 +392,7 @@ summary = "A rare impact-debris body where platinum-white wake scars cut through
 [[planets]]
 id = "vitrine_prism_world"
 system = "frontier"
+faction = "frontier_cartographers"
 classification = "Vitrine Prism World"
 texture = "./assets/planets/frontier-planet-19.png"
 position = [-9860.6, 15599.3]
@@ -395,6 +414,7 @@ summary = "A luminous crystal world with glassy vitrine basins, azurite-blue cha
 [[planets]]
 id = "eldridium_anomaly"
 system = "frontier"
+faction = "frontier_cartographers"
 classification = "Eldridium Anomaly"
 texture = "./assets/planets/frontier-planet-20.png"
 position = [-10872.3, -18839.5]

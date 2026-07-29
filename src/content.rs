@@ -27,6 +27,8 @@ pub struct ContentRegistry {
     pub power_module_order: Vec<String>,
     pub recipes: HashMap<String, RecipeDef>,
     pub recipe_order: Vec<String>,
+    pub factions: HashMap<String, FactionDef>,
+    pub faction_order: Vec<String>,
     pub universes: HashMap<String, UniverseDef>,
     pub universe_order: Vec<String>,
     pub galaxy_groups: HashMap<String, GalaxyGroupDef>,
@@ -156,6 +158,7 @@ pub struct NpcShipDef {
     pub radius: f32,
     pub archetype: String,
     pub role: String,
+    pub faction: Option<String>,
     pub behavior_tags: Vec<String>,
     pub spawn_weight: f32,
     pub spawn_count: u32,
@@ -233,6 +236,46 @@ pub struct PowerModuleDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct FactionDef {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub default_disposition: FactionDisposition,
+    pub color: [u8; 3],
+    pub tags: Vec<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactionDisposition {
+    Friendly,
+    Neutral,
+    Hostile,
+    Unknown,
+}
+
+impl FactionDisposition {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Friendly => "friendly",
+            Self::Neutral => "neutral",
+            Self::Hostile => "hostile",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "friendly" => Some(Self::Friendly),
+            "neutral" => Some(Self::Neutral),
+            "hostile" => Some(Self::Hostile),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct UniverseDef {
     pub id: String,
     pub name: String,
@@ -285,6 +328,7 @@ pub struct SystemDef {
     pub galaxy: Option<String>,
     pub universe: Option<String>,
     pub primary_star: Option<String>,
+    pub faction: Option<String>,
     pub arrival: [f32; 2],
     pub description: Option<String>,
     pub tags: Vec<String>,
@@ -305,6 +349,7 @@ pub struct StarDef {
 pub struct PlanetDef {
     pub id: String,
     pub system: String,
+    pub faction: Option<String>,
     pub classification: String,
     pub texture: Option<String>,
     pub position: [f32; 2],
@@ -528,6 +573,7 @@ struct NpcShipFileDef {
     radius: f32,
     archetype: String,
     role: String,
+    faction: Option<String>,
     #[serde(default)]
     behavior_tags: Vec<String>,
     #[serde(default = "default_spawn_weight")]
@@ -616,6 +662,27 @@ struct PowerModuleFileDef {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct FactionsFile {
+    #[serde(default)]
+    factions: Vec<FactionFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactionFileDef {
+    id: String,
+    name: String,
+    #[serde(default = "default_faction_kind")]
+    kind: String,
+    #[serde(default = "default_faction_disposition")]
+    default_disposition: String,
+    #[serde(default = "default_faction_color")]
+    color: [u8; 3],
+    #[serde(default)]
+    tags: Vec<String>,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct UniverseFile {
     #[serde(default)]
     universes: Vec<UniverseFileDef>,
@@ -690,6 +757,7 @@ struct SystemFileDef {
     galaxy: Option<String>,
     universe: Option<String>,
     primary_star: Option<String>,
+    faction: Option<String>,
     arrival: [f32; 2],
     description: Option<String>,
     #[serde(default)]
@@ -803,6 +871,7 @@ struct StarterFile {
 struct PlanetFileDef {
     id: String,
     system: String,
+    faction: Option<String>,
     classification: String,
     texture: Option<String>,
     position: [f32; 2],
@@ -1414,6 +1483,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     radius: npc_ship.radius,
                     archetype: npc_ship.archetype,
                     role: npc_ship.role,
+                    faction: npc_ship
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     behavior_tags: npc_ship.behavior_tags,
                     spawn_weight: npc_ship.spawn_weight,
                     spawn_count: npc_ship.spawn_count,
@@ -1483,6 +1555,44 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             registry.recipe_order.push(id.clone());
         } else {
             errors.push(format!("Duplicate recipe id `{id}`"));
+        }
+    }
+
+    let factions = read_optional_toml::<FactionsFile>(&raw_pack.path.join("factions.toml"), errors);
+    for faction in factions.factions {
+        let id = namespaced_id(&pack_id, &faction.id);
+        validate_local_content_id(&id, "faction", errors);
+        validate_required_name(&id, "Faction", &faction.name, errors);
+        validate_required_name(&id, "Faction kind", &faction.kind, errors);
+        let default_disposition = match FactionDisposition::from_id(&faction.default_disposition) {
+            Some(disposition) => disposition,
+            None => {
+                errors.push(format!(
+                    "Faction `{id}` has unsupported default disposition `{}`",
+                    faction.default_disposition
+                ));
+                FactionDisposition::Neutral
+            }
+        };
+        let inserted = registry
+            .factions
+            .insert(
+                id.clone(),
+                FactionDef {
+                    id: id.clone(),
+                    name: faction.name,
+                    kind: faction.kind,
+                    default_disposition,
+                    color: faction.color,
+                    tags: faction.tags,
+                    summary: faction.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.faction_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate faction id `{id}`"));
         }
     }
 
@@ -1640,6 +1750,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     primary_star: system
                         .primary_star
                         .map(|primary_star| namespaced_id(&pack_id, &primary_star)),
+                    faction: system
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     arrival: system.arrival,
                     description: system.description,
                     tags: system.tags,
@@ -1731,6 +1844,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 PlanetDef {
                     id: id.clone(),
                     system: namespaced_id(&pack_id, &planet.system),
+                    faction: planet
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     classification: planet.classification,
                     texture,
                     position: planet.position,
@@ -1809,8 +1925,12 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     radius: station.radius,
                     texture,
                     icon: station.icon,
-                    culture: station.culture,
-                    faction: station.faction,
+                    culture: station
+                        .culture
+                        .map(|culture| namespaced_id(&pack_id, &culture)),
+                    faction: station
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     summary: station.summary,
                     services,
                 },
@@ -2205,6 +2325,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
             &npc_ship.system,
             errors,
         );
+        if let Some(faction) = &npc_ship.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "NPC ship",
+                &npc_ship.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
         for cargo in &npc_ship.cargo_defaults {
             validate_reference(
                 registry.items.contains_key(&cargo.item),
@@ -2246,6 +2376,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
             &planet.system,
             errors,
         );
+        if let Some(faction) = &planet.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "Planet",
+                &planet.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
         for mineable in &planet.mineables {
             if !registry.items.contains_key(mineable) {
                 errors.push(format!(
@@ -2267,6 +2407,26 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 &station.id,
                 "system",
                 system,
+                errors,
+            );
+        }
+        if let Some(faction) = &station.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "Station",
+                &station.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
+        if let Some(culture) = &station.culture {
+            validate_reference(
+                registry.factions.contains_key(culture),
+                "Station",
+                &station.id,
+                "culture",
+                culture,
                 errors,
             );
         }
@@ -2456,6 +2616,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                     system.id
                 ));
             }
+        }
+        if let Some(faction) = &system.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "System",
+                &system.id,
+                "faction",
+                faction,
+                errors,
+            );
         }
     }
 
@@ -2760,6 +2930,18 @@ fn default_npc_ship_radius() -> f32 {
     28.0
 }
 
+fn default_faction_kind() -> String {
+    "faction".to_string()
+}
+
+fn default_faction_disposition() -> String {
+    "neutral".to_string()
+}
+
+fn default_faction_color() -> [u8; 3] {
+    [150, 221, 226]
+}
+
 fn default_spawn_weight() -> f32 {
     1.0
 }
@@ -2812,6 +2994,17 @@ mod tests {
         assert!(registry.items.contains_key("core:point_defense_turret"));
         assert!(registry.items.contains_key("core:balanced_shield_matrix"));
         assert!(registry.items.contains_key("core:hazard_shield_matrix"));
+        assert_eq!(registry.factions.len(), 6);
+        assert!(registry
+            .factions
+            .get("core:redwake_raiders")
+            .is_some_and(|faction| {
+                faction.name == "Redwake Raiders"
+                    && faction.default_disposition == FactionDisposition::Hostile
+                    && faction.tags.iter().any(|tag| tag == "hostile")
+                    && faction.tags.iter().any(|tag| tag == "raider")
+                    && faction.tags.iter().any(|tag| tag == "probe")
+            }));
         assert_eq!(registry.npc_ships.len(), 3);
         assert!(registry
             .ships
@@ -2857,6 +3050,7 @@ mod tests {
             .is_some_and(|npc_ship| {
                 npc_ship.name == "Frontier Patrol Cutter"
                     && npc_ship.system == "core:frontier"
+                    && npc_ship.faction.as_deref() == Some("core:cinder_cooperative")
                     && npc_ship.archetype == "patrol-cutter"
                     && npc_ship.role == "patrol"
                     && npc_ship.spawn_count == 1
@@ -2923,6 +3117,10 @@ mod tests {
         assert!(registry.galaxies.contains_key("core:ember_spiral"));
         assert!(registry.regions.contains_key("core:cinder_reaches"));
         assert!(registry.systems.contains_key("core:frontier"));
+        assert!(registry
+            .systems
+            .get("core:frontier")
+            .is_some_and(|system| system.faction.as_deref() == Some("core:cinder_cooperative")));
         assert!(registry.stars.contains_key("core:frontier_primary"));
         assert!(registry
             .systems
@@ -2953,6 +3151,10 @@ mod tests {
             .planets
             .get("remote-duskfall:duskfall_vanadium_shard")
             .is_some_and(|planet| planet.system == "remote-duskfall:duskfall_reach"));
+        assert!(registry
+            .planets
+            .get("core:fractured_ice_body")
+            .is_some_and(|planet| planet.faction.as_deref() == Some("core:freebelt_compact")));
         assert!(registry
             .planets
             .get("remote-duskfall:redwake_reactor_moon")
@@ -3009,7 +3211,8 @@ mod tests {
                         texture
                             .contains("content/packs/core/./assets/stations/frontier-exchange.png")
                     })
-                    && station.faction.as_deref() == Some("Cinder Cooperative")
+                    && station.faction.as_deref() == Some("core:cinder_cooperative")
+                    && station.culture.as_deref() == Some("core:freebelt_compact")
                     && station.services.len() == 3
                     && station
                         .services
@@ -3950,6 +4153,56 @@ hazard_resistance = -0.1
         )
         .expect("shields should be written");
         fs::write(
+            pack_path.join("factions.toml"),
+            r#"
+[[factions]]
+id = "bad_faction"
+name = "Bad Faction"
+kind = "test"
+default_disposition = "furious"
+"#,
+        )
+        .expect("factions should be written");
+        fs::write(
+            pack_path.join("systems.toml"),
+            r#"
+[[systems]]
+id = "bad_system"
+name = "Bad System"
+faction = "missing_system_faction"
+arrival = [0.0, 0.0]
+"#,
+        )
+        .expect("systems should be written");
+        fs::write(
+            pack_path.join("planets.toml"),
+            r#"
+[[planets]]
+id = "bad_planet"
+system = "bad_system"
+faction = "missing_planet_faction"
+classification = "Bad Planet"
+position = [0.0, 0.0]
+radius = 64.0
+mineables = ["missing_planet_mineable"]
+summary = "A planet with missing faction ownership."
+"#,
+        )
+        .expect("planets should be written");
+        fs::write(
+            pack_path.join("stations.toml"),
+            r#"
+[[stations]]
+id = "bad_station"
+name = "Bad Station"
+system = "bad_system"
+position = [0.0, 0.0]
+faction = "missing_station_faction"
+culture = "missing_station_culture"
+"#,
+        )
+        .expect("stations should be written");
+        fs::write(
             pack_path.join("ships.toml"),
             r#"
 [[ships]]
@@ -3981,6 +4234,7 @@ position = [0.0, 0.0]
 radius = 12.0
 archetype = "bad-archetype"
 role = "hostile"
+faction = "missing_npc_faction"
 spawn_weight = 1.0
 spawn_count = 0
 mass = 100.0
@@ -4042,6 +4296,30 @@ weapon_slots = ["missing_npc_weapon"]
         assert!(errors.iter().any(|error| {
             error
                 == "NPC ship `bad-ship-pack:bad_npc` references missing system `bad-ship-pack:missing_system`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Faction `bad-ship-pack:bad_faction` has unsupported default disposition `furious`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "System `bad-ship-pack:bad_system` references missing faction `bad-ship-pack:missing_system_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Planet `bad-ship-pack:bad_planet` references missing faction `bad-ship-pack:missing_planet_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Station `bad-ship-pack:bad_station` references missing faction `bad-ship-pack:missing_station_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Station `bad-ship-pack:bad_station` references missing culture `bad-ship-pack:missing_station_culture`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing faction `bad-ship-pack:missing_npc_faction`"
         }));
         assert!(errors.iter().any(|error| {
             error

@@ -425,6 +425,7 @@ struct ShipResource {
 struct Planet {
     id: String,
     system: String,
+    faction: Option<String>,
     base_position: Vec2,
     position: Vec2,
     motion: PlanetMotion,
@@ -459,6 +460,7 @@ struct NpcShip {
     texture: Option<Texture2D>,
     archetype: String,
     role: String,
+    faction: Option<String>,
     behavior_tags: Vec<String>,
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
@@ -1185,10 +1187,11 @@ fn load_game_content_registry() -> content::ContentRegistry {
     match content::load_content_packs(Path::new("content/packs")) {
         Ok(registry) => {
             println!(
-                "Loaded {} content pack(s), {} item(s), {} ship(s), {} NPC ship(s), {} shield(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
+                "Loaded {} content pack(s), {} item(s), {} ship(s), {} faction(s), {} NPC ship(s), {} shield(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
                 registry.packs.len(),
                 registry.items.len(),
                 registry.ships.len(),
+                registry.factions.len(),
                 registry.npc_ships.len(),
                 registry.shields.len(),
                 registry.weapons.len(),
@@ -1257,6 +1260,7 @@ async fn make_planets(
         planets.push(Planet {
             id: planet_def.id.clone(),
             system: planet_def.system.clone(),
+            faction: planet_def.faction.clone(),
             base_position: seeded_position,
             position: runtime_position_from_motion(seeded_position, motion, 0.0),
             motion,
@@ -1432,6 +1436,7 @@ async fn make_npc_ships(
             texture,
             archetype: npc_ship_def.archetype.clone(),
             role: npc_ship_def.role.clone(),
+            faction: npc_ship_def.faction.clone(),
             behavior_tags: npc_ship_def.behavior_tags.clone(),
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
@@ -5528,6 +5533,17 @@ struct ContentColumnRender<'a> {
     selected_row: Option<usize>,
 }
 
+struct StationDetailRender<'a> {
+    content_registry: &'a content::ContentRegistry,
+    station: &'a StationDestination,
+    selected_service: Option<usize>,
+    in_range: bool,
+    distance: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+}
+
 fn content_browser_layout() -> ContentBrowserLayout {
     let width = screen_width() * 0.8;
     let height = screen_height() * 0.8;
@@ -7146,7 +7162,7 @@ fn draw_scene(game: &GameState, background: &UniverseBackground) {
         .iter()
         .filter(|npc_ship| npc_ship.system == game.current_system_id)
     {
-        draw_npc_ship(center, ship, npc_ship, zoom);
+        draw_npc_ship(&game.content_registry, center, ship, npc_ship, zoom);
     }
     for threat in game
         .defense_threats
@@ -7976,7 +7992,13 @@ fn draw_station(center: Vec2, ship: &Ship, station: &StationDestination, zoom: f
     );
 }
 
-fn draw_npc_ship(center: Vec2, ship: &Ship, npc_ship: &NpcShip, zoom: f32) {
+fn draw_npc_ship(
+    content_registry: &content::ContentRegistry,
+    center: Vec2,
+    ship: &Ship,
+    npc_ship: &NpcShip,
+    zoom: f32,
+) {
     let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
     let size = (npc_ship.radius * 2.0 * zoom).clamp(22.0, 72.0);
     let cull_padding = size + 100.0;
@@ -7989,7 +8011,11 @@ fn draw_npc_ship(center: Vec2, ship: &Ship, npc_ship: &NpcShip, zoom: f32) {
         return;
     }
 
-    let color = npc_ship_role_color(&npc_ship.role);
+    let color = npc_ship
+        .faction
+        .as_deref()
+        .map(|faction| faction_color(content_registry, faction, 235))
+        .unwrap_or_else(|| npc_ship_role_color(&npc_ship.role));
     draw_circle_lines(
         screen_pos.x,
         screen_pos.y,
@@ -8019,7 +8045,11 @@ fn draw_npc_ship(center: Vec2, ship: &Ship, npc_ship: &NpcShip, zoom: f32) {
         npc_ship.name,
         local_content_id(&npc_ship.id),
         npc_ship.archetype,
-        npc_ship.role
+        npc_ship
+            .faction
+            .as_deref()
+            .map(|faction| faction_name(content_registry, faction))
+            .unwrap_or(npc_ship.role.as_str())
     );
     draw_text(
         &fit_debug_text(&status, 230.0, 14),
@@ -9335,8 +9365,16 @@ fn draw_known_systems_panel(game: &GameState) {
             format!("NEED {}", format_warp_cost(&cost))
         };
         let detail = format!(
-            "{} bodies  arrival {:>4.0},{:>4.0}  {}",
-            body_count, system.arrival[0], system.arrival[1], marker
+            "{} bodies  {}  arrival {:>4.0},{:>4.0}  {}",
+            body_count,
+            system
+                .faction
+                .as_deref()
+                .map(|faction| faction_name(&game.content_registry, faction))
+                .unwrap_or("unclaimed"),
+            system.arrival[0],
+            system.arrival[1],
+            marker
         );
         draw_text(
             &fit_debug_text(&detail, row.w - 20.0, 13),
@@ -9712,10 +9750,11 @@ fn draw_content_debug_overlay(game: &GameState) {
         .map(|asset| asset.texture.width() * asset.texture.height())
         .sum::<f32>();
     let summary = format!(
-        "{} pack(s) / {} item(s) / {} recipe(s) / {} NPC ship(s) / {} shield(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
+        "{} pack(s) / {} item(s) / {} recipe(s) / {} faction(s) / {} NPC ship(s) / {} shield(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
         registry.packs.len(),
         registry.items.len(),
         registry.recipes.len(),
+        registry.factions.len(),
         registry.npc_ships.len(),
         registry.shields.len(),
         registry.weapons.len(),
@@ -9727,7 +9766,7 @@ fn draw_content_debug_overlay(game: &GameState) {
         game.transition_assets.len()
     );
     draw_text(
-        &summary,
+        &fit_debug_text(&summary, width - 48.0, 17),
         x + 24.0,
         y + 66.0,
         17.0,
@@ -9883,9 +9922,14 @@ fn filtered_content_npc_ship_rows(game: &GameState, selected_pack_id: Option<&st
         })
         .filter_map(|npc_ship_id| registry.npc_ships.get(npc_ship_id))
         .map(|npc_ship| {
+            let faction = npc_ship
+                .faction
+                .as_deref()
+                .map(|faction| faction_name(registry, faction))
+                .unwrap_or("unclaimed");
             format!(
-                "{}  {}  {}",
-                npc_ship.name, npc_ship.archetype, npc_ship.role
+                "{}  {}  {}  {}",
+                npc_ship.name, faction, npc_ship.archetype, npc_ship.role
             )
         })
         .collect()
@@ -9903,9 +9947,14 @@ fn filtered_content_planet_rows(game: &GameState, selected_pack_id: Option<&str>
         })
         .filter_map(|planet_id| registry.planets.get(planet_id))
         .map(|planet| {
+            let faction = planet
+                .faction
+                .as_deref()
+                .map(|faction| faction_name(registry, faction))
+                .unwrap_or("unclaimed");
             format!(
                 "{}  {}  {} resource(s)",
-                planet.system,
+                faction,
                 planet.classification,
                 planet.mineables.len()
             )
@@ -10582,6 +10631,47 @@ fn local_content_id(id: &str) -> &str {
         .unwrap_or(id)
 }
 
+fn faction_name<'a>(
+    content_registry: &'a content::ContentRegistry,
+    faction_id: &'a str,
+) -> &'a str {
+    content_registry
+        .factions
+        .get(faction_id)
+        .map(|faction| faction.name.as_str())
+        .unwrap_or_else(|| local_content_id(faction_id))
+}
+
+fn faction_disposition_label(
+    content_registry: &content::ContentRegistry,
+    faction_id: &str,
+) -> &'static str {
+    content_registry
+        .factions
+        .get(faction_id)
+        .map(|faction| match faction.default_disposition {
+            content::FactionDisposition::Friendly => "friendly",
+            content::FactionDisposition::Neutral => "neutral",
+            content::FactionDisposition::Hostile => "hostile",
+            content::FactionDisposition::Unknown => "unknown",
+        })
+        .unwrap_or("unknown")
+}
+
+fn faction_color(
+    content_registry: &content::ContentRegistry,
+    faction_id: &str,
+    alpha: u8,
+) -> Color {
+    content_registry
+        .factions
+        .get(faction_id)
+        .map(|faction| {
+            Color::from_rgba(faction.color[0], faction.color[1], faction.color[2], alpha)
+        })
+        .unwrap_or_else(|| Color::from_rgba(205, 226, 230, alpha))
+}
+
 fn draw_recipe_tooltip(recipe: &Recipe, inventory: &Inventory, mouse: Vec2) {
     let row_height = 24.0;
     let width = 286.0;
@@ -10722,6 +10812,7 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
     if let Some(planet_index) = game.selected_planet {
         if let Some(planet) = game.planets.get(planet_index) {
             draw_planet_detail(
+                &game.content_registry,
                 planet,
                 planet_in_interaction_range(&game.ship, planet),
                 game.orbiting_planet == Some(planet_index),
@@ -10735,15 +10826,16 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
 
     if let Some(station_index) = game.selected_station {
         if let Some(station) = game.stations.get(station_index) {
-            draw_station_detail(
+            draw_station_detail(StationDetailRender {
+                content_registry: &game.content_registry,
                 station,
-                game.selected_station_service,
-                station_in_interaction_range(&game.ship, station),
-                station_surface_distance(&game.ship, station),
+                selected_service: game.selected_station_service,
+                in_range: station_in_interaction_range(&game.ship, station),
+                distance: station_surface_distance(&game.ship, station),
                 x,
                 y,
                 width,
-            );
+            });
             return;
         }
     }
@@ -11130,15 +11222,17 @@ fn recipe_unlock_row_rect(x: f32, y: f32, width: f32, index: usize) -> Rect {
     )
 }
 
-fn draw_station_detail(
-    station: &StationDestination,
-    selected_service: Option<usize>,
-    in_range: bool,
-    distance: f32,
-    x: f32,
-    y: f32,
-    width: f32,
-) {
+fn draw_station_detail(render: StationDetailRender<'_>) {
+    let StationDetailRender {
+        content_registry,
+        station,
+        selected_service,
+        in_range,
+        distance,
+        x,
+        y,
+        width,
+    } = render;
     let label = Color::from_rgba(88, 116, 126, 180);
     let text = Color::from_rgba(205, 226, 230, 255);
     let warning = Color::from_rgba(226, 190, 150, 255);
@@ -11193,9 +11287,18 @@ fn draw_station_detail(
 
     draw_text("Ownership", x, detail_y, 16.0, label);
     let ownership = match (&station.faction, &station.culture) {
-        (Some(faction), Some(culture)) => format!("{faction} / {culture}"),
-        (Some(faction), None) => faction.clone(),
-        (None, Some(culture)) => culture.clone(),
+        (Some(faction), Some(culture)) => format!(
+            "{} / {} / {}",
+            faction_name(content_registry, faction),
+            faction_name(content_registry, culture),
+            faction_disposition_label(content_registry, faction)
+        ),
+        (Some(faction), None) => format!(
+            "{} / {}",
+            faction_name(content_registry, faction),
+            faction_disposition_label(content_registry, faction)
+        ),
+        (None, Some(culture)) => faction_name(content_registry, culture).to_string(),
         (None, None) => "Independent".to_string(),
     };
     draw_text(
@@ -11273,6 +11376,7 @@ fn draw_station_detail(
 }
 
 fn draw_planet_detail(
+    content_registry: &content::ContentRegistry,
     planet: &Planet,
     in_range: bool,
     is_orbiting: bool,
@@ -11329,7 +11433,31 @@ fn draw_planet_detail(
     };
     let after_scan = draw_wrapped_text(summary, x, data_y + 56.0, width, 16, text);
 
-    let mine_y = after_scan.max(data_y + 124.0);
+    let mut next_y = after_scan.max(data_y + 124.0);
+    if planet_has_surface_scan(planet) {
+        draw_text("Ownership", x, next_y, 16.0, label);
+        let ownership = planet
+            .faction
+            .as_deref()
+            .map(|faction| {
+                format!(
+                    "{} / {}",
+                    faction_name(content_registry, faction),
+                    faction_disposition_label(content_registry, faction)
+                )
+            })
+            .unwrap_or_else(|| "Unclaimed".to_string());
+        draw_text(
+            &fit_debug_text(&ownership, width, 16),
+            x,
+            next_y + 27.0,
+            16.0,
+            text,
+        );
+        next_y += 64.0;
+    }
+
+    let mine_y = next_y;
     draw_text("Mineable", x, mine_y, 16.0, label);
     if planet_has_composition_scan(planet) {
         let mineable_names = planet
@@ -12866,6 +12994,7 @@ mod tests {
                 galaxy: None,
                 universe: None,
                 primary_star: Some("test:star".to_string()),
+                faction: None,
                 arrival: [0.0, 0.0],
                 description: None,
                 tags: Vec::new(),
@@ -12886,6 +13015,7 @@ mod tests {
         let planet = content::PlanetDef {
             id: "test:orbiter".to_string(),
             system: "test:system".to_string(),
+            faction: None,
             classification: "Orbiter".to_string(),
             texture: None,
             position: [1000.0, 1000.0],
@@ -13849,6 +13979,7 @@ mod tests {
         Planet {
             id: id.to_string(),
             system: system.to_string(),
+            faction: None,
             base_position: position,
             position,
             motion: PlanetMotion::Static,

@@ -24,8 +24,8 @@ position = [760.0, -420.0]
 radius = 58.0
 icon = "ring"
 texture = "./assets/stations/frontier-exchange.png"
-culture = "Freebelt dockworkers"
-faction = "Cinder Cooperative"
+culture = "freebelt_compact"
+faction = "cinder_cooperative"
 summary = "A modular trade station where refinery crews, haulers, and survey pilots exchange cargo and rumors."
 
 [[stations.services]]
@@ -75,8 +75,8 @@ position = [-980.0, 360.0]
 radius = 50.0
 icon = "station"
 texture = "./assets/stations/ore-lattice-depot.png"
-culture = "Belt sorting crews"
-faction = "Cinder Cooperative"
+culture = "freebelt_compact"
+faction = "cinder_cooperative"
 summary = "A freight lattice and bulk-storage depot that stages raw ore shipments before refinery transfer."
 
 [[stations.services]]
@@ -120,8 +120,8 @@ position = [1180.0, 520.0]
 radius = 64.0
 icon = "ring"
 texture = "./assets/stations/cinder-repair-yard.png"
-culture = "Dockyard machinists"
-faction = "Helioforge Yard Union"
+culture = "helioforge_yard_union"
+faction = "helioforge_yard_union"
 summary = "A rugged repair yard built from pressure gantries, salvage frames, and temporary drydock arms."
 
 [[stations.services]]
@@ -171,8 +171,8 @@ position = [-520.0, -1120.0]
 radius = 46.0
 icon = "station"
 texture = "./assets/stations/pale-orbit-archive.png"
-culture = "Survey archivists"
-faction = "Frontier Cartographers"
+culture = "frontier_cartographers"
+faction = "frontier_cartographers"
 summary = "A quiet survey archive that collates scan records, route notes, and experimental navigation recipes."
 
 [[stations.services]]
@@ -207,8 +207,8 @@ position = [240.0, 1020.0]
 radius = 52.0
 icon = "ring"
 texture = "./assets/stations/freebelt-commissary.png"
-culture = "Independent haulers"
-faction = "Freebelt Compact"
+culture = "freebelt_compact"
+faction = "freebelt_compact"
 summary = "A crowded commissary where haulers buy supplies, settle favors, and trade stories between long burns."
 
 [[stations.services]]
@@ -258,8 +258,8 @@ position = [1420.0, -860.0]
 radius = 44.0
 icon = "station"
 texture = "./assets/stations/ember-watch-array.png"
-culture = "Signal watch crews"
-faction = "Frontier Beacon Authority"
+culture = "frontier_beacon_authority"
+faction = "frontier_beacon_authority"
 summary = "A sparse long-range antenna station that tracks route traffic, beacon drift, and unexplained signal returns."
 
 [[stations.services]]
