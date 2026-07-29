@@ -1,8 +1,8 @@
 # Plugin System
 
 Some Frontier plugins should start as local data packs. A pack can add items,
-recipes, ships, power modules, weapons, planets, stations, systems, upgrades,
-assets, and eventually events without compiling new Rust code.
+recipes, ships, power modules, weapons, shields, planets, stations, systems,
+upgrades, assets, and eventually events without compiling new Rust code.
 
 The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
@@ -28,7 +28,7 @@ Core pack responsibilities:
 
 - Default items.
 - Default recipes.
-- Default ship and power-module definitions.
+- Default ship, power-module, weapon, and shield definitions.
 - Default planets and planet assets.
 - Default starting inventory.
 - Default station list.
@@ -38,7 +38,7 @@ Core pack responsibilities:
 
 Plugin pack responsibilities:
 
-- Add new items, recipes, ships, power modules, weapons, planets, stations,
+- Add new items, recipes, ships, power modules, weapons, shields, planets, stations,
   systems, and assets.
 - Add compatibility recipes between packs.
 - Add alternate resource branches that use existing mechanics.
@@ -71,6 +71,7 @@ content/packs/core/
   items.toml
   power.toml
   weapons.toml
+  shields.toml
   ships.toml
   recipes.toml
   universe.toml
@@ -90,6 +91,7 @@ content/packs/icy-frontier/
   items.toml
   power.toml
   weapons.toml
+  shields.toml
   ships.toml
   recipes.toml
   universe.toml
@@ -513,11 +515,46 @@ Rules:
   environmental entities are ignored by the base targeting rules.
 - `summary` is optional player-facing metadata.
 
+## `shields.toml`
+
+Shield files define ship-mounted defensive shield equipment. The base game owns
+capacity, recharge timing, resistance math, hazard interaction, save/load, and
+slot swapping. Each shield points at an inventory install item so crafted shield
+modules can be swapped into ship shield slots.
+
+```toml
+[[shields]]
+id = "balanced_shield_matrix"
+name = "Balanced Shield Matrix"
+install_item = "balanced_shield_matrix"
+capacity = 100.0
+recharge_delay = 4.0
+recharge_rate = 7.5
+damage_resistance = 0.10
+hazard_resistance = 0.15
+summary = "Balanced shield matrix with steady recharge and modest all-around resistance."
+```
+
+Rules:
+
+- `id` resolves to a namespaced shield ID.
+- `name` must not be empty.
+- `install_item` must reference an existing item, usually something produced by
+  a crafting recipe. It is the inventory object consumed when this shield is
+  installed and returned when the shield is swapped out.
+- `capacity`, `recharge_delay`, and `recharge_rate` must be positive.
+- `damage_resistance` and `hazard_resistance` default to 0.0 and must be
+  between 0.0 and 1.0.
+- Hazard resistance reduces configured planet hazard shield drain while the ship
+  is near a hazardous planet.
+- `summary` is optional player-facing metadata.
+
 ## `ships.toml`
 
 Ship definitions provide data-driven hull and handling stats. The current
 starter ship uses this content metadata, while the base game still owns flight,
-damage, energy, save/load, weapon slot behavior, and upgrade behavior.
+damage, energy, save/load, shield and weapon slot behavior, and upgrade
+behavior.
 
 ```toml
 [[ships]]
@@ -534,6 +571,7 @@ linear_drag = 0.985
 hull_capacity = 100.0
 shield_capacity = 100.0
 power_modules = ["compact_fission_cell"]
+shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
 ```
 
@@ -546,6 +584,8 @@ Rules:
 - `mass`, acceleration, energy, drag, hull, and shield values must be positive.
 - `power_modules` defaults to an empty list. Entries resolve to namespaced power
   module IDs and must reference loaded power modules.
+- `shield_slots` defaults to an empty list. Entries resolve to namespaced shield
+  IDs and must reference loaded shields.
 - `weapon_slots` defaults to an empty list. Entries resolve to namespaced weapon
   IDs and must reference loaded weapons.
 
@@ -833,18 +873,20 @@ validation as ordinary pack content.
 6. For each ordered pack, load `config.toml` options.
 7. Load item definitions.
 8. Load power module definitions.
-9. Load ship definitions.
-10. Load recipe definitions.
-11. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
+9. Load shield definitions.
+10. Load weapon definitions.
+11. Load ship definitions.
+12. Load recipe definitions.
+13. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
     star metadata.
-12. Load planet definitions.
-13. Load station definitions and station services.
-14. Load upgrade cost definitions.
-15. Load starter inventory definitions.
-16. Validate cross-references.
-17. Record duplicate recipe-output warnings.
-18. Build runtime registries.
-19. Start the game only if validation succeeds.
+14. Load planet definitions.
+15. Load station definitions and station services.
+16. Load upgrade cost definitions.
+17. Load starter inventory definitions.
+18. Validate cross-references.
+19. Record duplicate recipe-output warnings.
+20. Build runtime registries.
+21. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -871,7 +913,11 @@ Reject startup when:
 - A weapon references a missing install item, has an empty name, unsupported
   kind, non-positive range, cooldown, or damage, or negative energy cost or
   tracking degrees.
+- A shield references a missing install item, has an empty name, non-positive
+  capacity, recharge delay, or recharge rate, or resistance values outside
+  0.0..1.0.
 - A ship references a missing power module.
+- A ship references a missing shield.
 - A ship references a missing weapon.
 - A ship has an empty name or non-positive mass, acceleration, energy, drag,
   hull, or shield values.
@@ -955,7 +1001,20 @@ struct ShipDef {
     hull_capacity: f32,
     shield_capacity: f32,
     power_modules: Vec<String>,
+    shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
+}
+
+struct ShieldDef {
+    id: String,
+    name: String,
+    install_item: String,
+    capacity: f32,
+    recharge_delay: f32,
+    recharge_rate: f32,
+    damage_resistance: f32,
+    hazard_resistance: f32,
+    summary: Option<String>,
 }
 
 struct WeaponDef {

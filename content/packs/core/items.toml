@@ -375,3 +375,17 @@ name = "Point defense turret"
 tier = "weapon"
 xp_value = 14.0
 unit_mass = 180.0
+
+[[items]]
+id = "balanced_shield_matrix"
+name = "Balanced shield matrix"
+tier = "shield_module"
+xp_value = 10.0
+unit_mass = 650.0
+
+[[items]]
+id = "hazard_shield_matrix"
+name = "Hazard shield matrix"
+tier = "shield_module"
+xp_value = 14.0
+unit_mass = 720.0

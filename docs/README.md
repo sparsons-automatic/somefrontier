@@ -21,5 +21,5 @@ world content that stacks on top.
 - Keep docs close to the playable build.
 - Prefer small, explicit tables over large speculative systems.
 - Mark planned content clearly so current behavior stays easy to identify.
-- Update these docs when adding recipes, resources, upgrades, weapons, planets,
-  stations, starter inventory, or progression gates.
+- Update these docs when adding recipes, resources, upgrades, shields, weapons,
+  planets, stations, starter inventory, or progression gates.

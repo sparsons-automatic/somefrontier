@@ -135,6 +135,7 @@ struct GameState {
     credits: u32,
     ship: Ship,
     installed_power_modules: Vec<PowerModule>,
+    equipped_shields: Vec<ShieldSystem>,
     equipped_weapons: Vec<WeaponSystem>,
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
@@ -179,6 +180,7 @@ struct GameState {
     work_scroll: f32,
     inventory_scroll: f32,
     upgrades_scroll: f32,
+    shield_recharge_delay_remaining: f32,
     last_window_size: (i32, i32),
     window_save_delay: Option<f32>,
     save_delay: Option<f32>,
@@ -332,6 +334,18 @@ struct PowerModule {
     fuel_per_minute: f32,
     heat: f32,
     risk: f32,
+}
+
+#[derive(Clone)]
+struct ShieldSystem {
+    id: String,
+    name: String,
+    install_item: String,
+    capacity: f32,
+    recharge_delay: f32,
+    recharge_rate: f32,
+    damage_resistance: f32,
+    hazard_resistance: f32,
 }
 
 #[derive(Clone)]
@@ -543,6 +557,10 @@ struct SaveData {
     orbiting_planet: Option<String>,
     #[serde(default)]
     installed_power_modules: Vec<String>,
+    #[serde(default)]
+    shield_slots: Vec<String>,
+    #[serde(default)]
+    shield_recharge_delay_remaining: f32,
     #[serde(default)]
     weapon_slots: Vec<String>,
     #[serde(default)]
@@ -791,6 +809,10 @@ impl GameState {
             .as_ref()
             .map(|ship| installed_power_modules_from_ids(&content_registry, &ship.power_modules))
             .unwrap_or_default();
+        let equipped_shields = starter_ship_def
+            .as_ref()
+            .map(|ship| equipped_shields_from_ids(&content_registry, &ship.shield_slots))
+            .unwrap_or_default();
         let equipped_weapons = starter_ship_def
             .as_ref()
             .map(|ship| equipped_weapons_from_ids(&content_registry, &ship.weapon_slots))
@@ -812,6 +834,7 @@ impl GameState {
                 .map(Ship::from_content)
                 .unwrap_or_else(Ship::starter),
             installed_power_modules,
+            equipped_shields,
             equipped_weapons,
             defense_threats,
             weapon_fire_events: Vec::new(),
@@ -856,6 +879,7 @@ impl GameState {
             work_scroll: 0.0,
             inventory_scroll: 0.0,
             upgrades_scroll: 0.0,
+            shield_recharge_delay_remaining: 0.0,
             last_window_size: current_window_size(),
             window_save_delay: None,
             save_delay: Some(AUTOSAVE_SECONDS),
@@ -912,6 +936,13 @@ impl GameState {
         } else {
             installed_power_modules_from_ids(&self.content_registry, &save.installed_power_modules)
         };
+        self.equipped_shields = if save.shield_slots.is_empty() {
+            default_equipped_shields(&self.content_registry)
+        } else {
+            equipped_shields_from_ids(&self.content_registry, &save.shield_slots)
+        };
+        self.shield_recharge_delay_remaining =
+            finite_nonnegative_or(save.shield_recharge_delay_remaining, 0.0);
         self.equipped_weapons = if save.weapon_slots.is_empty() {
             default_equipped_weapons(&self.content_registry)
         } else {
@@ -1037,6 +1068,15 @@ impl GameState {
                 .iter()
                 .map(|module| module.id.clone())
                 .collect(),
+            shield_slots: self
+                .equipped_shields
+                .iter()
+                .map(|shield| shield.id.clone())
+                .collect(),
+            shield_recharge_delay_remaining: finite_nonnegative_or(
+                self.shield_recharge_delay_remaining,
+                0.0,
+            ),
             weapon_slots: self
                 .equipped_weapons
                 .iter()
@@ -1087,6 +1127,10 @@ impl GameState {
             self.ship.attributes = ShipAttributes::starter();
             self.ship.systems = ShipSystems::starter(self.ship.attributes);
         }
+        if self.equipped_shields.is_empty() {
+            self.equipped_shields = default_equipped_shields(&self.content_registry);
+        }
+        self.ship.systems.shields.max = active_shield_capacity(self);
         for upgrade in self.ship_upgrades {
             for _ in 0..upgrade.level {
                 apply_ship_upgrade(&mut self.ship, upgrade.kind);
@@ -1117,10 +1161,11 @@ fn load_game_content_registry() -> content::ContentRegistry {
     match content::load_content_packs(Path::new("content/packs")) {
         Ok(registry) => {
             println!(
-                "Loaded {} content pack(s), {} item(s), {} ship(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
+                "Loaded {} content pack(s), {} item(s), {} ship(s), {} shield(s), {} weapon(s), {} recipe(s), {} system(s), {} planet(s)",
                 registry.packs.len(),
                 registry.items.len(),
                 registry.ships.len(),
+                registry.shields.len(),
                 registry.weapons.len(),
                 registry.recipes.len(),
                 registry.systems.len(),
@@ -1682,6 +1727,21 @@ impl PowerModule {
     }
 }
 
+impl ShieldSystem {
+    fn from_def(shield: &content::ShieldDef) -> Self {
+        Self {
+            id: shield.id.clone(),
+            name: shield.name.clone(),
+            install_item: shield.install_item.clone(),
+            capacity: shield.capacity,
+            recharge_delay: shield.recharge_delay,
+            recharge_rate: shield.recharge_rate,
+            damage_resistance: shield.damage_resistance,
+            hazard_resistance: shield.hazard_resistance,
+        }
+    }
+}
+
 impl WeaponSystem {
     fn from_def(weapon: &content::WeaponDef) -> Self {
         Self {
@@ -1759,6 +1819,29 @@ fn default_installed_power_modules(
         .unwrap_or_default()
 }
 
+fn equipped_shields_from_ids(
+    content_registry: &content::ContentRegistry,
+    shield_ids: &[String],
+) -> Vec<ShieldSystem> {
+    shield_ids
+        .iter()
+        .filter_map(|shield_id| {
+            content_registry
+                .shields
+                .get(shield_id)
+                .map(ShieldSystem::from_def)
+        })
+        .collect()
+}
+
+fn default_equipped_shields(content_registry: &content::ContentRegistry) -> Vec<ShieldSystem> {
+    content_registry
+        .ships
+        .get(STARTER_SHIP_ID)
+        .map(|ship| equipped_shields_from_ids(content_registry, &ship.shield_slots))
+        .unwrap_or_default()
+}
+
 fn equipped_weapons_from_ids(
     content_registry: &content::ContentRegistry,
     weapon_ids: &[String],
@@ -1787,6 +1870,64 @@ enum WeaponInstallError {
     InvalidSlot,
     UnknownWeapon,
     MissingInstallItem,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShieldInstallError {
+    InvalidSlot,
+    UnknownShield,
+    MissingInstallItem,
+}
+
+fn shield_slot_capacity(game: &GameState) -> usize {
+    game.content_registry
+        .ships
+        .get(STARTER_SHIP_ID)
+        .map(|ship| ship.shield_slots.len())
+        .unwrap_or(0)
+        .max(game.equipped_shields.len())
+}
+
+fn install_shield_in_slot(
+    game: &mut GameState,
+    slot_index: usize,
+    shield_id: &str,
+) -> Result<(), ShieldInstallError> {
+    if slot_index >= shield_slot_capacity(game) {
+        return Err(ShieldInstallError::InvalidSlot);
+    }
+
+    if game
+        .equipped_shields
+        .get(slot_index)
+        .is_some_and(|shield| shield.id == shield_id)
+    {
+        return Ok(());
+    }
+
+    let Some(shield_def) = game.content_registry.shields.get(shield_id).cloned() else {
+        return Err(ShieldInstallError::UnknownShield);
+    };
+    let install_item = required_item(&game.content_registry, &shield_def.install_item);
+    if game.inventory.count(&install_item) == 0 {
+        return Err(ShieldInstallError::MissingInstallItem);
+    }
+
+    game.inventory.remove_item(&install_item, 1);
+    if let Some(previous_shield) = game.equipped_shields.get(slot_index) {
+        let previous_item = required_item(&game.content_registry, &previous_shield.install_item);
+        game.inventory.add_item(previous_item, 1);
+    }
+
+    let installed_shield = ShieldSystem::from_def(&shield_def);
+    if slot_index < game.equipped_shields.len() {
+        game.equipped_shields[slot_index] = installed_shield;
+    } else {
+        game.equipped_shields.push(installed_shield);
+    }
+    game.rebuild_ship_from_upgrades();
+    game.save_dirty = true;
+    Ok(())
 }
 
 fn weapon_slot_capacity(game: &GameState) -> usize {
@@ -1837,6 +1978,47 @@ fn install_weapon_in_slot(
     }
     game.save_dirty = true;
     Ok(())
+}
+
+fn active_shield(game: &GameState) -> Option<&ShieldSystem> {
+    game.equipped_shields.first()
+}
+
+fn active_shield_capacity(game: &GameState) -> f32 {
+    active_shield(game)
+        .map(|shield| shield.capacity)
+        .unwrap_or(game.ship.systems.shields.max)
+}
+
+fn active_shield_recharge_delay(game: &GameState) -> f32 {
+    active_shield(game)
+        .map(|shield| shield.recharge_delay)
+        .unwrap_or(4.0)
+}
+
+fn active_shield_recharge_rate(game: &GameState) -> f32 {
+    active_shield(game)
+        .map(|shield| shield.recharge_rate)
+        .unwrap_or(0.0)
+}
+
+fn active_shield_hazard_resistance(game: &GameState) -> f32 {
+    active_shield(game)
+        .map(|shield| shield.hazard_resistance)
+        .unwrap_or(0.0)
+}
+
+fn shield_hazard_drain_after_resistance(game: &GameState, drain: f32) -> f32 {
+    drain.max(0.0) * (1.0 - active_shield_hazard_resistance(game)).clamp(0.0, 1.0)
+}
+
+fn apply_shield_hazard_drain(game: &mut GameState, amount: f32) {
+    let damage = shield_hazard_drain_after_resistance(game, amount);
+    if damage <= 0.0 {
+        return;
+    }
+    game.ship.systems.shields.spend(damage);
+    game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
 }
 
 fn make_defense_threats() -> Vec<DefenseThreat> {
@@ -4881,6 +5063,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_production(game, dt);
     update_mining(game, dt);
     update_orbital_hazards(game, dt);
+    update_shield_recharge(game, dt);
     update_weapon_systems(game, dt);
 
     let wheel = mouse_wheel().1;
@@ -4937,7 +5120,9 @@ fn update_game(game: &mut GameState, dt: f32) {
         } else if let Some(station_index) = game.selected_station {
             click_handled = handle_station_service_input(game, station_index, mouse);
         } else {
-            if handle_ship_weapon_slot_input(game, mouse) {
+            if handle_ship_shield_slot_input(game, mouse)
+                || handle_ship_weapon_slot_input(game, mouse)
+            {
                 click_handled = true;
             } else if is_mouse_button_pressed(MouseButton::Left)
                 && ship_detail_preview_rect().contains(mouse)
@@ -5739,6 +5924,40 @@ fn handle_ship_upgrades_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
     }
 }
 
+fn handle_ship_shield_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+
+    (0..shield_slot_capacity(game))
+        .find(|slot_index| ship_shield_slot_rect(*slot_index).contains(mouse))
+        .is_some_and(|slot_index| install_first_available_shield_for_slot(game, slot_index))
+}
+
+fn install_first_available_shield_for_slot(game: &mut GameState, slot_index: usize) -> bool {
+    let current_shield_id = game
+        .equipped_shields
+        .get(slot_index)
+        .map(|shield| shield.id.as_str());
+    let Some(shield_id) = game
+        .content_registry
+        .shield_order
+        .iter()
+        .find_map(|shield_id| {
+            if current_shield_id == Some(shield_id.as_str()) {
+                return None;
+            }
+            let shield = game.content_registry.shields.get(shield_id)?;
+            let install_item = registry_item(&game.content_registry, &shield.install_item)?;
+            (game.inventory.count(&install_item) > 0).then(|| shield_id.clone())
+        })
+    else {
+        return false;
+    };
+
+    install_shield_in_slot(game, slot_index, &shield_id).is_ok()
+}
+
 fn handle_ship_weapon_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
     if !is_mouse_button_pressed(MouseButton::Left) {
         return false;
@@ -6246,7 +6465,7 @@ fn handle_inventory_overlay_scroll(game: &mut GameState, mouse: Vec2, wheel: f32
     let gap = 24.0;
     let work_x = panel_x + 24.0;
     let work_width = 342.0;
-    let detail_width = 340.0_f32.min(panel_width * 0.34);
+    let detail_width = inventory_detail_width(panel_width);
     let inventory_x = work_x + work_width + gap;
     let inventory_width = panel_width - work_width - detail_width - gap * 4.0;
     let table_y = work_table_y();
@@ -6523,7 +6742,24 @@ fn update_orbital_hazards(game: &mut GameState, dt: f32) {
         .sum::<f32>();
 
     if shield_drain > 0.0 {
-        game.ship.systems.shields.spend(shield_drain * dt);
+        apply_shield_hazard_drain(game, shield_drain * dt);
+    }
+}
+
+fn update_shield_recharge(game: &mut GameState, dt: f32) {
+    if game.ship.systems.shields.current >= game.ship.systems.shields.max {
+        game.shield_recharge_delay_remaining = 0.0;
+        return;
+    }
+
+    if game.shield_recharge_delay_remaining > 0.0 {
+        game.shield_recharge_delay_remaining = (game.shield_recharge_delay_remaining - dt).max(0.0);
+        return;
+    }
+
+    let recharge = active_shield_recharge_rate(game) * dt;
+    if recharge > 0.0 {
+        game.ship.systems.shields.restore(recharge);
     }
 }
 
@@ -8945,13 +9181,22 @@ fn inventory_panel_height() -> f32 {
     (screen_height() * 0.8).clamp(420.0, screen_height() - 56.0)
 }
 
+fn inventory_detail_width(panel_width: f32) -> f32 {
+    let desired_width: f32 = 460.0;
+    let minimum_inventory_width: f32 = 140.0;
+    let fixed_layout_width: f32 = 342.0 + 24.0 * 3.0;
+    let max_width = (panel_width - fixed_layout_width - minimum_inventory_width).max(300.0);
+
+    desired_width.min(panel_width * 0.5).min(max_width)
+}
+
 fn draw_inventory_overlay(game: &GameState) {
     let (panel_x, panel_y, panel_width, panel_height) =
         inventory_panel_rect(game.selected_planet.is_some());
     let gap = 24.0;
     let work_x = panel_x + 24.0;
     let work_width = 342.0;
-    let detail_width = 340.0_f32.min(panel_width * 0.34);
+    let detail_width = inventory_detail_width(panel_width);
     let detail_x = panel_x + panel_width - detail_width - 24.0;
     let inventory_x = work_x + work_width + gap;
     let inventory_width = detail_x - inventory_x - gap;
@@ -9082,7 +9327,7 @@ fn ship_detail_preview_rect() -> Rect {
     let panel_height = inventory_panel_height();
     let panel_x = (screen_width() - panel_width) * 0.5;
     let panel_y = (screen_height() - panel_height) * 0.5 + 18.0;
-    let detail_width = 340.0_f32.min(panel_width * 0.34);
+    let detail_width = inventory_detail_width(panel_width);
     let detail_x = panel_x + panel_width - detail_width - 24.0;
     let detail_y = panel_y + 66.0;
     let image_size = 190.0;
@@ -9096,9 +9341,20 @@ fn ship_detail_preview_rect() -> Rect {
     )
 }
 
+fn ship_shield_slot_rect(slot_index: usize) -> Rect {
+    let (panel_x, panel_y, panel_width, _) = inventory_panel_rect(false);
+    let detail_width = inventory_detail_width(panel_width);
+    let detail_x = panel_x + panel_width - detail_width - 24.0;
+    let detail_y = panel_y + 66.0;
+    let stats_y = detail_y + 190.0 + 28.0;
+    let row_y = stats_y + 28.0 + slot_index as f32 * 66.0;
+
+    Rect::new(detail_x, row_y - 18.0, detail_width * 0.48, 62.0)
+}
+
 fn ship_weapon_slot_rect(slot_index: usize) -> Rect {
     let (panel_x, panel_y, panel_width, _) = inventory_panel_rect(false);
-    let detail_width = 340.0_f32.min(panel_width * 0.34);
+    let detail_width = inventory_detail_width(panel_width);
     let detail_x = panel_x + panel_width - detail_width - 24.0;
     let detail_y = panel_y + 66.0;
     let stats_y = detail_y + 190.0 + 28.0;
@@ -9261,10 +9517,11 @@ fn draw_content_debug_overlay(game: &GameState) {
         .map(|asset| asset.texture.width() * asset.texture.height())
         .sum::<f32>();
     let summary = format!(
-        "{} pack(s) / {} item(s) / {} recipe(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
+        "{} pack(s) / {} item(s) / {} recipe(s) / {} shield(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
         registry.packs.len(),
         registry.items.len(),
         registry.recipes.len(),
+        registry.shields.len(),
         registry.weapons.len(),
         registry.systems.len(),
         registry.stars.len(),
@@ -10265,9 +10522,11 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
     draw_ship_detail(ShipDetailView {
         ship: &game.ship,
         power_modules: &game.installed_power_modules,
+        shields: &game.equipped_shields,
         weapons: &game.equipped_weapons,
         threats: &game.defense_threats,
         current_system_id: &game.current_system_id,
+        shield_recharge_delay_remaining: game.shield_recharge_delay_remaining,
         texture: game.ship_texture.as_ref(),
         x,
         y,
@@ -11112,9 +11371,11 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
     let ShipDetailView {
         ship,
         power_modules,
+        shields,
         weapons,
         threats,
         current_system_id,
+        shield_recharge_delay_remaining,
         texture,
         x,
         y,
@@ -11156,47 +11417,107 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         Color::from_rgba(82, 114, 124, 95),
     );
 
-    let right_x = x + width * 0.53;
+    let left_width = width * 0.47;
+    let right_x = x + width * 0.5;
+    let right_width = width - (right_x - x);
     draw_text("Hull systems", x, stats_y, 15.0, label);
+    let shield_name = shields
+        .first()
+        .map(|shield| shield.name.as_str())
+        .unwrap_or("Standard shield");
     draw_text(
-        &format!("Shield {:>3.0}%", ship.systems.shields.fraction() * 100.0),
+        &fit_debug_text(shield_name, left_width, 16),
         x,
-        stats_y + 28.0,
-        18.0,
+        stats_y + 24.0,
+        16.0,
         accent,
     );
+    let shield_status = if ship.systems.shields.current >= ship.systems.shields.max {
+        "full".to_string()
+    } else if shield_recharge_delay_remaining > 0.0 {
+        format!("delay {:.1}s", shield_recharge_delay_remaining)
+    } else {
+        shields
+            .first()
+            .map(|shield| format!("+{:.1}/s", shield.recharge_rate))
+            .unwrap_or_else(|| "offline".to_string())
+    };
     draw_text(
-        &format!("Energy {:>3.0}%", ship.systems.energy.fraction() * 100.0),
+        &fit_debug_text(
+            &format!(
+                "Shield {:.0}% {shield_status}",
+                ship.systems.shields.fraction() * 100.0
+            ),
+            left_width,
+            15,
+        ),
         x,
-        stats_y + 56.0,
-        18.0,
-        accent,
+        stats_y + 45.0,
+        15.0,
+        text,
+    );
+    let resistance_label = shields
+        .first()
+        .map(|shield| {
+            format!(
+                "Resist {:.0}% / Hazard {:.0}%",
+                shield.damage_resistance * 100.0,
+                shield.hazard_resistance * 100.0
+            )
+        })
+        .unwrap_or_else(|| "Resist 0% / Hazard 0%".to_string());
+    draw_text(
+        &fit_debug_text(&resistance_label, left_width, 14),
+        x,
+        stats_y + 64.0,
+        14.0,
+        text,
     );
     draw_text(
-        &format!("Hull {:>3.0}%", ship.systems.hull.fraction() * 100.0),
+        &fit_debug_text(
+            &format!(
+                "Energy {:.0}%  Hull {:.0}%",
+                ship.systems.energy.fraction() * 100.0,
+                ship.systems.hull.fraction() * 100.0
+            ),
+            left_width,
+            16,
+        ),
         x,
-        stats_y + 84.0,
-        18.0,
+        stats_y + 88.0,
+        16.0,
         accent,
     );
 
     draw_text("Flight profile", right_x, stats_y, 15.0, label);
     draw_text(
-        &format!("Mass {}", format_mass(ship.attributes.mass)),
+        &fit_debug_text(
+            &format!("Mass {}", format_mass(ship.attributes.mass)),
+            right_width,
+            18,
+        ),
         right_x,
         stats_y + 28.0,
         18.0,
         text,
     );
     draw_text(
-        &format!("Engine {:.0}", ship.forward_acceleration()),
+        &fit_debug_text(
+            &format!("Engine {:.0}", ship.forward_acceleration()),
+            right_width,
+            18,
+        ),
         right_x,
         stats_y + 56.0,
         18.0,
         text,
     );
     draw_text(
-        &format!("Turn {:.1}", ship.turn_acceleration()),
+        &fit_debug_text(
+            &format!("Turn {:.1}", ship.turn_acceleration()),
+            right_width,
+            18,
+        ),
         right_x,
         stats_y + 84.0,
         18.0,
@@ -11214,9 +11535,13 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
     );
     draw_text("Power", x, power_y, 15.0, label);
     draw_text(
-        &format!(
-            "Recharge {:.1}/s",
-            ship_energy_recharge(ship, power_modules)
+        &fit_debug_text(
+            &format!(
+                "Recharge {:.1}/s",
+                ship_energy_recharge(ship, power_modules)
+            ),
+            left_width,
+            18,
         ),
         x,
         power_y + 28.0,
@@ -11224,7 +11549,11 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         accent,
     );
     draw_text(
-        &format!("Base {:.1}/s", ship.attributes.energy_recharge),
+        &fit_debug_text(
+            &format!("Base {:.1}/s", ship.attributes.energy_recharge),
+            left_width,
+            18,
+        ),
         x,
         power_y + 56.0,
         18.0,
@@ -11232,7 +11561,11 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
     );
     let module_mass = power_modules.iter().map(|module| module.mass).sum::<f32>();
     draw_text(
-        &format!("Module mass {}", format_mass(module_mass)),
+        &fit_debug_text(
+            &format!("Module mass {}", format_mass(module_mass)),
+            left_width,
+            18,
+        ),
         x,
         power_y + 84.0,
         18.0,
@@ -11243,7 +11576,11 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
     draw_text("Installed", right_x, power_y, 15.0, label);
     if let Some(module) = module {
         draw_text(
-            &format!("{} {}", module.family, module.name),
+            &fit_debug_text(
+                &format!("{} {}", module.family, module.name),
+                right_width,
+                18,
+            ),
             right_x,
             power_y + 28.0,
             18.0,
@@ -11252,14 +11589,30 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         let fuel = module
             .fuel_item
             .as_deref()
-            .map(|item| format!("Fuel {item} {:.2}/min", module.fuel_per_minute))
+            .map(|item| {
+                format!(
+                    "Fuel {} {:.2}/min",
+                    local_content_id(item).replace('_', " "),
+                    module.fuel_per_minute
+                )
+            })
             .unwrap_or_else(|| "Fuel none".to_string());
-        draw_text(&fuel, right_x, power_y + 56.0, 18.0, text);
         draw_text(
-            &format!(
-                "Heat {:.0}%  Risk {:.0}%",
-                module.heat * 100.0,
-                module.risk * 100.0
+            &fit_debug_text(&fuel, right_width, 18),
+            right_x,
+            power_y + 56.0,
+            18.0,
+            text,
+        );
+        draw_text(
+            &fit_debug_text(
+                &format!(
+                    "Heat {:.0}%  Risk {:.0}%",
+                    module.heat * 100.0,
+                    module.risk * 100.0
+                ),
+                right_width,
+                18,
             ),
             right_x,
             power_y + 84.0,
@@ -11267,7 +11620,13 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
             text,
         );
     } else {
-        draw_text("No module installed", right_x, power_y + 28.0, 18.0, text);
+        draw_text(
+            &fit_debug_text("No module installed", right_width, 18),
+            right_x,
+            power_y + 28.0,
+            18.0,
+            text,
+        );
     }
 
     let weapons_y = power_y + 132.0;
@@ -11290,7 +11649,7 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         .count();
     let threat_label = format!("Threats {hostile_count}");
     draw_text(
-        &fit_debug_text(&threat_label, width - (right_x - x), 15),
+        &fit_debug_text(&threat_label, right_width, 15),
         right_x,
         weapons_y,
         15.0,
@@ -11347,9 +11706,11 @@ struct WorkRow {
 struct ShipDetailView<'a> {
     ship: &'a Ship,
     power_modules: &'a [PowerModule],
+    shields: &'a [ShieldSystem],
     weapons: &'a [WeaponSystem],
     threats: &'a [DefenseThreat],
     current_system_id: &'a str,
+    shield_recharge_delay_remaining: f32,
     texture: Option<&'a Texture2D>,
     x: f32,
     y: f32,
@@ -11843,6 +12204,11 @@ mod tests {
             &game.content_registry,
             &["core:point_defense_turret".to_string()],
         );
+        game.equipped_shields = equipped_shields_from_ids(
+            &game.content_registry,
+            &["core:hazard_shield_matrix".to_string()],
+        );
+        game.shield_recharge_delay_remaining = 2.5;
 
         let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
         let restored = toml::from_str::<SaveData>(&serialized).expect("save should deserialize");
@@ -11856,6 +12222,11 @@ mod tests {
             restored.installed_power_modules,
             vec!["core:compact_fission_cell".to_string()]
         );
+        assert_eq!(
+            restored.shield_slots,
+            vec!["core:hazard_shield_matrix".to_string()]
+        );
+        assert_eq!(restored.shield_recharge_delay_remaining, 2.5);
         assert_eq!(
             restored.weapon_slots,
             vec!["core:point_defense_turret".to_string()]
@@ -11875,6 +12246,7 @@ mod tests {
         game.ship.angular_velocity = f32::INFINITY;
         game.ship.systems.hull.current = f32::NAN;
         game.ship.systems.shields.max = f32::INFINITY;
+        game.shield_recharge_delay_remaining = f32::INFINITY;
         game.skills[0].xp = f32::NAN;
         game.smelt_recipes = make_smelting_recipes(&game.content_registry);
         game.smelt_settings = vec![
@@ -11898,6 +12270,7 @@ mod tests {
         assert_eq!(restored.ship.angular_velocity, 0.0);
         assert_eq!(restored.ship.hull.current, restored.ship.hull.max);
         assert_eq!(restored.ship.shields.max, 1.0);
+        assert_eq!(restored.shield_recharge_delay_remaining, 0.0);
         assert_eq!(restored.skills[0].xp, 0.0);
         assert!(restored
             .smelt_settings
@@ -11921,6 +12294,16 @@ mod tests {
         assert_eq!(ship.systems.hull.max, 100.0);
         assert_eq!(ship.systems.shields.max, 100.0);
         assert_eq!(ship.systems.energy.max, 100.0);
+
+        let shields = equipped_shields_from_ids(&registry, &ship_def.shield_slots);
+        assert_eq!(shields.len(), 1);
+        assert_eq!(shields[0].name, "Balanced Shield Matrix");
+        assert_eq!(shields[0].install_item, "core:balanced_shield_matrix");
+        assert_eq!(shields[0].capacity, 100.0);
+        assert_eq!(shields[0].recharge_delay, 4.0);
+        assert_eq!(shields[0].recharge_rate, 7.5);
+        assert_eq!(shields[0].damage_resistance, 0.10);
+        assert_eq!(shields[0].hazard_resistance, 0.15);
 
         let power_modules = installed_power_modules_from_ids(&registry, &ship_def.power_modules);
         assert_eq!(power_modules.len(), 1);
@@ -11996,6 +12379,83 @@ mod tests {
         assert_eq!(game.inventory.count(&previous_item), 1);
         assert!(game.save_dirty);
         assert_eq!(game.to_save().weapon_slots, vec!["core:test_turret"]);
+    }
+
+    #[test]
+    fn shield_slots_swap_with_inventory_install_items() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_shields = equipped_shields_from_ids(
+            &game.content_registry,
+            &["core:balanced_shield_matrix".to_string()],
+        );
+        game.rebuild_ship_from_upgrades();
+
+        assert_eq!(
+            install_shield_in_slot(&mut game, 1, "core:hazard_shield_matrix"),
+            Err(ShieldInstallError::InvalidSlot)
+        );
+        assert_eq!(
+            install_shield_in_slot(&mut game, 0, "core:missing_shield"),
+            Err(ShieldInstallError::UnknownShield)
+        );
+        assert_eq!(
+            install_shield_in_slot(&mut game, 0, "core:hazard_shield_matrix"),
+            Err(ShieldInstallError::MissingInstallItem)
+        );
+
+        let install_item = required_item(&game.content_registry, "core:hazard_shield_matrix");
+        let previous_item = required_item(&game.content_registry, "core:balanced_shield_matrix");
+        game.inventory.add_item(install_item.clone(), 1);
+
+        install_shield_in_slot(&mut game, 0, "core:hazard_shield_matrix")
+            .expect("crafted shield should install into the shield slot");
+
+        assert_eq!(game.equipped_shields[0].id, "core:hazard_shield_matrix");
+        assert_eq!(game.ship.systems.shields.max, 85.0);
+        assert_eq!(game.inventory.count(&install_item), 0);
+        assert_eq!(game.inventory.count(&previous_item), 1);
+        assert!(game.save_dirty);
+        assert_eq!(
+            game.to_save().shield_slots,
+            vec!["core:hazard_shield_matrix"]
+        );
+    }
+
+    #[test]
+    fn shield_variants_control_hazard_drain_and_recharge() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet("core:hazard", STARTER_SYSTEM_ID, Vec2::ZERO, true);
+        planet.info.hazard_effects = HazardEffects {
+            shield_drain_per_second: 10.0,
+            mining_speed_multiplier: 1.0,
+        };
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        game.equipped_shields = equipped_shields_from_ids(
+            &game.content_registry,
+            &["core:hazard_shield_matrix".to_string()],
+        );
+        game.rebuild_ship_from_upgrades();
+        game.ship.systems.shields.current = game.ship.systems.shields.max;
+
+        update_orbital_hazards(&mut game, 1.0);
+
+        assert_eq!(game.equipped_shields[0].damage_resistance, 0.05);
+        assert_eq!(game.ship.systems.shields.current, 80.5);
+        assert_eq!(game.shield_recharge_delay_remaining, 3.0);
+
+        update_shield_recharge(&mut game, 1.0);
+        assert_eq!(game.ship.systems.shields.current, 80.5);
+        assert_eq!(game.shield_recharge_delay_remaining, 2.0);
+
+        update_shield_recharge(&mut game, 2.0);
+        assert_eq!(game.ship.systems.shields.current, 80.5);
+        assert_eq!(game.shield_recharge_delay_remaining, 0.0);
+
+        update_shield_recharge(&mut game, 1.0);
+        assert_eq!(game.ship.systems.shields.current, 85.0);
     }
 
     #[test]
@@ -13273,6 +13733,7 @@ mod tests {
             credits: default_credits(),
             ship: Ship::starter(),
             installed_power_modules: Vec::new(),
+            equipped_shields: Vec::new(),
             equipped_weapons: Vec::new(),
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
@@ -13319,6 +13780,7 @@ mod tests {
             work_scroll: 0.0,
             inventory_scroll: 0.0,
             upgrades_scroll: 0.0,
+            shield_recharge_delay_remaining: 0.0,
             last_window_size: (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
             window_save_delay: None,
             save_delay: None,

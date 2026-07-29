@@ -17,6 +17,8 @@ pub struct ContentRegistry {
     pub item_order: Vec<String>,
     pub ships: HashMap<String, ShipDef>,
     pub ship_order: Vec<String>,
+    pub shields: HashMap<String, ShieldDef>,
+    pub shield_order: Vec<String>,
     pub weapons: HashMap<String, WeaponDef>,
     pub weapon_order: Vec<String>,
     pub power_modules: HashMap<String, PowerModuleDef>,
@@ -138,7 +140,21 @@ pub struct ShipDef {
     pub hull_capacity: f32,
     pub shield_capacity: f32,
     pub power_modules: Vec<String>,
+    pub shield_slots: Vec<String>,
     pub weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShieldDef {
+    pub id: String,
+    pub name: String,
+    pub install_item: String,
+    pub capacity: f32,
+    pub recharge_delay: f32,
+    pub recharge_rate: f32,
+    pub damage_resistance: f32,
+    pub hazard_resistance: f32,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -464,7 +480,30 @@ struct ShipFileDef {
     #[serde(default)]
     power_modules: Vec<String>,
     #[serde(default)]
+    shield_slots: Vec<String>,
+    #[serde(default)]
     weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ShieldsFile {
+    #[serde(default)]
+    shields: Vec<ShieldFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShieldFileDef {
+    id: String,
+    name: String,
+    install_item: String,
+    capacity: f32,
+    recharge_delay: f32,
+    recharge_rate: f32,
+    #[serde(default)]
+    damage_resistance: f32,
+    #[serde(default)]
+    hazard_resistance: f32,
+    summary: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1063,6 +1102,58 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
     }
 
     let weapons = read_optional_toml::<WeaponsFile>(&raw_pack.path.join("weapons.toml"), errors);
+    let shields = read_optional_toml::<ShieldsFile>(&raw_pack.path.join("shields.toml"), errors);
+    for shield in shields.shields {
+        let id = namespaced_id(&pack_id, &shield.id);
+        validate_local_content_id(&id, "shield", errors);
+        validate_required_name(&id, "Shield", &shield.name, errors);
+        validate_positive(shield.capacity, "Shield", &id, "capacity", errors);
+        validate_positive(
+            shield.recharge_delay,
+            "Shield",
+            &id,
+            "recharge delay",
+            errors,
+        );
+        validate_positive(shield.recharge_rate, "Shield", &id, "recharge rate", errors);
+        validate_fraction(
+            shield.damage_resistance,
+            "Shield",
+            &id,
+            "damage resistance",
+            errors,
+        );
+        validate_fraction(
+            shield.hazard_resistance,
+            "Shield",
+            &id,
+            "hazard resistance",
+            errors,
+        );
+        let inserted = registry
+            .shields
+            .insert(
+                id.clone(),
+                ShieldDef {
+                    id: id.clone(),
+                    name: shield.name,
+                    install_item: namespaced_id(&pack_id, &shield.install_item),
+                    capacity: shield.capacity,
+                    recharge_delay: shield.recharge_delay,
+                    recharge_rate: shield.recharge_rate,
+                    damage_resistance: shield.damage_resistance,
+                    hazard_resistance: shield.hazard_resistance,
+                    summary: shield.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.shield_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate shield id `{id}`"));
+        }
+    }
+
     for weapon in weapons.weapons {
         let id = namespaced_id(&pack_id, &weapon.id);
         validate_local_content_id(&id, "weapon", errors);
@@ -1164,6 +1255,11 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                         .power_modules
                         .into_iter()
                         .map(|module| namespaced_id(&pack_id, &module))
+                        .collect(),
+                    shield_slots: ship
+                        .shield_slots
+                        .into_iter()
+                        .map(|shield| namespaced_id(&pack_id, &shield))
                         .collect(),
                     weapon_slots: ship
                         .weapon_slots
@@ -1888,6 +1984,17 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         );
     }
 
+    for shield in registry.shields.values() {
+        validate_reference(
+            registry.items.contains_key(&shield.install_item),
+            "Shield",
+            &shield.id,
+            "install item",
+            &shield.install_item,
+            errors,
+        );
+    }
+
     for ship in registry.ships.values() {
         for module in &ship.power_modules {
             validate_reference(
@@ -1896,6 +2003,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 &ship.id,
                 "power module",
                 module,
+                errors,
+            );
+        }
+        for shield in &ship.shield_slots {
+            validate_reference(
+                registry.shields.contains_key(shield),
+                "Ship",
+                &ship.id,
+                "shield",
+                shield,
                 errors,
             );
         }
@@ -2372,6 +2489,12 @@ fn validate_positive(value: f32, kind: &str, id: &str, field: &str, errors: &mut
     }
 }
 
+fn validate_fraction(value: f32, kind: &str, id: &str, field: &str, errors: &mut Vec<String>) {
+    if !(0.0..=1.0).contains(&value) {
+        errors.push(format!("{kind} `{id}` has {field} outside 0.0..1.0"));
+    }
+}
+
 fn valid_pack_id(id: &str) -> bool {
     !id.is_empty()
         && id.chars().all(|character| {
@@ -2466,6 +2589,8 @@ mod tests {
         assert!(registry.items.contains_key("core:iron_ore"));
         assert!(registry.items.contains_key("core:survey_drone"));
         assert!(registry.items.contains_key("core:point_defense_turret"));
+        assert!(registry.items.contains_key("core:balanced_shield_matrix"));
+        assert!(registry.items.contains_key("core:hazard_shield_matrix"));
         assert!(registry
             .ships
             .get("core:frontier_cargo_ship_01")
@@ -2474,6 +2599,7 @@ mod tests {
                     && ship.mass == 85000.0
                     && ship.forward_acceleration == 420.0
                     && ship.power_modules == ["core:compact_fission_cell"]
+                    && ship.shield_slots == ["core:balanced_shield_matrix"]
                     && ship.weapon_slots == ["core:point_defense_turret"]
                     && ship.texture.as_deref().is_some_and(|texture| {
                         texture.contains(
@@ -2492,7 +2618,20 @@ mod tests {
                     && weapon.damage == 18.0
                     && weapon.energy_cost == 7.0
             }));
+        assert!(registry
+            .shields
+            .get("core:hazard_shield_matrix")
+            .is_some_and(|shield| {
+                shield.install_item == "core:hazard_shield_matrix"
+                    && shield.capacity == 85.0
+                    && shield.recharge_delay == 3.0
+                    && shield.recharge_rate == 6.0
+                    && shield.damage_resistance == 0.05
+                    && shield.hazard_resistance == 0.55
+            }));
         assert!(registry.recipes.contains_key("core:point_defense_turret"));
+        assert!(registry.recipes.contains_key("core:balanced_shield_matrix"));
+        assert!(registry.recipes.contains_key("core:hazard_shield_matrix"));
         assert!(registry.power_modules.contains_key("core:film_solar_sail"));
         assert!(registry
             .power_modules
@@ -3524,6 +3663,21 @@ damage = 12.0
         )
         .expect("weapons should be written");
         fs::write(
+            pack_path.join("shields.toml"),
+            r#"
+[[shields]]
+id = "bad_shield"
+name = "Bad Shield"
+install_item = "missing_shield_item"
+capacity = 50.0
+recharge_delay = 2.0
+recharge_rate = 3.0
+damage_resistance = 1.5
+hazard_resistance = -0.1
+"#,
+        )
+        .expect("shields should be written");
+        fs::write(
             pack_path.join("ships.toml"),
             r#"
 [[ships]]
@@ -3539,6 +3693,7 @@ linear_drag = 0.9
 hull_capacity = 100.0
 shield_capacity = 50.0
 power_modules = ["bad_reactor", "missing_module"]
+shield_slots = ["bad_shield", "missing_shield"]
 weapon_slots = ["point_defense", "missing_weapon"]
 "#,
         )
@@ -3559,8 +3714,22 @@ weapon_slots = ["point_defense", "missing_weapon"]
                 == "Weapon `bad-ship-pack:point_defense` references missing install item `bad-ship-pack:missing_turret_item`"
         }));
         assert!(errors.iter().any(|error| {
+            error == "Shield `bad-ship-pack:bad_shield` has damage resistance outside 0.0..1.0"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Shield `bad-ship-pack:bad_shield` has hazard resistance outside 0.0..1.0"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Shield `bad-ship-pack:bad_shield` references missing install item `bad-ship-pack:missing_shield_item`"
+        }));
+        assert!(errors.iter().any(|error| {
             error
                 == "Ship `bad-ship-pack:bad_ship` references missing power module `bad-ship-pack:missing_module`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship `bad-ship-pack:bad_ship` references missing shield `bad-ship-pack:missing_shield`"
         }));
         assert!(errors.iter().any(|error| {
             error
