@@ -22,4 +22,5 @@ world content that stacks on top.
 - Prefer small, explicit tables over large speculative systems.
 - Mark planned content clearly so current behavior stays easy to identify.
 - Update these docs when adding recipes, resources, upgrades, ships, NPC ships,
-  shields, weapons, planets, stations, starter inventory, or progression gates.
+  factions, shields, weapons, planets, stations, starter inventory, or
+  progression gates.
