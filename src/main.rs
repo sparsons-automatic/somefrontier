@@ -17,6 +17,19 @@ const SHIP_RADIUS: f32 = 22.0;
 const SHIP_SPRITE_SIZE: f32 = 72.0;
 const DEFENSE_THREAT_RADIUS: f32 = 18.0;
 const WEAPON_FIRE_EVENT_SECONDS: f32 = 0.18;
+const NPC_PATROL_SPEED: f32 = 34.0;
+const NPC_TRAFFIC_SPEED: f32 = 26.0;
+const NPC_FOLLOW_SPEED: f32 = 46.0;
+const NPC_FLEE_SPEED: f32 = 58.0;
+const NPC_HOSTILE_SPEED: f32 = 54.0;
+const NPC_ACCELERATION: f32 = 46.0;
+const NPC_SEPARATION_PADDING: f32 = 54.0;
+const NPC_STATION_CLEARANCE: f32 = 72.0;
+const NPC_PLANET_CLEARANCE: f32 = 96.0;
+const NPC_FOLLOW_DISTANCE: f32 = 420.0;
+const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
+const NPC_ROUTE_RADIUS: f32 = 520.0;
+const NPC_ROUTE_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
 const STATION_INTERACTION_PADDING: f32 = 86.0;
@@ -456,12 +469,17 @@ struct NpcShip {
     name: String,
     system: String,
     position: Vec2,
+    velocity: Vec2,
+    angle: f32,
     radius: f32,
     texture: Option<Texture2D>,
     archetype: String,
     role: String,
     faction: Option<String>,
     behavior_tags: Vec<String>,
+    behavior: NpcBehaviorMode,
+    route_index: usize,
+    anchor: Vec2,
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
     hull: ShipResource,
@@ -470,6 +488,40 @@ struct NpcShip {
     shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
     summary: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NpcBehaviorMode {
+    Patrol,
+    Follow,
+    Flee,
+    TradeRoute,
+    StationTraffic,
+    HostileIntercept,
+}
+
+impl NpcBehaviorMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Patrol => "patrol",
+            Self::Follow => "follow",
+            Self::Flee => "flee",
+            Self::TradeRoute => "trade route",
+            Self::StationTraffic => "traffic",
+            Self::HostileIntercept => "intercept",
+        }
+    }
+
+    fn max_speed(self) -> f32 {
+        match self {
+            Self::Patrol => NPC_PATROL_SPEED,
+            Self::Follow => NPC_FOLLOW_SPEED,
+            Self::Flee => NPC_FLEE_SPEED,
+            Self::TradeRoute => NPC_TRAFFIC_SPEED,
+            Self::StationTraffic => NPC_TRAFFIC_SPEED,
+            Self::HostileIntercept => NPC_HOSTILE_SPEED,
+        }
+    }
 }
 
 struct StationService {
@@ -1426,18 +1478,25 @@ async fn make_npc_ships(
                 })
             })
             .collect::<Vec<_>>();
+        let position = vec2(npc_ship_def.position[0], npc_ship_def.position[1]);
+        let behavior = npc_behavior_mode(content_registry, npc_ship_def);
 
         npc_ships.push(NpcShip {
             id: npc_ship_def.id.clone(),
             name: npc_ship_def.name.clone(),
             system: npc_ship_def.system.clone(),
-            position: vec2(npc_ship_def.position[0], npc_ship_def.position[1]),
+            position,
+            velocity: Vec2::ZERO,
+            angle: 0.0,
             radius: npc_ship_def.radius,
             texture,
             archetype: npc_ship_def.archetype.clone(),
             role: npc_ship_def.role.clone(),
             faction: npc_ship_def.faction.clone(),
             behavior_tags: npc_ship_def.behavior_tags.clone(),
+            behavior,
+            route_index: npc_initial_route_index(&npc_ship_def.id),
+            anchor: position,
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
             hull: ShipResource::full(npc_ship_def.hull_capacity),
@@ -1452,6 +1511,51 @@ async fn make_npc_ships(
         });
     }
     npc_ships
+}
+
+fn npc_behavior_mode(
+    content_registry: &content::ContentRegistry,
+    npc_ship: &content::NpcShipDef,
+) -> NpcBehaviorMode {
+    if npc_ship_has_behavior_tag(npc_ship, "flee") {
+        return NpcBehaviorMode::Flee;
+    }
+    if npc_ship_has_behavior_tag(npc_ship, "follow") {
+        return NpcBehaviorMode::Follow;
+    }
+    if npc_ship_has_behavior_tag(npc_ship, "trade-route") || npc_ship.role == "trader" {
+        return NpcBehaviorMode::TradeRoute;
+    }
+    if npc_ship_has_behavior_tag(npc_ship, "traffic") || npc_ship.role == "traffic" {
+        return NpcBehaviorMode::StationTraffic;
+    }
+    if npc_ship_has_behavior_tag(npc_ship, "hostile")
+        || npc_ship.role == "hostile"
+        || npc_ship.faction.as_deref().is_some_and(|faction_id| {
+            content_registry
+                .factions
+                .get(faction_id)
+                .is_some_and(|faction| {
+                    faction.default_disposition == content::FactionDisposition::Hostile
+                })
+        })
+    {
+        return NpcBehaviorMode::HostileIntercept;
+    }
+    NpcBehaviorMode::Patrol
+}
+
+fn npc_ship_has_behavior_tag(npc_ship: &content::NpcShipDef, tag: &str) -> bool {
+    npc_ship
+        .behavior_tags
+        .iter()
+        .any(|behavior_tag| behavior_tag == tag)
+}
+
+fn npc_initial_route_index(id: &str) -> usize {
+    id.bytes().fold(0usize, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as usize)
+    }) % NPC_ROUTE_POINTS.len()
 }
 
 fn recipe_vendor_locked_recipes(stations: &[StationDestination]) -> Vec<String> {
@@ -5152,6 +5256,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_mining(game, dt);
     update_orbital_hazards(game, dt);
     update_shield_recharge(game, dt);
+    update_npc_ships(game, dt);
     update_weapon_systems(game, dt);
 
     let wheel = mouse_wheel().1;
@@ -6872,6 +6977,236 @@ fn update_shield_recharge(game: &mut GameState, dt: f32) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct NpcAvoidanceBody {
+    position: Vec2,
+    radius: f32,
+}
+
+struct NpcMotionContext<'a> {
+    target: Vec2,
+    player_position: Vec2,
+    stations: &'a [NpcAvoidanceBody],
+    planets: &'a [NpcAvoidanceBody],
+    npc_snapshots: &'a [(usize, NpcAvoidanceBody)],
+    npc_index: usize,
+    dt: f32,
+}
+
+fn update_npc_ships(game: &mut GameState, dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+
+    let current_system_id = game.current_system_id.clone();
+    let player_position = game.ship.position;
+    let stations = game
+        .stations
+        .iter()
+        .filter(|station| station.system == current_system_id)
+        .map(|station| NpcAvoidanceBody {
+            position: station.position,
+            radius: station.radius + NPC_STATION_CLEARANCE,
+        })
+        .collect::<Vec<_>>();
+    let planets = game
+        .planets
+        .iter()
+        .filter(|planet| planet_is_in_system(planet, &current_system_id))
+        .map(|planet| NpcAvoidanceBody {
+            position: planet.position,
+            radius: planet.radius + NPC_PLANET_CLEARANCE,
+        })
+        .collect::<Vec<_>>();
+    let npc_snapshots = game
+        .npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc_ship)| npc_ship.system == current_system_id)
+        .map(|(index, npc_ship)| {
+            (
+                index,
+                NpcAvoidanceBody {
+                    position: npc_ship.position,
+                    radius: npc_ship.radius + NPC_SEPARATION_PADDING,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for index in 0..game.npc_ships.len() {
+        if game.npc_ships[index].system != current_system_id {
+            continue;
+        }
+        let target = npc_behavior_target(&game.npc_ships[index], player_position, &stations);
+        update_npc_route_progress(&mut game.npc_ships[index], target);
+        update_npc_ship_motion(
+            &mut game.npc_ships[index],
+            NpcMotionContext {
+                target,
+                player_position,
+                stations: &stations,
+                planets: &planets,
+                npc_snapshots: &npc_snapshots,
+                npc_index: index,
+                dt,
+            },
+        );
+    }
+}
+
+fn npc_behavior_target(
+    npc_ship: &NpcShip,
+    player_position: Vec2,
+    stations: &[NpcAvoidanceBody],
+) -> Vec2 {
+    match npc_ship.behavior {
+        NpcBehaviorMode::Follow => {
+            player_position
+                + safe_direction(npc_ship.position - player_position, vec2(1.0, 0.0))
+                    * NPC_FOLLOW_DISTANCE
+        }
+        NpcBehaviorMode::Flee => {
+            npc_ship.position
+                + safe_direction(npc_ship.position - player_position, vec2(1.0, 0.0))
+                    * NPC_ROUTE_RADIUS
+        }
+        NpcBehaviorMode::HostileIntercept => {
+            player_position
+                + safe_direction(npc_ship.position - player_position, vec2(1.0, 0.0))
+                    * NPC_HOSTILE_STANDOFF_DISTANCE
+        }
+        NpcBehaviorMode::TradeRoute | NpcBehaviorMode::StationTraffic if !stations.is_empty() => {
+            let station = stations[npc_ship.route_index % stations.len()];
+            station.position + npc_route_offset(npc_ship.route_index) * (station.radius + 120.0)
+        }
+        NpcBehaviorMode::Patrol | NpcBehaviorMode::TradeRoute | NpcBehaviorMode::StationTraffic => {
+            npc_ship.anchor + npc_route_offset(npc_ship.route_index) * NPC_ROUTE_RADIUS
+        }
+    }
+}
+
+fn update_npc_route_progress(npc_ship: &mut NpcShip, target: Vec2) {
+    if npc_ship.position.distance(target) <= npc_ship.radius + 42.0 {
+        npc_ship.route_index = npc_ship.route_index.wrapping_add(1);
+    }
+}
+
+fn update_npc_ship_motion(npc_ship: &mut NpcShip, context: NpcMotionContext<'_>) {
+    let desired_velocity = npc_desired_velocity(npc_ship, context.target, context.player_position);
+    let mut steering = desired_velocity - npc_ship.velocity;
+    steering += avoidance_steering(
+        npc_ship.position,
+        npc_ship.radius,
+        NPC_SEPARATION_PADDING + SHIP_RADIUS,
+        &[NpcAvoidanceBody {
+            position: context.player_position,
+            radius: SHIP_RADIUS,
+        }],
+    ) * NPC_ACCELERATION;
+    steering += avoidance_steering(
+        npc_ship.position,
+        npc_ship.radius,
+        NPC_STATION_CLEARANCE,
+        context.stations,
+    ) * NPC_ACCELERATION;
+    steering += avoidance_steering(
+        npc_ship.position,
+        npc_ship.radius,
+        NPC_PLANET_CLEARANCE,
+        context.planets,
+    ) * NPC_ACCELERATION;
+    for (other_index, other) in context.npc_snapshots {
+        if *other_index == context.npc_index {
+            continue;
+        }
+        steering += avoidance_steering(
+            npc_ship.position,
+            npc_ship.radius,
+            NPC_SEPARATION_PADDING,
+            &[*other],
+        ) * NPC_ACCELERATION;
+    }
+
+    npc_ship.velocity += clamp_vec2_length(steering, NPC_ACCELERATION) * context.dt;
+    npc_ship.velocity = clamp_vec2_length(npc_ship.velocity, npc_ship.behavior.max_speed());
+    npc_ship.position += npc_ship.velocity * context.dt;
+    if npc_ship.velocity.length_squared() > 0.01 {
+        npc_ship.angle = npc_ship.velocity.y.atan2(npc_ship.velocity.x);
+    }
+    if !npc_ship.position.is_finite() {
+        npc_ship.position = npc_ship.anchor;
+        npc_ship.velocity = Vec2::ZERO;
+    }
+}
+
+fn npc_desired_velocity(npc_ship: &NpcShip, target: Vec2, player_position: Vec2) -> Vec2 {
+    let to_target = target - npc_ship.position;
+    let distance = to_target.length();
+    if distance <= 1.0 {
+        return Vec2::ZERO;
+    }
+
+    let mut speed = npc_ship.behavior.max_speed();
+    if matches!(
+        npc_ship.behavior,
+        NpcBehaviorMode::Follow | NpcBehaviorMode::HostileIntercept
+    ) && npc_ship.position.distance(player_position)
+        <= npc_ship.radius + NPC_HOSTILE_STANDOFF_DISTANCE.min(NPC_FOLLOW_DISTANCE)
+    {
+        speed *= 0.35;
+    }
+    if !matches!(npc_ship.behavior, NpcBehaviorMode::Flee) {
+        speed *= (distance / 180.0).clamp(0.25, 1.0);
+    }
+
+    to_target / distance * speed
+}
+
+fn avoidance_steering(
+    position: Vec2,
+    radius: f32,
+    clearance: f32,
+    bodies: &[NpcAvoidanceBody],
+) -> Vec2 {
+    bodies.iter().fold(Vec2::ZERO, |force, body| {
+        let away = position - body.position;
+        let distance = away.length();
+        let desired_distance = radius + body.radius + clearance;
+        if distance >= desired_distance {
+            return force;
+        }
+        let direction = safe_direction(away, vec2(1.0, 0.0));
+        let strength = if distance <= 1.0 {
+            1.0
+        } else {
+            ((desired_distance - distance) / desired_distance).clamp(0.0, 1.0)
+        };
+        force + direction * strength
+    })
+}
+
+fn npc_route_offset(route_index: usize) -> Vec2 {
+    let offset = NPC_ROUTE_POINTS[route_index % NPC_ROUTE_POINTS.len()];
+    vec2(offset[0], offset[1])
+}
+
+fn safe_direction(vector: Vec2, fallback: Vec2) -> Vec2 {
+    if vector.length_squared() > 0.001 {
+        vector.normalize()
+    } else {
+        fallback.normalize()
+    }
+}
+
+fn clamp_vec2_length(vector: Vec2, max_length: f32) -> Vec2 {
+    if vector.length_squared() > max_length * max_length {
+        vector.normalize() * max_length
+    } else {
+        vector
+    }
+}
+
 fn update_weapon_systems(game: &mut GameState, dt: f32) {
     game.weapon_fire_events.retain_mut(|event| {
         event.timer -= dt;
@@ -8031,13 +8366,18 @@ fn draw_npc_ship(
             Color { a: 0.92, ..WHITE },
             DrawTextureParams {
                 dest_size: Some(vec2(size, size)),
-                rotation: -std::f32::consts::FRAC_PI_2,
+                rotation: npc_ship.angle + std::f32::consts::FRAC_PI_2,
                 pivot: Some(screen_pos),
                 ..Default::default()
             },
         );
     } else {
-        draw_ship_model(screen_pos, size * 0.22, false, -std::f32::consts::FRAC_PI_2);
+        draw_ship_model(
+            screen_pos,
+            size * 0.22,
+            false,
+            npc_ship.angle + std::f32::consts::FRAC_PI_2,
+        );
     }
 
     let status = format!(
@@ -8064,7 +8404,8 @@ fn draw_npc_ship(
         .map(|stack| stack.count)
         .sum::<u32>();
     let metadata = format!(
-        "cargo {}/{}  tags {}  H{:.0} S{:.0} E{:.0}  loadout {}/{}",
+        "{}  cargo {}/{}  tags {}  H{:.0} S{:.0} E{:.0}  loadout {}/{}",
+        npc_ship.behavior.label(),
         cargo_units,
         format_mass(npc_ship.cargo_capacity),
         npc_ship.behavior_tags.len(),
@@ -12941,6 +13282,109 @@ mod tests {
     }
 
     #[test]
+    fn npc_behavior_modes_derive_from_existing_content_hooks() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+
+        assert_eq!(
+            npc_behavior_mode(
+                &registry,
+                registry
+                    .npc_ships
+                    .get("core:frontier_freehauler")
+                    .expect("freehauler should load")
+            ),
+            NpcBehaviorMode::TradeRoute
+        );
+        assert_eq!(
+            npc_behavior_mode(
+                &registry,
+                registry
+                    .npc_ships
+                    .get("core:frontier_patrol_cutter")
+                    .expect("patrol should load")
+            ),
+            NpcBehaviorMode::Patrol
+        );
+        assert_eq!(
+            npc_behavior_mode(
+                &registry,
+                registry
+                    .npc_ships
+                    .get("core:redwake_probe")
+                    .expect("probe should load")
+            ),
+            NpcBehaviorMode::HostileIntercept
+        );
+    }
+
+    #[test]
+    fn npc_patrol_motion_advances_toward_route_target() {
+        let mut npc_ship = test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO);
+        let target = npc_behavior_target(&npc_ship, vec2(10_000.0, 0.0), &[]);
+
+        update_npc_ship_motion(
+            &mut npc_ship,
+            NpcMotionContext {
+                target,
+                player_position: vec2(10_000.0, 0.0),
+                stations: &[],
+                planets: &[],
+                npc_snapshots: &[],
+                npc_index: 0,
+                dt: 1.0,
+            },
+        );
+
+        assert!(npc_ship.position.x > 0.0);
+        assert!(npc_ship.position.is_finite());
+        assert!(npc_ship.velocity.length() <= NPC_PATROL_SPEED);
+    }
+
+    #[test]
+    fn npc_follow_flee_and_intercept_targets_respect_standoff_rules() {
+        let player_position = Vec2::ZERO;
+        let follow = test_npc_ship(NpcBehaviorMode::Follow, vec2(900.0, 0.0));
+        let flee = test_npc_ship(NpcBehaviorMode::Flee, vec2(100.0, 0.0));
+        let hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(900.0, 0.0));
+
+        assert_vec2_near(
+            npc_behavior_target(&follow, player_position, &[]),
+            vec2(NPC_FOLLOW_DISTANCE, 0.0),
+        );
+        assert!(npc_behavior_target(&flee, player_position, &[]).x > flee.position.x);
+        assert_vec2_near(
+            npc_behavior_target(&hostile, player_position, &[]),
+            vec2(NPC_HOSTILE_STANDOFF_DISTANCE, 0.0),
+        );
+    }
+
+    #[test]
+    fn npc_route_progress_advances_when_target_is_reached() {
+        let mut npc_ship = test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO);
+
+        update_npc_route_progress(&mut npc_ship, vec2(8.0, 0.0));
+
+        assert_eq!(npc_ship.route_index, 1);
+    }
+
+    #[test]
+    fn npc_avoidance_pushes_away_from_overlapping_bodies() {
+        let steering = avoidance_steering(
+            vec2(30.0, 0.0),
+            24.0,
+            NPC_SEPARATION_PADDING,
+            &[NpcAvoidanceBody {
+                position: Vec2::ZERO,
+                radius: SHIP_RADIUS,
+            }],
+        );
+
+        assert!(steering.x > 0.0);
+        assert!(steering.y.abs() < 0.01);
+    }
+
+    #[test]
     fn system_stars_load_as_runtime_bodies() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -14067,6 +14511,34 @@ mod tests {
             radius: DEFENSE_THREAT_RADIUS,
             disposition,
             hull: ShipResource::full(hull),
+        }
+    }
+
+    fn test_npc_ship(behavior: NpcBehaviorMode, position: Vec2) -> NpcShip {
+        NpcShip {
+            id: "core:test_npc".to_string(),
+            name: "Test NPC".to_string(),
+            system: STARTER_SYSTEM_ID.to_string(),
+            position,
+            velocity: Vec2::ZERO,
+            angle: 0.0,
+            radius: 24.0,
+            texture: None,
+            archetype: "test".to_string(),
+            role: behavior.label().to_string(),
+            faction: None,
+            behavior_tags: Vec::new(),
+            behavior,
+            route_index: 0,
+            anchor: position,
+            cargo_capacity: 100.0,
+            cargo_defaults: Vec::new(),
+            hull: ShipResource::full(50.0),
+            shields: ShipResource::full(25.0),
+            energy: ShipResource::full(20.0),
+            shield_slots: Vec::new(),
+            weapon_slots: Vec::new(),
+            summary: "Test NPC ship.".to_string(),
         }
     }
 

@@ -46,7 +46,7 @@ shield_capacity = 80.0
 energy_capacity = 90.0
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
-summary = "Local patrol craft that gives the system an early security presence without adding behavior yet."
+summary = "Local patrol craft that gives the system an early moving security presence."
 
 [[npc_ships]]
 id = "redwake_probe"
@@ -70,4 +70,4 @@ hull_capacity = 36.0
 shield_capacity = 20.0
 energy_capacity = 40.0
 weapon_slots = ["point_defense_turret"]
-summary = "Light hostile probe content reserved for future encounter and faction behavior."
+summary = "Light hostile probe that shadows the player at intercept range."
