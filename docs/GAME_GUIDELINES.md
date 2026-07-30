@@ -58,6 +58,8 @@ for defining how the game itself works.
 - Use disabled states when the player lacks range, items, or prerequisites.
 - Avoid hiding why an action is unavailable.
 - Prefer compact operational screens over large explanatory panels.
+- Prefer shared layout helpers for table columns, row hitboxes, fitted text, and
+  scrollbars before adding new hard-coded menu offsets.
 
 ## Fuel Direction
 

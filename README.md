@@ -88,9 +88,9 @@ You can adjust `Keep` values by left clicking to increase, right clicking to
 decrease, or hovering the cell and using the mouse wheel. Hold `Shift` to adjust
 by 5 or `Control` to adjust by 10.
 
-Items track `unit_mass` in kilograms. The inventory panel shows per-stack mass
-and total cargo mass; cargo mass is currently informational and does not affect
-flight handling yet.
+Items track `unit_mass` in kilograms. The inventory table shows per-stack mass,
+and the ship detail panel shows total cargo mass against cargo rating. Cargo
+mass is currently informational and does not affect flight handling yet.
 
 The starter ship has an 85 tonne dry mass. Thruster force is scaled around that
 mass so flight feel remains tuned while the displayed mass is more believable.
