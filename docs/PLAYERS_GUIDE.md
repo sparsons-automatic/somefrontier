@@ -1,5 +1,7 @@
 # The Player's Guide to Some Frontier
 
+<img src="../assets/branding/some-frontier-logo.png" alt="Some Frontier logo" width="420">
+
 This guide describes the current playable build of Some Frontier. It avoids
 future plans unless a feature is already visible in-game.
 
@@ -11,11 +13,12 @@ Run the game from the project root:
 cargo run
 ```
 
-The title screen lets you start a new game, load an existing save, review
-content packs, adjust settings, or quit. New games use a world seed; choose one
-manually or randomize it before starting. Loading a save restores the seed,
-ship state, inventory, skills, upgrades, selected destination, equipped modules,
-production settings, scanned planets, mining quotas, and content-pack options.
+The title screen displays the Some Frontier logo and lets you start a new game,
+load an existing save, review content packs, adjust settings, or quit. New games
+use a world seed; choose one manually or randomize it before starting. Loading a
+save restores the seed, ship state, inventory, skills, upgrades, selected
+destination, equipped modules, production settings, scanned planets, mining
+quotas, and content-pack options.
 
 ## Controls
 

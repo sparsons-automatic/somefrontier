@@ -29,3 +29,5 @@ world content that stacks on top.
 - Update [The Player's Guide to Some Frontier](PLAYERS_GUIDE.md) when shipped
   player-facing controls, UI behavior, progression, content, or troubleshooting
   changes.
+- Update [../assets/README.md](../assets/README.md) when adding shared branding,
+  transition, UI, audio, or other runtime assets outside a content pack.
