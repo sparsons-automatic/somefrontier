@@ -9667,8 +9667,8 @@ fn draw_save_confirmation(timer: f32, manual: bool) {
 }
 
 fn escape_dialog_rect() -> Rect {
-    let width = 660.0;
-    let height = 190.0;
+    let width = 1100.0;
+    let height = 292.0;
     Rect::new(
         (screen_width() - width) * 0.5,
         (screen_height() - height) * 0.5,
@@ -9677,24 +9677,59 @@ fn escape_dialog_rect() -> Rect {
     )
 }
 
+fn escape_dialog_content_x(panel: Rect) -> f32 {
+    panel.x + 524.0
+}
+
 fn escape_dialog_resume_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 22.0, panel.y + panel.h - 58.0, 112.0, 36.0)
+    Rect::new(
+        escape_dialog_content_x(panel),
+        panel.y + panel.h - 76.0,
+        112.0,
+        36.0,
+    )
 }
 
 fn escape_dialog_save_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 150.0, panel.y + panel.h - 58.0, 120.0, 36.0)
+    Rect::new(
+        escape_dialog_content_x(panel) + 128.0,
+        panel.y + panel.h - 76.0,
+        120.0,
+        36.0,
+    )
 }
 
 fn escape_dialog_title_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 286.0, panel.y + panel.h - 58.0, 132.0, 36.0)
+    Rect::new(
+        escape_dialog_content_x(panel) + 264.0,
+        panel.y + panel.h - 76.0,
+        132.0,
+        36.0,
+    )
 }
 
 fn escape_dialog_quit_button_rect() -> Rect {
     let panel = escape_dialog_rect();
-    Rect::new(panel.x + 434.0, panel.y + panel.h - 58.0, 142.0, 36.0)
+    Rect::new(
+        escape_dialog_content_x(panel) + 412.0,
+        panel.y + panel.h - 76.0,
+        142.0,
+        36.0,
+    )
+}
+
+fn escape_dialog_logo_rect(panel: Rect) -> Rect {
+    let width = 476.0;
+    let height = 232.0;
+    Rect::new(
+        panel.x + 24.0,
+        panel.y + (panel.h - height) * 0.5,
+        width,
+        height,
+    )
 }
 
 fn draw_escape_dialog(game: &GameState, logo: Option<&Texture2D>) {
@@ -9727,13 +9762,10 @@ fn draw_escape_dialog(game: &GameState, logo: Option<&Texture2D>) {
         1.0,
         Color::from_rgba(112, 151, 163, 220),
     );
-    draw_text("Game Paused", panel.x + 22.0, panel.y + 36.0, 25.0, text);
+    let content_x = escape_dialog_content_x(panel);
+    draw_text("Game Paused", content_x, panel.y + 82.0, 25.0, text);
     if let Some(logo) = logo {
-        draw_texture_contain(
-            logo,
-            Rect::new(panel.x + panel.w - 174.0, panel.y + 18.0, 138.0, 54.0),
-            0.9,
-        );
+        draw_texture_contain(logo, escape_dialog_logo_rect(panel), 0.95);
     }
     draw_text(
         if game.save_dirty {
@@ -9741,8 +9773,8 @@ fn draw_escape_dialog(game: &GameState, logo: Option<&Texture2D>) {
         } else {
             "Current game state is saved."
         },
-        panel.x + 22.0,
-        panel.y + 72.0,
+        content_x,
+        panel.y + 118.0,
         18.0,
         if game.save_dirty { warning } else { detail },
     );
