@@ -148,12 +148,16 @@ longer lists.
 The game shows a startup transition while content and runtime assets load. If
 `assets/transitions/` contains supported images, one loaded transition image is
 picked for the startup sequence behind labels such as
-`Loading planet asset ... {asset name}`.
+`Loading planet asset ... {asset name}`. Loading into a system with station
+content starts with the station-approach image. Once multiple transition images
+are loaded, the loading background holds each image for 3 seconds, then
+crossfades to the next image over 2 seconds.
 
 Press `T` in-game to trigger a temporary debug transition between the starter
 system and a remote system discovered from loaded content packs. Runtime
-transitions pick a random loaded transition image, fade in, hold, apply their
-midpoint action hook, then fade back to gameplay.
+transitions prefer the station-approach image when the destination system has
+station content, otherwise pick a random loaded transition image, fade in, hold,
+apply their midpoint action hook, then fade back to gameplay.
 
 ## Assets
 

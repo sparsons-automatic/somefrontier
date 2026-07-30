@@ -76,6 +76,9 @@ const STARTUP_FADE_SECONDS: f32 = 0.8;
 const TRANSITION_FADE_IN_SECONDS: f32 = 0.75;
 const TRANSITION_HOLD_SECONDS: f32 = 0.9;
 const TRANSITION_FADE_OUT_SECONDS: f32 = 0.85;
+const STARTUP_BACKGROUND_HOLD_SECONDS: f32 = 3.0;
+const STARTUP_BACKGROUND_FADE_SECONDS: f32 = 2.0;
+const STATION_APPROACH_TRANSITION_ID: &str = "frontier-station-approach";
 const KNOWN_SYSTEMS_PANEL_WIDTH: f32 = 280.0;
 const KNOWN_SYSTEM_ROW_HEIGHT: f32 = 54.0;
 const WARP_CHARGE_SECONDS: f32 = 2.0;
@@ -116,6 +119,7 @@ struct SystemStar {
 }
 
 struct TransitionAsset {
+    id: String,
     path: String,
     texture: Texture2D,
 }
@@ -940,11 +944,16 @@ impl GameState {
         let processing_settings = vec![CraftSetting::starter(); processing_recipes.len()];
 
         let transition_assets = load_transition_assets(Path::new("assets/transitions")).await;
-        let startup_background_texture = select_transition_texture(&transition_assets);
-        let startup_background = startup_background_texture.as_ref();
+        let startup_system_id = save_data
+            .as_ref()
+            .map(|save| save.current_system_id.as_str())
+            .unwrap_or(STARTER_SYSTEM_ID);
+        let startup_preferred_transition_id =
+            preferred_transition_asset_id_for_system(&content_registry, startup_system_id);
 
-        draw_startup_transition(
-            startup_background,
+        draw_startup_transition_assets(
+            &transition_assets,
+            startup_preferred_transition_id,
             "Loading ship asset ... frontier_cargo_ship_01",
             1.0,
         );
@@ -961,9 +970,25 @@ impl GameState {
         };
         let system_light_haze_texture = Some(make_system_light_haze_texture());
         let system_stars = make_system_stars(&content_registry);
-        let planets = make_planets(&content_registry, world_seed, startup_background).await;
-        let stations = make_station_destinations(&content_registry, startup_background).await;
-        let npc_ships = make_npc_ships(&content_registry, startup_background).await;
+        let planets = make_planets(
+            &content_registry,
+            world_seed,
+            &transition_assets,
+            startup_preferred_transition_id,
+        )
+        .await;
+        let stations = make_station_destinations(
+            &content_registry,
+            &transition_assets,
+            startup_preferred_transition_id,
+        )
+        .await;
+        let npc_ships = make_npc_ships(
+            &content_registry,
+            &transition_assets,
+            startup_preferred_transition_id,
+        )
+        .await;
         let recipe_vendor_locked_recipes = recipe_vendor_locked_recipes(&stations);
         let purchased_recipe_unlocks = save_data
             .as_ref()
@@ -1056,12 +1081,17 @@ impl GameState {
             save_status_manual: false,
         };
         if let Some(save_data) = save_data {
-            draw_startup_transition(startup_background, "Restoring saved flight state ...", 1.0);
+            draw_startup_transition_assets(
+                &game.transition_assets,
+                startup_preferred_transition_id,
+                "Restoring saved flight state ...",
+                1.0,
+            );
             next_frame().await;
             game.apply_save(save_data);
             game.save_dirty = false;
         }
-        run_startup_transition_out(startup_background).await;
+        run_startup_transition_out(&game.transition_assets, startup_preferred_transition_id).await;
         game
     }
 
@@ -1355,7 +1385,8 @@ fn load_game_content_registry() -> content::ContentRegistry {
 async fn make_planets(
     content_registry: &content::ContentRegistry,
     world_seed: u64,
-    startup_background: Option<&Texture2D>,
+    transition_assets: &[TransitionAsset],
+    preferred_transition_id: Option<&str>,
 ) -> Vec<Planet> {
     let mut planets = Vec::new();
     for planet_id in &content_registry.planet_order {
@@ -1386,8 +1417,9 @@ async fn make_planets(
 
         let texture = match planet_def.texture.as_deref() {
             Some(path) => {
-                draw_startup_transition(
-                    startup_background,
+                draw_startup_transition_assets(
+                    transition_assets,
+                    preferred_transition_id,
                     &format!("Loading planet asset ... {}", asset_file_name(path)),
                     1.0,
                 );
@@ -1463,7 +1495,8 @@ fn make_system_stars(content_registry: &content::ContentRegistry) -> Vec<SystemS
 
 async fn make_station_destinations(
     content_registry: &content::ContentRegistry,
-    startup_background: Option<&Texture2D>,
+    transition_assets: &[TransitionAsset],
+    preferred_transition_id: Option<&str>,
 ) -> Vec<StationDestination> {
     let mut stations = Vec::new();
     for station_id in &content_registry.station_order {
@@ -1475,8 +1508,9 @@ async fn make_station_destinations(
         };
         let texture = match station_def.texture.as_deref() {
             Some(path) => {
-                draw_startup_transition(
-                    startup_background,
+                draw_startup_transition_assets(
+                    transition_assets,
+                    preferred_transition_id,
                     &format!("Loading station asset ... {}", asset_file_name(path)),
                     1.0,
                 );
@@ -1539,7 +1573,8 @@ async fn make_station_destinations(
 
 async fn make_npc_ships(
     content_registry: &content::ContentRegistry,
-    startup_background: Option<&Texture2D>,
+    transition_assets: &[TransitionAsset],
+    preferred_transition_id: Option<&str>,
 ) -> Vec<NpcShip> {
     let mut npc_ships = Vec::new();
     for npc_ship_id in &content_registry.npc_ship_order {
@@ -1548,8 +1583,9 @@ async fn make_npc_ships(
         };
         let texture = match npc_ship_def.texture.as_deref() {
             Some(path) => {
-                draw_startup_transition(
-                    startup_background,
+                draw_startup_transition_assets(
+                    transition_assets,
+                    preferred_transition_id,
                     &format!("Loading NPC ship asset ... {}", asset_file_name(path)),
                     1.0,
                 );
@@ -1796,12 +1832,21 @@ async fn load_transition_assets(root: &Path) -> Vec<TransitionAsset> {
             continue;
         };
         assets.push(TransitionAsset {
+            id: transition_asset_id_from_path(&path_string),
             path: path_string,
             texture,
         });
     }
 
     assets
+}
+
+fn transition_asset_id_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|file_stem| file_stem.to_str())
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn is_supported_transition_image(path: &Path) -> bool {
@@ -1830,6 +1875,56 @@ fn select_transition_texture(assets: &[TransitionAsset]) -> Option<Texture2D> {
 
     let index = (rand::gen_range(0.0, assets.len() as f32) as usize).min(assets.len() - 1);
     Some(assets[index].texture.clone())
+}
+
+fn select_transition_texture_by_id(assets: &[TransitionAsset], id: &str) -> Option<Texture2D> {
+    assets
+        .iter()
+        .find(|asset| asset.id == id)
+        .map(|asset| asset.texture.clone())
+}
+
+fn select_transition_texture_for_action(
+    assets: &[TransitionAsset],
+    stations: &[StationDestination],
+    action: &TransitionAction,
+) -> Option<Texture2D> {
+    preferred_transition_asset_id_for_action(stations, action)
+        .and_then(|id| select_transition_texture_by_id(assets, id))
+        .or_else(|| select_transition_texture(assets))
+}
+
+fn preferred_transition_asset_id_for_action(
+    stations: &[StationDestination],
+    action: &TransitionAction,
+) -> Option<&'static str> {
+    match action {
+        TransitionAction::SwitchSystem(system_id)
+            if system_has_station_destination(stations, system_id) =>
+        {
+            Some(STATION_APPROACH_TRANSITION_ID)
+        }
+        TransitionAction::SwitchSystem(_) => None,
+    }
+}
+
+fn preferred_transition_asset_id_for_system(
+    registry: &content::ContentRegistry,
+    system_id: &str,
+) -> Option<&'static str> {
+    if registry
+        .stations
+        .values()
+        .any(|station| station.system.as_deref() == Some(system_id) && station.position.is_some())
+    {
+        Some(STATION_APPROACH_TRANSITION_ID)
+    } else {
+        None
+    }
+}
+
+fn system_has_station_destination(stations: &[StationDestination], system_id: &str) -> bool {
+    stations.iter().any(|station| station.system == system_id)
 }
 
 impl SceneTransition {
@@ -3633,13 +3728,170 @@ fn draw_startup_transition(background: Option<&Texture2D>, label: &str, opacity:
     );
 }
 
-async fn run_startup_transition_out(background: Option<&Texture2D>) {
+fn draw_startup_transition_assets(
+    assets: &[TransitionAsset],
+    preferred_id: Option<&str>,
+    label: &str,
+    opacity: f32,
+) {
+    let ordered_assets = ordered_startup_transition_assets(assets, preferred_id);
+    draw_startup_transition_sequence(&ordered_assets, label, opacity);
+}
+
+fn draw_startup_transition_sequence(assets: &[&TransitionAsset], label: &str, opacity: f32) {
+    let background = startup_transition_background_at_time(
+        assets,
+        get_time() as f32,
+        STARTUP_BACKGROUND_HOLD_SECONDS,
+        STARTUP_BACKGROUND_FADE_SECONDS,
+    );
+    let opacity = opacity.clamp(0.0, 1.0);
+    let screen_w = screen_width();
+    let screen_h = screen_height();
+
+    clear_background(Color::from_rgba(5, 8, 18, 255));
+
+    match background {
+        StartupTransitionBackground::None => {}
+        StartupTransitionBackground::Single(texture) => {
+            draw_fullscreen_texture_cover(texture, opacity);
+        }
+        StartupTransitionBackground::Crossfade {
+            current,
+            next,
+            progress,
+        } => {
+            draw_fullscreen_texture_cover(current, opacity * (1.0 - progress));
+            draw_fullscreen_texture_cover(next, opacity * progress);
+        }
+    }
+
+    draw_rectangle(
+        0.0,
+        0.0,
+        screen_w,
+        screen_h,
+        Color::new(0.01, 0.02, 0.04, 0.34 + 0.28 * opacity),
+    );
+    draw_rectangle(
+        0.0,
+        screen_h * 0.72,
+        screen_w,
+        screen_h * 0.28,
+        Color::new(0.01, 0.02, 0.04, 0.46 + 0.28 * opacity),
+    );
+
+    let title = "Some Frontier";
+    let title_size = 34.0;
+    let label_size = 20.0;
+    let label = fit_debug_text(label, screen_w - 80.0, label_size as u16);
+    let title_width = measure_text(title, None, title_size as u16, 1.0).width;
+    let label_width = measure_text(&label, None, label_size as u16, 1.0).width;
+    let text_x = (screen_w - title_width).max(0.0) * 0.5;
+    let label_x = (screen_w - label_width).max(0.0) * 0.5;
+    let base_y = screen_h * 0.8;
+
+    draw_text(
+        title,
+        text_x,
+        base_y,
+        title_size,
+        Color::new(0.92, 0.95, 0.89, opacity),
+    );
+    draw_text(
+        &label,
+        label_x,
+        base_y + 34.0,
+        label_size,
+        Color::new(0.59, 0.87, 0.89, opacity),
+    );
+
+    let pulse = (get_time() as f32 * 4.0).sin() * 0.5 + 0.5;
+    let bar_width = 220.0;
+    let bar_x = (screen_w - bar_width) * 0.5;
+    let bar_y = base_y + 58.0;
+    draw_rectangle_lines(
+        bar_x,
+        bar_y,
+        bar_width,
+        4.0,
+        1.0,
+        Color::new(0.33, 0.47, 0.51, 0.55 * opacity),
+    );
+    draw_rectangle(
+        bar_x,
+        bar_y,
+        bar_width * (0.32 + 0.68 * pulse),
+        4.0,
+        Color::new(0.59, 0.87, 0.89, 0.82 * opacity),
+    );
+}
+
+enum StartupTransitionBackground<'a> {
+    None,
+    Single(&'a Texture2D),
+    Crossfade {
+        current: &'a Texture2D,
+        next: &'a Texture2D,
+        progress: f32,
+    },
+}
+
+fn startup_transition_background_at_time<'a>(
+    assets: &[&'a TransitionAsset],
+    time_seconds: f32,
+    hold_seconds: f32,
+    fade_seconds: f32,
+) -> StartupTransitionBackground<'a> {
+    match assets {
+        [] => StartupTransitionBackground::None,
+        [asset] => StartupTransitionBackground::Single(&asset.texture),
+        _ => {
+            let step_seconds = hold_seconds + fade_seconds;
+            let cycle_seconds = step_seconds * assets.len() as f32;
+            let cycle_time = time_seconds.rem_euclid(cycle_seconds);
+            let current_index = (cycle_time / step_seconds).floor() as usize;
+            let local_time = cycle_time - current_index as f32 * step_seconds;
+            let current = &assets[current_index].texture;
+            if local_time < hold_seconds || fade_seconds <= 0.0 {
+                StartupTransitionBackground::Single(current)
+            } else {
+                let next_index = (current_index + 1) % assets.len();
+                StartupTransitionBackground::Crossfade {
+                    current,
+                    next: &assets[next_index].texture,
+                    progress: ((local_time - hold_seconds) / fade_seconds).clamp(0.0, 1.0),
+                }
+            }
+        }
+    }
+}
+
+fn ordered_startup_transition_assets<'a>(
+    assets: &'a [TransitionAsset],
+    preferred_id: Option<&str>,
+) -> Vec<&'a TransitionAsset> {
+    let mut ordered = Vec::with_capacity(assets.len());
+    if let Some(preferred_id) = preferred_id {
+        if let Some(asset) = assets.iter().find(|asset| asset.id == preferred_id) {
+            ordered.push(asset);
+        }
+    }
+    ordered.extend(assets.iter().filter(|asset| {
+        preferred_id
+            .map(|preferred_id| asset.id != preferred_id)
+            .unwrap_or(true)
+    }));
+    ordered
+}
+
+async fn run_startup_transition_out(assets: &[TransitionAsset], preferred_id: Option<&str>) {
     let mut elapsed = 0.0;
     while elapsed < STARTUP_FADE_SECONDS {
         let dt = get_frame_time().min(1.0 / 30.0);
         elapsed += dt;
         let opacity = 1.0 - (elapsed / STARTUP_FADE_SECONDS).clamp(0.0, 1.0);
-        draw_startup_transition(background, "Launching ...", opacity);
+        draw_startup_transition_assets(assets, preferred_id, "Launching ...", opacity);
         next_frame().await;
     }
 }
@@ -5938,8 +6190,13 @@ fn start_scene_transition_with_action(
     label: &str,
     pending_action: TransitionAction,
 ) {
+    let texture = select_transition_texture_for_action(
+        &game.transition_assets,
+        &game.stations,
+        &pending_action,
+    );
     game.scene_transition = Some(SceneTransition {
-        texture: select_transition_texture(&game.transition_assets),
+        texture,
         label: label.to_string(),
         timer: 0.0,
         fade_in_seconds: TRANSITION_FADE_IN_SECONDS,
@@ -15990,6 +16247,58 @@ mod tests {
         assert_eq!(
             game.system_destinations.get(STARTER_SYSTEM_ID),
             Some(&"core:near".to_string())
+        );
+    }
+
+    #[test]
+    fn transition_asset_id_comes_from_file_stem() {
+        assert_eq!(
+            transition_asset_id_from_path("assets/transitions/frontier-station-approach.png"),
+            STATION_APPROACH_TRANSITION_ID
+        );
+        assert_eq!(
+            transition_asset_id_from_path("assets/transitions/frontier-transition-01.jpeg"),
+            "frontier-transition-01"
+        );
+    }
+
+    #[test]
+    fn station_system_switch_prefers_station_approach_transition() {
+        let station_system = "core:station_system";
+        let stations = vec![test_station_destination(
+            "core:test_station",
+            station_system,
+            vec2(100.0, 0.0),
+        )];
+
+        assert_eq!(
+            preferred_transition_asset_id_for_action(
+                &stations,
+                &TransitionAction::SwitchSystem(station_system.to_string()),
+            ),
+            Some(STATION_APPROACH_TRANSITION_ID)
+        );
+        assert_eq!(
+            preferred_transition_asset_id_for_action(
+                &stations,
+                &TransitionAction::SwitchSystem("core:empty_system".to_string()),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_transition_prefers_station_approach_for_station_system() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+
+        assert_eq!(
+            preferred_transition_asset_id_for_system(&registry, STARTER_SYSTEM_ID),
+            Some(STATION_APPROACH_TRANSITION_ID)
+        );
+        assert_eq!(
+            preferred_transition_asset_id_for_system(&registry, "core:missing_system"),
+            None
         );
     }
 
