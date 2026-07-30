@@ -237,6 +237,8 @@ struct TitleMenu {
     new_game_seed_text: String,
     save_slots: Vec<TitleSaveSlot>,
     selected_save_index: usize,
+    last_save_click_index: Option<usize>,
+    last_save_click_time: f64,
     content_packs: Vec<TitleContentPack>,
     selected_pack_index: usize,
     settings: AppSettings,
@@ -3705,6 +3707,8 @@ impl Default for TitleMenu {
             new_game_seed_text: new_world_seed().to_string(),
             save_slots: title_save_slots(),
             selected_save_index: 0,
+            last_save_click_index: None,
+            last_save_click_time: 0.0,
             content_packs: title_content_packs(),
             selected_pack_index: 0,
             settings: read_app_settings(),
@@ -3991,7 +3995,7 @@ fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
             }
             if is_key_pressed(KeyCode::Backspace)
                 || (is_mouse_button_pressed(MouseButton::Left)
-                    && title_back_button_rect().contains(mouse_vec2()))
+                    && title_load_back_button_rect().contains(mouse_vec2()))
             {
                 menu.view = TitleView::Main;
             }
@@ -4107,8 +4111,25 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
     let mouse = mouse_vec2();
     for index in 0..menu.save_slots.len() {
         if title_save_row_rect(index).contains(mouse) {
+            let clicked_at = get_time();
+            let is_double_click = title_save_row_double_clicked(
+                menu.last_save_click_index,
+                menu.last_save_click_time,
+                index,
+                clicked_at,
+            );
             menu.selected_save_index = index;
-            return None;
+            menu.last_save_click_index = Some(index);
+            menu.last_save_click_time = clicked_at;
+            return if is_double_click {
+                menu.save_slots
+                    .get(index)
+                    .map(|slot| TitleAction::LoadGame {
+                        path: slot.path.clone(),
+                    })
+            } else {
+                None
+            };
         }
     }
 
@@ -4122,6 +4143,19 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
     }
 
     None
+}
+
+fn title_save_row_double_clicked(
+    previous_index: Option<usize>,
+    previous_time: f64,
+    clicked_index: usize,
+    clicked_time: f64,
+) -> bool {
+    const DOUBLE_CLICK_SECONDS: f64 = 0.42;
+
+    previous_index == Some(clicked_index)
+        && clicked_time >= previous_time
+        && clicked_time - previous_time <= DOUBLE_CLICK_SECONDS
 }
 
 fn update_title_content_packs(menu: &mut TitleMenu) {
@@ -4344,6 +4378,21 @@ fn title_panel_rect() -> Rect {
     )
 }
 
+fn title_load_panel_rect() -> Rect {
+    title_load_panel_rect_for_screen(screen_width(), screen_height())
+}
+
+fn title_load_panel_rect_for_screen(screen_width: f32, screen_height: f32) -> Rect {
+    let width = (screen_width - 96.0).clamp(720.0, 980.0);
+    let height = (screen_height - 96.0).clamp(480.0, 620.0);
+    Rect::new(
+        (screen_width - width) * 0.5,
+        (screen_height - height) * 0.5,
+        width,
+        height,
+    )
+}
+
 fn title_main_panel_rect() -> Rect {
     let width = (screen_width() - 64.0).clamp(640.0, 920.0);
     let height = (screen_height() - 64.0).clamp(520.0, 680.0);
@@ -4367,6 +4416,11 @@ fn title_menu_button_rect(index: usize) -> Rect {
 
 fn title_back_button_rect() -> Rect {
     let panel = title_panel_rect();
+    Rect::new(panel.x + 28.0, panel.y + panel.h - 64.0, 126.0, 38.0)
+}
+
+fn title_load_back_button_rect() -> Rect {
+    let panel = title_load_panel_rect();
     Rect::new(panel.x + 28.0, panel.y + panel.h - 64.0, 126.0, 38.0)
 }
 
@@ -4396,17 +4450,25 @@ fn title_settings_increment_button_rect() -> Rect {
 }
 
 fn title_save_list_rect() -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(panel.x + 28.0, panel.y + 88.0, 190.0, panel.h - 170.0)
+    title_save_list_rect_for_panel(title_load_panel_rect())
+}
+
+fn title_save_list_rect_for_panel(panel: Rect) -> Rect {
+    Rect::new(
+        panel.x + 28.0,
+        panel.y + 102.0,
+        panel.w * 0.42,
+        panel.h - 186.0,
+    )
 }
 
 fn title_save_row_rect(index: usize) -> Rect {
     let list = title_save_list_rect();
-    Rect::new(list.x, list.y + index as f32 * 50.0, list.w, 44.0)
+    Rect::new(list.x, list.y + index as f32 * 62.0, list.w, 56.0)
 }
 
 fn title_load_game_button_rect() -> Rect {
-    let panel = title_panel_rect();
+    let panel = title_load_panel_rect();
     Rect::new(
         panel.x + panel.w - 176.0,
         panel.y + panel.h - 64.0,
@@ -4620,7 +4682,7 @@ fn draw_title_new_game(menu: &TitleMenu) {
 }
 
 fn draw_title_load_game(menu: &TitleMenu) {
-    let panel = title_panel_rect();
+    let panel = title_load_panel_rect();
     draw_title_panel(panel);
     draw_text(
         "Load Game",
@@ -4668,10 +4730,10 @@ fn draw_title_load_game(menu: &TitleMenu) {
             );
         }
         draw_text(
-            &fit_debug_text(&slot.label, row.w - 16.0, 17),
-            row.x + 8.0,
-            row.y + 20.0,
-            17.0,
+            &fit_debug_text(&slot.label, row.w - 20.0, 19),
+            row.x + 10.0,
+            row.y + 23.0,
+            19.0,
             if selected {
                 Color::from_rgba(235, 242, 226, 255)
             } else {
@@ -4679,17 +4741,25 @@ fn draw_title_load_game(menu: &TitleMenu) {
             },
         );
         draw_text(
-            &format!("seed {}", slot.world_seed),
-            row.x + 8.0,
-            row.y + 38.0,
-            13.0,
+            &fit_debug_text(
+                &format!(
+                    "{}  /  {}",
+                    slot.current_system_id,
+                    format_last_played(slot.modified_unix_seconds)
+                ),
+                row.w - 20.0,
+                14,
+            ),
+            row.x + 10.0,
+            row.y + 43.0,
+            14.0,
             Color::from_rgba(150, 221, 226, 255),
         );
     }
 
-    let detail_x = panel.x + 240.0;
+    let detail_x = list.x + list.w + 28.0;
     let detail_y = panel.y + 102.0;
-    let detail_width = panel.w - 268.0;
+    let detail_width = panel.x + panel.w - detail_x - 28.0;
     if let Some(slot) = menu.save_slots.get(menu.selected_save_index) {
         draw_text(
             &fit_debug_text(&slot.label, detail_width, 22),
@@ -4712,24 +4782,28 @@ fn draw_title_load_game(menu: &TitleMenu) {
         draw_title_save_detail_row(
             detail_x,
             detail_y + 68.0,
+            detail_width,
             "Seed",
             &slot.world_seed.to_string(),
         );
         draw_title_save_detail_row(
             detail_x,
             detail_y + 102.0,
+            detail_width,
             "System",
             &slot.current_system_id,
         );
         draw_title_save_detail_row(
             detail_x,
             detail_y + 136.0,
+            detail_width,
             "Elapsed",
             &format!("{:.1} days", slot.world_elapsed_days),
         );
         draw_title_save_detail_row(
             detail_x,
             detail_y + 170.0,
+            detail_width,
             "Played",
             &format_last_played(slot.modified_unix_seconds),
         );
@@ -4743,7 +4817,7 @@ fn draw_title_load_game(menu: &TitleMenu) {
         );
     }
 
-    draw_title_button(title_back_button_rect(), "Back", true, "Esc");
+    draw_title_button(title_load_back_button_rect(), "Back", true, "Esc");
     draw_title_button(
         title_load_game_button_rect(),
         "Load",
@@ -4752,10 +4826,10 @@ fn draw_title_load_game(menu: &TitleMenu) {
     );
 }
 
-fn draw_title_save_detail_row(x: f32, y: f32, label: &str, value: &str) {
+fn draw_title_save_detail_row(x: f32, y: f32, width: f32, label: &str, value: &str) {
     draw_text(label, x, y, 15.0, Color::from_rgba(168, 204, 210, 255));
     draw_text(
-        &fit_debug_text(value, 190.0, 17),
+        &fit_debug_text(value, width - 92.0, 17),
         x + 78.0,
         y,
         17.0,
@@ -5188,17 +5262,34 @@ fn draw_title_button(rect: Rect, label: &str, enabled: bool, shortcut: &str) {
             Color::from_rgba(126, 143, 148, 255)
         },
     );
-    let shortcut_measure = measure_text(shortcut, None, 16, 1.0);
+    if hovered && !shortcut.is_empty() {
+        draw_title_button_shortcut_tooltip(rect, shortcut);
+    }
+}
+
+fn draw_title_button_shortcut_tooltip(rect: Rect, shortcut: &str) {
+    let label = format!("Key {shortcut}");
+    let measure = measure_text(&label, None, 14, 1.0);
+    let width = measure.width + 20.0;
+    let height = 28.0;
+    let x = (rect.x + rect.w - width).clamp(12.0, screen_width() - width - 12.0);
+    let y = (rect.y - height - 8.0).max(12.0);
+
+    draw_rectangle(x, y, width, height, Color::from_rgba(2, 6, 10, 245));
+    draw_rectangle_lines(
+        x,
+        y,
+        width,
+        height,
+        1.0,
+        Color::from_rgba(112, 151, 163, 170),
+    );
     draw_text(
-        shortcut,
-        rect.x + rect.w - shortcut_measure.width - 16.0,
-        rect.y + 24.0,
-        16.0,
-        if enabled {
-            Color::from_rgba(150, 221, 226, 255)
-        } else {
-            Color::from_rgba(126, 143, 148, 255)
-        },
+        &label,
+        x + 10.0,
+        y + 19.0,
+        14.0,
+        Color::from_rgba(150, 221, 226, 255),
     );
 }
 
@@ -14500,6 +14591,25 @@ mod tests {
         assert_eq!(parse_title_seed(""), None);
         assert_eq!(parse_title_seed("abc"), None);
         assert_eq!(parse_title_seed("18446744073709551616"), None);
+    }
+
+    #[test]
+    fn title_save_row_double_click_requires_same_row_within_threshold() {
+        assert!(title_save_row_double_clicked(Some(2), 10.0, 2, 10.2));
+        assert!(!title_save_row_double_clicked(Some(1), 10.0, 2, 10.2));
+        assert!(!title_save_row_double_clicked(Some(2), 10.0, 2, 10.8));
+        assert!(!title_save_row_double_clicked(None, 10.0, 2, 10.2));
+    }
+
+    #[test]
+    fn title_load_layout_has_wide_save_list_and_detail_pane() {
+        let panel = title_load_panel_rect_for_screen(1024.0, 768.0);
+        let list = title_save_list_rect_for_panel(panel);
+        let detail_width = panel.x + panel.w - (list.x + list.w + 28.0) - 28.0;
+
+        assert!(panel.w >= 720.0);
+        assert!(list.w >= 300.0);
+        assert!(detail_width >= 300.0);
     }
 
     #[test]
