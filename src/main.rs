@@ -1,3 +1,4 @@
+mod branding_icon;
 mod content;
 
 use macroquad::prelude::*;
@@ -12,6 +13,7 @@ use std::{
 
 const DEFAULT_WINDOW_WIDTH: i32 = 1100;
 const DEFAULT_WINDOW_HEIGHT: i32 = 760;
+const BRANDING_LOGO_PATH: &str = "assets/branding/some-frontier-logo.png";
 const STARFIELD_RADIUS: f32 = 9000.0;
 const SHIP_RADIUS: f32 = 22.0;
 const SHIP_SPRITE_SIZE: f32 = 72.0;
@@ -3388,6 +3390,11 @@ fn window_conf() -> Conf {
         window_height,
         high_dpi: true,
         sample_count: 4,
+        icon: Some(macroquad::miniquad::conf::Icon {
+            small: branding_icon::ICON_SMALL,
+            medium: branding_icon::ICON_MEDIUM,
+            big: branding_icon::ICON_BIG,
+        }),
         ..Default::default()
     }
 }
@@ -3627,6 +3634,7 @@ async fn run_startup_transition_out(background: Option<&Texture2D>) {
 #[macroquad::main(window_conf)]
 async fn main() {
     set_ui_font(load_ui_font().await);
+    let branding_logo = load_asset_texture(BRANDING_LOGO_PATH).await;
     let background = make_background();
     let mut app = if fast_start_enabled() {
         let start_mode = latest_save_path()
@@ -3662,7 +3670,7 @@ async fn main() {
                         }
                     }
                 } else {
-                    draw_title_menu(menu, &background);
+                    draw_title_menu(menu, &background, branding_logo.as_ref());
                 }
             }
             AppState::Playing(game) => {
@@ -3670,7 +3678,7 @@ async fn main() {
                 if game.quit_to_title_requested {
                     app = AppState::Title(TitleMenu::default());
                 } else {
-                    draw_scene(game, &background);
+                    draw_scene(game, &background, branding_logo.as_ref());
                 }
             }
         }
@@ -4282,10 +4290,10 @@ fn mouse_vec2() -> Vec2 {
     vec2(mouse_position().0, mouse_position().1)
 }
 
-fn draw_title_menu(menu: &TitleMenu, background: &UniverseBackground) {
+fn draw_title_menu(menu: &TitleMenu, background: &UniverseBackground, logo: Option<&Texture2D>) {
     draw_title_background(background);
     match menu.view {
-        TitleView::Main => draw_title_main_menu(menu),
+        TitleView::Main => draw_title_main_menu(menu, logo),
         TitleView::NewGame => draw_title_new_game(menu),
         TitleView::LoadGame => draw_title_load_game(menu),
         TitleView::ContentPacks => draw_title_content_packs(menu),
@@ -4330,12 +4338,23 @@ fn title_panel_rect() -> Rect {
     )
 }
 
-fn title_menu_button_rect(index: usize) -> Rect {
-    let panel = title_panel_rect();
+fn title_main_panel_rect() -> Rect {
+    let width = (screen_width() - 64.0).clamp(640.0, 920.0);
+    let height = (screen_height() - 64.0).clamp(520.0, 680.0);
     Rect::new(
-        panel.x + 58.0,
-        panel.y + 126.0 + index as f32 * 52.0,
-        panel.w - 116.0,
+        (screen_width() - width) * 0.5,
+        (screen_height() - height) * 0.5,
+        width,
+        height,
+    )
+}
+
+fn title_menu_button_rect(index: usize) -> Rect {
+    let panel = title_main_panel_rect();
+    Rect::new(
+        panel.x + panel.w * 0.5 - 178.0,
+        panel.y + panel.h - 270.0 + index as f32 * 52.0,
+        356.0,
         38.0,
     )
 }
@@ -4425,24 +4444,44 @@ fn title_new_game_start_button_rect() -> Rect {
     )
 }
 
-fn draw_title_main_menu(menu: &TitleMenu) {
-    let panel = title_panel_rect();
+fn draw_title_main_menu(menu: &TitleMenu, logo: Option<&Texture2D>) {
+    let panel = title_main_panel_rect();
     draw_title_panel(panel);
-    let title = "Some Frontier";
-    let title_measure = measure_text(title, None, 34, 1.0);
-    draw_text(
-        title,
-        panel.x + (panel.w - title_measure.width) * 0.5,
-        panel.y + 56.0,
-        34.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
+    if let Some(logo) = logo {
+        let logo_source = Rect::new(
+            logo.width() * 0.20,
+            logo.height() * 0.18,
+            logo.width() * 0.61,
+            logo.height() * 0.52,
+        );
+        draw_texture_source_contain(
+            logo,
+            logo_source,
+            Rect::new(
+                panel.x + 18.0,
+                panel.y + 18.0,
+                panel.w - 36.0,
+                panel.h - 278.0,
+            ),
+            1.0,
+        );
+    } else {
+        let title = "Some Frontier";
+        let title_measure = measure_text(title, None, 34, 1.0);
+        draw_text(
+            title,
+            panel.x + (panel.w - title_measure.width) * 0.5,
+            panel.y + 56.0,
+            34.0,
+            Color::from_rgba(235, 242, 226, 255),
+        );
+    }
     let subtitle = "Local systems, rough ore, quiet engines";
     let subtitle_measure = measure_text(subtitle, None, 18, 1.0);
     draw_text(
         subtitle,
         panel.x + (panel.w - subtitle_measure.width) * 0.5,
-        panel.y + 88.0,
+        panel.y + panel.h - 282.0,
         18.0,
         Color::from_rgba(168, 204, 210, 255),
     );
@@ -7679,7 +7718,7 @@ fn update_ship(ship: &mut Ship, dt: f32, energy_recharge: f32) {
     }
 }
 
-fn draw_scene(game: &GameState, background: &UniverseBackground) {
+fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&Texture2D>) {
     clear_background(Color::from_rgba(5, 8, 18, 255));
 
     let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
@@ -7800,7 +7839,7 @@ fn draw_scene(game: &GameState, background: &UniverseBackground) {
         draw_content_debug_overlay(game);
     }
     if game.escape_dialog_open {
-        draw_escape_dialog(game);
+        draw_escape_dialog(game, logo);
     }
     if game.save_status_timer > 0.0 {
         draw_save_confirmation(game.save_status_timer, game.save_status_manual);
@@ -7896,6 +7935,37 @@ fn draw_fullscreen_texture_cover(texture: &Texture2D, opacity: f32) {
         position.y,
         Color::new(1.0, 1.0, 1.0, opacity),
         DrawTextureParams {
+            dest_size: Some(dest_size),
+            ..Default::default()
+        },
+    );
+}
+
+fn draw_texture_contain(texture: &Texture2D, rect: Rect, opacity: f32) {
+    draw_texture_source_contain(
+        texture,
+        Rect::new(0.0, 0.0, texture.width(), texture.height()),
+        rect,
+        opacity,
+    );
+}
+
+fn draw_texture_source_contain(texture: &Texture2D, source: Rect, rect: Rect, opacity: f32) {
+    let opacity = opacity.clamp(0.0, 1.0);
+    let scale = (rect.w / source.w).min(rect.h / source.h);
+    let dest_size = vec2(source.w * scale, source.h * scale);
+    let position = vec2(
+        rect.x + (rect.w - dest_size.x) * 0.5,
+        rect.y + (rect.h - dest_size.y) * 0.5,
+    );
+
+    draw_texture_ex(
+        texture,
+        position.x,
+        position.y,
+        Color::new(1.0, 1.0, 1.0, opacity),
+        DrawTextureParams {
+            source: Some(source),
             dest_size: Some(dest_size),
             ..Default::default()
         },
@@ -9326,7 +9396,7 @@ fn escape_dialog_quit_button_rect() -> Rect {
     Rect::new(panel.x + 434.0, panel.y + panel.h - 58.0, 142.0, 36.0)
 }
 
-fn draw_escape_dialog(game: &GameState) {
+fn draw_escape_dialog(game: &GameState, logo: Option<&Texture2D>) {
     draw_rectangle(
         0.0,
         0.0,
@@ -9357,6 +9427,13 @@ fn draw_escape_dialog(game: &GameState) {
         Color::from_rgba(112, 151, 163, 220),
     );
     draw_text("Game Paused", panel.x + 22.0, panel.y + 36.0, 25.0, text);
+    if let Some(logo) = logo {
+        draw_texture_contain(
+            logo,
+            Rect::new(panel.x + panel.w - 174.0, panel.y + 18.0, 138.0, 54.0),
+            0.9,
+        );
+    }
     draw_text(
         if game.save_dirty {
             "Unsaved changes are queued for autosave."

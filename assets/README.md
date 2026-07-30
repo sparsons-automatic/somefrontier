@@ -7,6 +7,8 @@ Shared game art, audio, and engine/UI assets live here.
 - `planets/`: generated/source planet previews only; runtime content-pack planet
   textures live under `content/packs/<pack>/assets/`.
 - `backgrounds/`: starfields, distant objects, and skybox-style assets.
+- `branding/`: official logos, derived app/window icons, and other project
+  identity assets.
 - `transitions/`: random full-screen space images used by scene transitions.
 - `ui/`: HUD icons, panels, fonts, cursors, and menu art.
 - `effects/`: particles, projectiles, engine flames, shields, impacts, and explosions.
@@ -25,9 +27,19 @@ Content-pack runtime assets:
 
 Shared runtime assets:
 
+- `assets/branding/some-frontier-logo.png` is the official game logo used by
+  title, pause, and documentation surfaces. Keep this as the canonical logo
+  asset; individual UI surfaces can crop or scale it at render time for their
+  available space.
+- `assets/branding/some-frontier-icon-16.png`,
+  `assets/branding/some-frontier-icon-32.png`, and
+  `assets/branding/some-frontier-icon-64.png` are derived square app/window
+  icons. Matching `.rgba` files hold raw startup icon bytes included by
+  `src/branding_icon.rs` for Macroquad window configuration.
 - `assets/transitions/` supports `.png`, `.jpg`, and `.jpeg` transition images
   loaded at startup.
 - `assets/transitions/frontier-transition-01.png`
 - `assets/transitions/frontier-transition-02.png`
+- `assets/transitions/frontier-station-approach.png`
 
 The old local image-generation pipeline has been removed.

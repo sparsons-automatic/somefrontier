@@ -1,5 +1,7 @@
 # Some Frontier
 
+<img src="assets/branding/some-frontier-logo.png" alt="Some Frontier logo" width="520">
+
 Some Frontier is a small 2D space game prototype built in Rust with
 [Macroquad](https://macroquad.rs/). You pilot a frontier cargo ship through a
 starfield, inspect a point-of-interest planet, mine resources, and craft basic
@@ -165,10 +167,16 @@ Runtime world-content assets live under `content/packs/<pack>/assets/`:
 
 Shared engine/runtime assets live under `assets/`:
 
+- `assets/branding/some-frontier-logo.png` for title, pause, and documentation
+  branding
+- `assets/branding/some-frontier-icon-16.png`,
+  `assets/branding/some-frontier-icon-32.png`, and
+  `assets/branding/some-frontier-icon-64.png` for app/window identity
 - `assets/transitions/` for random space transition images loaded at startup
   (`.png`, `.jpg`, and `.jpeg`)
 - `assets/transitions/frontier-transition-01.png`
 - `assets/transitions/frontier-transition-02.png`
+- `assets/transitions/frontier-station-approach.png`
 
 Additional asset organization notes are in [assets/README.md](assets/README.md).
 
