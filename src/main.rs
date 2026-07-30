@@ -62,6 +62,8 @@ const ACTION_RAIL_RESIZE_HITBOX_WIDTH: f32 = 28.0;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
+const TITLE_SAVE_ROW_HEIGHT: f32 = 56.0;
+const TITLE_SAVE_ROW_STEP: f32 = 62.0;
 const SAVE_VERSION: u32 = 1;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const GAME_DAY_SECONDS: f32 = 120.0;
@@ -237,8 +239,11 @@ struct TitleMenu {
     new_game_seed_text: String,
     save_slots: Vec<TitleSaveSlot>,
     selected_save_index: usize,
+    save_slots_scroll: f32,
     last_save_click_index: Option<usize>,
     last_save_click_time: f64,
+    pending_delete_save_index: Option<usize>,
+    delete_save_error: Option<String>,
     content_packs: Vec<TitleContentPack>,
     selected_pack_index: usize,
     settings: AppSettings,
@@ -3707,8 +3712,11 @@ impl Default for TitleMenu {
             new_game_seed_text: new_world_seed().to_string(),
             save_slots: title_save_slots(),
             selected_save_index: 0,
+            save_slots_scroll: 0.0,
             last_save_click_index: None,
             last_save_click_time: 0.0,
+            pending_delete_save_index: None,
+            delete_save_error: None,
             content_packs: title_content_packs(),
             selected_pack_index: 0,
             settings: read_app_settings(),
@@ -4085,15 +4093,25 @@ fn next_settings_category(category: SettingsCategory) -> SettingsCategory {
 
 fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
     if menu.save_slots.is_empty() {
+        menu.pending_delete_save_index = None;
+        menu.delete_save_error = None;
+        menu.save_slots_scroll = 0.0;
         return None;
     }
+    clamp_title_save_slots_scroll(menu);
 
     if is_key_pressed(KeyCode::Up) {
         menu.selected_save_index = menu.selected_save_index.saturating_sub(1);
+        menu.pending_delete_save_index = None;
+        menu.delete_save_error = None;
+        scroll_title_save_selection_into_view(menu);
     }
     if is_key_pressed(KeyCode::Down) {
         menu.selected_save_index =
             (menu.selected_save_index + 1).min(menu.save_slots.len().saturating_sub(1));
+        menu.pending_delete_save_index = None;
+        menu.delete_save_error = None;
+        scroll_title_save_selection_into_view(menu);
     }
     if is_key_pressed(KeyCode::Enter) {
         return menu
@@ -4104,14 +4122,33 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
             });
     }
 
+    let mouse = mouse_vec2();
+    let list = title_save_list_rect();
+    let wheel = mouse_wheel().1;
+    if wheel != 0.0 && list.contains(mouse) {
+        menu.save_slots_scroll = title_save_slots_scrolled_offset(
+            menu.save_slots_scroll,
+            wheel,
+            menu.save_slots.len(),
+            list.h,
+        );
+    }
+
     if !is_mouse_button_pressed(MouseButton::Left) {
         return None;
     }
 
-    let mouse = mouse_vec2();
-    for index in 0..menu.save_slots.len() {
-        if title_save_row_rect(index).contains(mouse) {
+    if list.contains(mouse) {
+        for index in 0..menu.save_slots.len() {
+            let row = title_save_row_rect_with_scroll(index, menu.save_slots_scroll);
+            if !title_save_row_is_visible(row, list) || !row.contains(mouse) {
+                continue;
+            }
             let clicked_at = get_time();
+            if menu.selected_save_index != index {
+                menu.pending_delete_save_index = None;
+                menu.delete_save_error = None;
+            }
             let is_double_click = title_save_row_double_clicked(
                 menu.last_save_click_index,
                 menu.last_save_click_time,
@@ -4121,6 +4158,7 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
             menu.selected_save_index = index;
             menu.last_save_click_index = Some(index);
             menu.last_save_click_time = clicked_at;
+            scroll_title_save_selection_into_view(menu);
             return if is_double_click {
                 menu.save_slots
                     .get(index)
@@ -4133,6 +4171,11 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
         }
     }
 
+    if title_delete_save_button_rect().contains(mouse) {
+        handle_title_delete_save_click(menu);
+        return None;
+    }
+
     if title_load_game_button_rect().contains(mouse) {
         return menu
             .save_slots
@@ -4143,6 +4186,64 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
     }
 
     None
+}
+
+fn handle_title_delete_save_click(menu: &mut TitleMenu) {
+    let selected_index = menu.selected_save_index;
+    if selected_index >= menu.save_slots.len() {
+        return;
+    }
+
+    if menu.pending_delete_save_index != Some(selected_index) {
+        menu.pending_delete_save_index = Some(selected_index);
+        menu.delete_save_error = None;
+        return;
+    }
+
+    let deleted = delete_title_save_at(menu, selected_index);
+    if !deleted {
+        menu.pending_delete_save_index = Some(selected_index);
+    }
+}
+
+fn delete_title_save_at(menu: &mut TitleMenu, save_index: usize) -> bool {
+    let Some(slot) = menu.save_slots.get(save_index) else {
+        return false;
+    };
+    let path = slot.path.clone();
+    if let Err(error) = delete_save_file(&path) {
+        menu.delete_save_error = Some(error);
+        return false;
+    }
+
+    let previous_index = menu.selected_save_index;
+    menu.save_slots = title_save_slots();
+    menu.selected_save_index =
+        selected_save_index_after_delete(previous_index, save_index, menu.save_slots.len());
+    scroll_title_save_selection_into_view(menu);
+    menu.last_save_click_index = None;
+    menu.last_save_click_time = 0.0;
+    menu.pending_delete_save_index = None;
+    menu.delete_save_error = None;
+    true
+}
+
+fn delete_save_file(path: &Path) -> Result<(), String> {
+    fs::remove_file(path).map_err(|error| format!("Could not delete save: {error}"))
+}
+
+fn selected_save_index_after_delete(
+    previous_index: usize,
+    deleted_index: usize,
+    remaining_count: usize,
+) -> usize {
+    if remaining_count == 0 {
+        0
+    } else if previous_index > deleted_index {
+        previous_index - 1
+    } else {
+        previous_index.min(remaining_count - 1)
+    }
 }
 
 fn title_save_row_double_clicked(
@@ -4462,15 +4563,82 @@ fn title_save_list_rect_for_panel(panel: Rect) -> Rect {
     )
 }
 
-fn title_save_row_rect(index: usize) -> Rect {
+fn title_save_row_rect_with_scroll(index: usize, scroll: f32) -> Rect {
+    title_save_row_rect_for_list(title_save_list_rect(), index, scroll)
+}
+
+fn title_save_row_rect_for_list(list: Rect, index: usize, scroll: f32) -> Rect {
+    Rect::new(
+        list.x,
+        list.y + index as f32 * TITLE_SAVE_ROW_STEP - scroll,
+        list.w,
+        TITLE_SAVE_ROW_HEIGHT,
+    )
+}
+
+fn title_save_row_is_visible(row: Rect, list: Rect) -> bool {
+    row.y >= list.y && row.y + row.h <= list.y + list.h
+}
+
+fn row_save_text_width(row_width: f32, show_scrollbar: bool) -> f32 {
+    row_width - if show_scrollbar { 32.0 } else { 20.0 }
+}
+
+fn title_save_slots_scrolled_offset(
+    current: f32,
+    wheel: f32,
+    row_count: usize,
+    viewport_height: f32,
+) -> f32 {
+    let max_scroll = title_save_slots_max_scroll(row_count, viewport_height);
+    (current - wheel * TITLE_SAVE_ROW_STEP * 2.0).clamp(0.0, max_scroll)
+}
+
+fn title_save_slots_max_scroll(row_count: usize, viewport_height: f32) -> f32 {
+    let overflow = max_scroll_offset(row_count, TITLE_SAVE_ROW_STEP, viewport_height);
+    if overflow <= 0.0 {
+        0.0
+    } else {
+        (overflow / TITLE_SAVE_ROW_STEP).ceil() * TITLE_SAVE_ROW_STEP
+    }
+}
+
+fn clamp_title_save_slots_scroll(menu: &mut TitleMenu) {
     let list = title_save_list_rect();
-    Rect::new(list.x, list.y + index as f32 * 62.0, list.w, 56.0)
+    menu.save_slots_scroll = menu.save_slots_scroll.clamp(
+        0.0,
+        title_save_slots_max_scroll(menu.save_slots.len(), list.h),
+    );
+}
+
+fn scroll_title_save_selection_into_view(menu: &mut TitleMenu) {
+    let list = title_save_list_rect();
+    let row_top = menu.selected_save_index as f32 * TITLE_SAVE_ROW_STEP;
+    let row_bottom = row_top + TITLE_SAVE_ROW_HEIGHT;
+    if row_top < menu.save_slots_scroll {
+        menu.save_slots_scroll = row_top;
+    } else if row_bottom > menu.save_slots_scroll + list.h {
+        menu.save_slots_scroll = row_bottom - list.h;
+    }
+    menu.save_slots_scroll =
+        (menu.save_slots_scroll / TITLE_SAVE_ROW_STEP).ceil() * TITLE_SAVE_ROW_STEP;
+    clamp_title_save_slots_scroll(menu);
 }
 
 fn title_load_game_button_rect() -> Rect {
     let panel = title_load_panel_rect();
     Rect::new(
         panel.x + panel.w - 176.0,
+        panel.y + panel.h - 64.0,
+        148.0,
+        38.0,
+    )
+}
+
+fn title_delete_save_button_rect() -> Rect {
+    let panel = title_load_panel_rect();
+    Rect::new(
+        panel.x + panel.w - 340.0,
         panel.y + panel.h - 64.0,
         148.0,
         38.0,
@@ -4709,10 +4877,15 @@ fn draw_title_load_game(menu: &TitleMenu) {
         Color::from_rgba(96, 137, 150, 205),
     );
 
+    let show_scrollbar = title_save_slots_max_scroll(menu.save_slots.len(), list.h) > 0.0;
+    let row_text_width = row_save_text_width(list.w, show_scrollbar);
     for (index, slot) in menu.save_slots.iter().enumerate() {
-        let row = title_save_row_rect(index);
-        if row.y + row.h > list.y + list.h {
+        let row = title_save_row_rect_with_scroll(index, menu.save_slots_scroll);
+        if row.y > list.y + list.h {
             break;
+        }
+        if !title_save_row_is_visible(row, list) {
+            continue;
         }
         let selected = index == menu.selected_save_index;
         let hovered = row.contains(mouse_vec2());
@@ -4730,7 +4903,7 @@ fn draw_title_load_game(menu: &TitleMenu) {
             );
         }
         draw_text(
-            &fit_debug_text(&slot.label, row.w - 20.0, 19),
+            &fit_debug_text(&slot.label, row_text_width, 19),
             row.x + 10.0,
             row.y + 23.0,
             19.0,
@@ -4747,7 +4920,7 @@ fn draw_title_load_game(menu: &TitleMenu) {
                     slot.current_system_id,
                     format_last_played(slot.modified_unix_seconds)
                 ),
-                row.w - 20.0,
+                row_text_width,
                 14,
             ),
             row.x + 10.0,
@@ -4756,6 +4929,14 @@ fn draw_title_load_game(menu: &TitleMenu) {
             Color::from_rgba(150, 221, 226, 255),
         );
     }
+    draw_scrollbar(
+        list.x + list.w - 8.0,
+        list.y + 6.0,
+        list.h - 12.0,
+        menu.save_slots.len(),
+        TITLE_SAVE_ROW_STEP,
+        menu.save_slots_scroll,
+    );
 
     let detail_x = list.x + list.w + 28.0;
     let detail_y = panel.y + 102.0;
@@ -4807,6 +4988,30 @@ fn draw_title_load_game(menu: &TitleMenu) {
             "Played",
             &format_last_played(slot.modified_unix_seconds),
         );
+        if let Some(error) = &menu.delete_save_error {
+            draw_wrapped_text(
+                error,
+                detail_x,
+                detail_y + 218.0,
+                detail_width,
+                15,
+                Color::from_rgba(226, 190, 150, 255),
+            );
+        } else if menu.pending_delete_save_index == Some(menu.selected_save_index) {
+            let warning = if slot.is_legacy {
+                "Confirm deletion of this legacy save file."
+            } else {
+                "Confirm deletion of this save slot."
+            };
+            draw_wrapped_text(
+                warning,
+                detail_x,
+                detail_y + 218.0,
+                detail_width,
+                15,
+                Color::from_rgba(226, 190, 150, 255),
+            );
+        }
     } else {
         draw_text(
             "No saved games found.",
@@ -4818,6 +5023,17 @@ fn draw_title_load_game(menu: &TitleMenu) {
     }
 
     draw_title_button(title_load_back_button_rect(), "Back", true, "Esc");
+    let confirming_delete = menu.pending_delete_save_index == Some(menu.selected_save_index);
+    draw_title_button(
+        title_delete_save_button_rect(),
+        if confirming_delete {
+            "Confirm Delete"
+        } else {
+            "Delete"
+        },
+        !menu.save_slots.is_empty(),
+        "Delete",
+    );
     draw_title_button(
         title_load_game_button_rect(),
         "Load",
@@ -14634,6 +14850,23 @@ mod tests {
     }
 
     #[test]
+    fn selected_save_index_clamps_after_delete() {
+        assert_eq!(selected_save_index_after_delete(0, 0, 0), 0);
+        assert_eq!(selected_save_index_after_delete(2, 2, 2), 1);
+        assert_eq!(selected_save_index_after_delete(2, 1, 2), 1);
+        assert_eq!(selected_save_index_after_delete(0, 1, 2), 0);
+    }
+
+    #[test]
+    fn delete_save_file_removes_existing_file() {
+        let path = test_save_path("delete-save-file");
+        fs::write(&path, "temporary save").expect("test save file should be writable");
+
+        assert!(delete_save_file(&path).is_ok());
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn title_load_layout_has_wide_save_list_and_detail_pane() {
         let panel = title_load_panel_rect_for_screen(1024.0, 768.0);
         let list = title_save_list_rect_for_panel(panel);
@@ -14642,6 +14875,26 @@ mod tests {
         assert!(panel.w >= 720.0);
         assert!(list.w >= 300.0);
         assert!(detail_width >= 300.0);
+    }
+
+    #[test]
+    fn title_save_list_scrolls_when_rows_exceed_viewport() {
+        assert_eq!(title_save_slots_max_scroll(2, 180.0), 0.0);
+        assert!(title_save_slots_max_scroll(10, 180.0) > 0.0);
+        assert_eq!(
+            title_save_slots_scrolled_offset(0.0, -1.0, 10, 180.0),
+            TITLE_SAVE_ROW_STEP * 2.0
+        );
+    }
+
+    #[test]
+    fn title_save_row_rect_accounts_for_scroll_offset() {
+        let list = Rect::new(20.0, 40.0, 300.0, 180.0);
+        let row = title_save_row_rect_for_list(list, 3, TITLE_SAVE_ROW_STEP);
+
+        assert_eq!(row.x, list.x);
+        assert_eq!(row.y, list.y + TITLE_SAVE_ROW_STEP * 2.0);
+        assert_eq!(row.h, TITLE_SAVE_ROW_HEIGHT);
     }
 
     #[test]

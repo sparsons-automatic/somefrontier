@@ -18,7 +18,9 @@ load an existing save, review content packs, adjust settings, or quit. New games
 use a world seed; choose one manually or randomize it before starting. Loading a
 save restores the seed, ship state, inventory, skills, upgrades, selected
 destination, equipped modules, production settings, scanned planets, mining
-quotas, and content-pack options.
+quotas, and content-pack options. The Load Game list can be scrolled when many
+saves exist, supports double-click loading, and includes a two-step delete
+confirmation for removing the selected save without leaving the menu.
 
 ## Controls
 
