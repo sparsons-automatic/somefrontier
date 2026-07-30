@@ -75,9 +75,12 @@ After a planet has composition data, selecting that planet changes the right
 side work table into mining rows. Click a mineable resource row to queue one
 mining bill. Mining completes one bill at a time from top to bottom.
 
-The `Keep` column sets an auto-maintained inventory target. Increase or
-decrease keep values with left click, right click, or mouse wheel over the keep
-cell. Hold `Shift` to adjust by 5 or `Control` to adjust by 10.
+The work table shows `Item`, `Keep`, `Status`, `%`, and `Active` columns.
+`Status` shows current stock against the keep target, `%` shows scanned resource
+richness when available, and `Active` shows the currently running mining bill.
+The `Keep` column sets an auto-maintained inventory target. Increase or decrease
+keep values with left click, right click, or mouse wheel over the keep cell. Hold
+`Shift` to adjust by 5 or `Control` to adjust by 10.
 
 Hazard effects are lightweight in the current build. Some planets can drain
 shields while the ship is close. Stable orbit mitigates configured shield drain.
@@ -93,7 +96,8 @@ Open inventory with `Tab` or `E`. The production table has three tabs:
 Click a recipe row to queue one bill. Production consumes ingredients from
 inventory and completes one bill at a time. The `Keep` column works like mining:
 it keeps producing until the target stock level is reached, as long as inputs
-are available.
+are available. Production rows use the same `Item`, `Keep`, `Status`, `%`, and
+`Active` layout as mining; `%` shows progress for the active bill.
 
 Production actions award skill XP for the related mining, smelting, or
 fabrication skill.
@@ -101,9 +105,10 @@ fabrication skill.
 ## Inventory And Cargo
 
 Inventory stores item stacks from mining, production, starter cargo, trading,
-and module swaps. Items have unit mass in kilograms. The inventory panel shows
-stack mass and total cargo mass; cargo mass is currently informational and does
-not change flight handling.
+and module swaps. Items have unit mass in kilograms. The inventory table shows
+`Item`, `Qty`, and `Mass` columns for each stack. Total cargo load and capacity
+are shown in the ship detail panel below the ship image; cargo mass is currently
+informational and does not change flight handling.
 
 Some crafted items are installable modules. Shield and weapon install items can
 be swapped through ship detail surfaces when a matching slot exists.

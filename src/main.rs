@@ -796,10 +796,47 @@ struct MiningSetting {
     progress: f32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkColumn {
     Item,
     Keep,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum UiColumnSizing {
+    Fixed(f32),
+    Content { measured: f32, min: f32, max: f32 },
+    Flex { min: f32, weight: f32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct UiColumnSpec {
+    sizing: UiColumnSizing,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct UiTableLayout {
+    bounds: Rect,
+    viewport: Rect,
+    columns: Vec<Rect>,
+    row_height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UiTableCell {
+    row: usize,
+    column: usize,
+}
+
+struct UiTableBottomLayout<'a> {
+    x: f32,
+    y: f32,
+    width: f32,
+    row_start_offset: f32,
+    viewport_bottom: f32,
+    row_height: f32,
+    column_gap: f32,
+    columns: &'a [UiColumnSpec],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -6559,20 +6596,9 @@ fn npc_ship_is_hostile(content_registry: &content::ContentRegistry, npc_ship: &N
 }
 
 fn hovered_npc_interaction_row_index(mouse: Vec2, row_count: usize) -> Option<usize> {
-    let (panel_x, _, _, _) = inventory_panel_rect(false);
-    let work_x = panel_x + 24.0;
-    let y = work_table_y();
-    let width = 342.0;
-    (0..row_count).find(|index| npc_interaction_row_rect(work_x, y, width, *index).contains(mouse))
-}
-
-fn npc_interaction_row_rect(x: f32, y: f32, width: f32, index: usize) -> Rect {
-    Rect::new(
-        x,
-        y + 28.0 + index as f32 * WORK_ROW_HEIGHT,
-        width,
-        WORK_ROW_HEIGHT - 3.0,
-    )
+    let overlay = inventory_overlay_layout(false);
+    let table = npc_interaction_table_layout(overlay.work_x, work_table_y(), overlay.work_width);
+    ui_hovered_table_cell(mouse, &table, row_count, 0.0).map(|cell| cell.row)
 }
 
 fn handle_station_recipe_unlock_input(
@@ -6753,19 +6779,14 @@ fn sell_station_trade_offer(
 }
 
 fn hovered_station_service_index(station: &StationDestination, mouse: Vec2) -> Option<usize> {
-    let (panel_x, _, panel_width, _) = inventory_panel_rect(false);
-    let work_x = panel_x + 24.0;
-    let work_width = 342.0;
-    let y = work_table_y();
+    let overlay = inventory_overlay_layout(false);
 
-    if panel_width <= 0.0 {
+    if overlay.panel_width <= 0.0 {
         return None;
     }
 
-    station.services.iter().enumerate().find_map(|(index, _)| {
-        let row = station_service_row_rect(work_x, y, work_width, index);
-        (row.contains(mouse) && row.y <= y + work_table_height() - WORK_ROW_HEIGHT).then_some(index)
-    })
+    let table = station_service_table_layout(overlay.work_x, work_table_y(), overlay.work_width);
+    ui_hovered_table_cell(mouse, &table, station.services.len(), 0.0).map(|cell| cell.row)
 }
 
 fn hovered_station_trade_offer_index(
@@ -6773,20 +6794,15 @@ fn hovered_station_trade_offer_index(
     service: &StationService,
     mouse: Vec2,
 ) -> Option<usize> {
-    let (panel_x, _, panel_width, _) = inventory_panel_rect(false);
-    let work_x = panel_x + 24.0;
-    let work_width = 342.0;
+    let overlay = inventory_overlay_layout(false);
     let y = station_trade_table_y(station);
 
-    if panel_width <= 0.0 {
+    if overlay.panel_width <= 0.0 {
         return None;
     }
 
-    service.trade.iter().enumerate().find_map(|(index, _)| {
-        let row = station_trade_offer_row_rect(work_x, y, work_width, index);
-        (row.contains(mouse) && row.y <= work_table_y() + work_table_height() - WORK_ROW_HEIGHT)
-            .then_some(index)
-    })
+    let table = station_trade_table_layout(overlay.work_x, y, overlay.work_width);
+    ui_hovered_table_cell(mouse, &table, service.trade.len(), 0.0).map(|cell| cell.row)
 }
 
 fn hovered_recipe_unlock_index(
@@ -6794,23 +6810,14 @@ fn hovered_recipe_unlock_index(
     service: &StationService,
     mouse: Vec2,
 ) -> Option<usize> {
-    let (panel_x, _, panel_width, _) = inventory_panel_rect(false);
-    let work_x = panel_x + 24.0;
-    let work_width = 342.0;
+    let overlay = inventory_overlay_layout(false);
     let y = recipe_unlock_table_y(station, service);
-    if panel_width <= 0.0 {
+    if overlay.panel_width <= 0.0 {
         return None;
     }
 
-    service
-        .recipe_unlocks
-        .iter()
-        .enumerate()
-        .find_map(|(index, _)| {
-            let row = recipe_unlock_row_rect(work_x, y, work_width, index);
-            (row.contains(mouse) && row.y <= work_table_y() + work_table_height() - WORK_ROW_HEIGHT)
-                .then_some(index)
-        })
+    let table = recipe_unlock_table_layout(overlay.work_x, y, overlay.work_width);
+    ui_hovered_table_cell(mouse, &table, service.recipe_unlocks.len(), 0.0).map(|cell| cell.row)
 }
 
 fn launch_planet_scan(game: &mut GameState, planet_index: usize) -> bool {
@@ -6907,24 +6914,25 @@ fn handle_mining_table_input(
 }
 
 fn handle_inventory_overlay_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
-    let (panel_x, _, panel_width, _) = inventory_panel_rect(game.selected_planet.is_some());
-    let gap = 24.0;
-    let work_x = panel_x + 24.0;
-    let work_width = 342.0;
-    let detail_width = inventory_detail_width(panel_width);
-    let inventory_x = work_x + work_width + gap;
-    let inventory_width = panel_width - work_width - detail_width - gap * 4.0;
+    let layout = inventory_overlay_layout(game.selected_planet.is_some());
     let table_y = work_table_y();
     let table_height = work_table_height();
 
-    if Rect::new(work_x, table_y, work_width, table_height).contains(mouse) {
+    if Rect::new(layout.work_x, table_y, layout.work_width, table_height).contains(mouse) {
         let row_count = active_work_row_count(game);
         let hovering_keep = hovered_work_cell(mouse, row_count, game.work_scroll)
             .is_some_and(|(_, column)| column == WorkColumn::Keep);
         if !hovering_keep {
             game.work_scroll = scrolled_offset(game.work_scroll, wheel, row_count, table_height);
         }
-    } else if Rect::new(inventory_x, table_y, inventory_width, table_height).contains(mouse) {
+    } else if Rect::new(
+        layout.inventory_x,
+        table_y,
+        layout.inventory_width,
+        table_height,
+    )
+    .contains(mouse)
+    {
         let row_count = game
             .inventory
             .slots
@@ -10042,37 +10050,69 @@ fn inventory_panel_height() -> f32 {
 }
 
 fn inventory_detail_width(panel_width: f32) -> f32 {
-    let desired_width: f32 = 460.0;
-    let minimum_inventory_width: f32 = 140.0;
-    let fixed_layout_width: f32 = 342.0 + 24.0 * 3.0;
-    let max_width = (panel_width - fixed_layout_width - minimum_inventory_width).max(300.0);
+    let desired_width: f32 = 400.0;
+    let minimum_inventory_width: f32 = 280.0;
+    let minimum_work_width: f32 = 390.0;
+    let fixed_layout_width: f32 = minimum_work_width + 24.0 * 3.0;
+    let max_width = (panel_width - fixed_layout_width - minimum_inventory_width).max(320.0);
 
     desired_width.min(panel_width * 0.5).min(max_width)
 }
 
-fn draw_inventory_overlay(game: &GameState) {
-    let (panel_x, panel_y, panel_width, panel_height) =
-        inventory_panel_rect(game.selected_planet.is_some());
-    let gap = 24.0;
-    let work_x = panel_x + 24.0;
-    let work_width = 342.0;
-    let detail_width = inventory_detail_width(panel_width);
-    let detail_x = panel_x + panel_width - detail_width - 24.0;
-    let inventory_x = work_x + work_width + gap;
-    let inventory_width = detail_x - inventory_x - gap;
+struct InventoryOverlayLayout {
+    panel_x: f32,
+    panel_y: f32,
+    panel_width: f32,
+    panel_height: f32,
+    work_x: f32,
+    work_width: f32,
+    inventory_x: f32,
+    inventory_width: f32,
+    detail_x: f32,
+    detail_width: f32,
+}
 
-    draw_rectangle(
+fn inventory_overlay_layout(reserve_action_rail: bool) -> InventoryOverlayLayout {
+    let (panel_x, panel_y, panel_width, panel_height) = inventory_panel_rect(reserve_action_rail);
+    let gap = 24.0;
+    let inner_width = panel_width - gap * 2.0;
+    let detail_width = inventory_detail_width(panel_width);
+    let remaining_width = (inner_width - detail_width - gap * 2.0).max(0.0);
+    let work_width = (remaining_width * 0.58).clamp(390.0, 470.0);
+    let inventory_width = (remaining_width - work_width).max(280.0);
+    let work_x = panel_x + gap;
+    let inventory_x = work_x + work_width + gap;
+    let detail_x = inventory_x + inventory_width + gap;
+
+    InventoryOverlayLayout {
         panel_x,
         panel_y,
         panel_width,
         panel_height,
+        work_x,
+        work_width,
+        inventory_x,
+        inventory_width,
+        detail_x,
+        detail_width,
+    }
+}
+
+fn draw_inventory_overlay(game: &GameState) {
+    let layout = inventory_overlay_layout(game.selected_planet.is_some());
+
+    draw_rectangle(
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_width,
+        layout.panel_height,
         Color::from_rgba(6, 12, 18, 228),
     );
     draw_rectangle_lines(
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_width,
+        layout.panel_height,
         1.0,
         Color::from_rgba(112, 151, 163, 150),
     );
@@ -10088,8 +10128,8 @@ fn draw_inventory_overlay(game: &GameState) {
     };
     draw_text(
         left_title,
-        panel_x + 24.0,
-        panel_y + 38.0,
+        layout.panel_x + 24.0,
+        layout.panel_y + 38.0,
         26.0,
         Color::from_rgba(235, 242, 226, 255),
     );
@@ -10097,24 +10137,23 @@ fn draw_inventory_overlay(game: &GameState) {
         && game.selected_station.is_none()
         && game.selected_npc_ship.is_none()
     {
-        draw_production_mode_tabs(game.production_mode, work_x + 132.0, panel_y + 19.0);
+        draw_production_mode_tabs(
+            game.production_mode,
+            layout.work_x + layout.work_width * 0.38,
+            layout.panel_y + 19.0,
+        );
     }
     draw_text(
         "Inventory",
-        inventory_x,
-        panel_y + 38.0,
+        layout.inventory_x,
+        layout.panel_y + 38.0,
         26.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
-        &format!(
-            "Cargo {} / {}   Credits {}",
-            format_mass(game.inventory.total_mass()),
-            format_mass(cargo_rating_kg(&game.ship_upgrades)),
-            game.credits
-        ),
-        inventory_x + 128.0,
-        panel_y + 36.0,
+        &format!("Credits {}", game.credits),
+        layout.inventory_x + 128.0,
+        layout.panel_y + 36.0,
         17.0,
         Color::from_rgba(126, 156, 164, 220),
     );
@@ -10126,7 +10165,12 @@ fn draw_inventory_overlay(game: &GameState) {
                 &game.inventory,
                 planet,
                 planet_in_interaction_range(&game.ship, planet),
-                Rect::new(work_x, work_table_y(), work_width, work_table_height()),
+                Rect::new(
+                    layout.work_x,
+                    work_table_y(),
+                    layout.work_width,
+                    work_table_height(),
+                ),
                 game.work_scroll,
                 mouse,
             );
@@ -10140,7 +10184,12 @@ fn draw_inventory_overlay(game: &GameState) {
                 game.credits,
                 &game.inventory,
                 &game.purchased_recipe_unlocks,
-                Rect::new(work_x, work_table_y(), work_width, work_table_height()),
+                Rect::new(
+                    layout.work_x,
+                    work_table_y(),
+                    layout.work_width,
+                    work_table_height(),
+                ),
             );
         }
     } else if let Some(npc_ship_index) = game.selected_npc_ship {
@@ -10149,15 +10198,20 @@ fn draw_inventory_overlay(game: &GameState) {
                 &game.content_registry,
                 &game.ship,
                 npc_ship,
-                Rect::new(work_x, work_table_y(), work_width, work_table_height()),
+                Rect::new(
+                    layout.work_x,
+                    work_table_y(),
+                    layout.work_width,
+                    work_table_height(),
+                ),
             );
         }
     } else {
         draw_production_text_table(
             game,
-            work_x,
+            layout.work_x,
             work_table_y(),
-            work_width,
+            layout.work_width,
             game.work_scroll,
             mouse,
         );
@@ -10165,17 +10219,17 @@ fn draw_inventory_overlay(game: &GameState) {
 
     draw_inventory_text_list(
         &game.inventory,
-        inventory_x,
-        panel_y + 66.0,
-        inventory_width,
+        layout.inventory_x,
+        layout.panel_y + 66.0,
+        layout.inventory_width,
         game.inventory_scroll,
     );
     draw_detail_panel(
         game,
-        detail_x,
-        panel_y + 66.0,
-        detail_width,
-        panel_height - 90.0,
+        layout.detail_x,
+        layout.panel_y + 66.0,
+        layout.detail_width,
+        layout.panel_height - 90.0,
     );
     if let Some(planet_index) = game.selected_planet {
         if let Some(planet) = game.planets.get(planet_index) {
@@ -10740,27 +10794,15 @@ fn ship_upgrades_table_viewport_height() -> f32 {
 fn hovered_ship_upgrade_plus(mouse: Vec2, row_count: usize, scroll: f32) -> Option<usize> {
     let origin = ship_upgrade_table_origin();
     let (_, _, panel_width, _) = ship_upgrades_panel_rect();
-    let table_width = panel_width - 56.0;
-    let row_height = SHIP_UPGRADE_ROW_HEIGHT;
-    let viewport_top = ship_upgrades_table_viewport_top();
-    let viewport_bottom = viewport_top + ship_upgrades_table_viewport_height();
-    let first_row_y = origin.y + 42.0 - scroll;
-    let plus_x = origin.x + table_width - 66.0;
-
-    if mouse.y < viewport_top || mouse.y > viewport_bottom {
-        return None;
-    }
-    if mouse.x < plus_x - 10.0 || mouse.x > plus_x + 28.0 {
-        return None;
-    }
-
-    let row = ((mouse.y - first_row_y + 25.0) / row_height).floor() as isize;
-    if row < 0 || row as usize >= row_count {
-        return None;
-    }
-
-    let row_y = first_row_y + row as f32 * row_height;
-    (mouse.y >= row_y - 25.0 && mouse.y <= row_y + 14.0).then_some(row as usize)
+    let layout = ship_upgrade_table_layout(
+        origin.x,
+        origin.y,
+        panel_width - 56.0,
+        ship_upgrades_table_viewport_height(),
+    );
+    ui_hovered_table_cell(mouse, &layout, row_count, scroll)
+        .filter(|cell| cell.column == 3)
+        .map(|cell| cell.row)
 }
 
 fn draw_ship_upgrades_table(table: ShipUpgradeTableRender<'_>) {
@@ -10775,13 +10817,11 @@ fn draw_ship_upgrades_table(table: ShipUpgradeTableRender<'_>) {
         viewport_height,
         mouse,
     } = table;
-    let row_height = SHIP_UPGRADE_ROW_HEIGHT;
-    let name_x = x + 8.0;
-    let level_x = x + 278.0;
-    let cost_x = x + 382.0;
-    let plus_x = x + width - 66.0;
-    let viewport_top = y + 18.0;
-    let viewport_bottom = viewport_top + viewport_height;
+    let layout = ship_upgrade_table_layout(x, y, width, viewport_height);
+    let name_column = layout.columns[0];
+    let level_column = layout.columns[1];
+    let cost_column = layout.columns[2];
+    let plus_column = layout.columns[3];
     let header = Color::from_rgba(168, 204, 210, 255);
     let text = Color::from_rgba(205, 226, 230, 255);
     let detail = Color::from_rgba(178, 197, 203, 255);
@@ -10789,58 +10829,77 @@ fn draw_ship_upgrades_table(table: ShipUpgradeTableRender<'_>) {
     let unavailable = Color::from_rgba(126, 143, 148, 255);
     let scroll = scroll.clamp(
         0.0,
-        max_scroll_offset(upgrades.len(), row_height, viewport_height),
+        max_scroll_offset(upgrades.len(), layout.row_height, viewport_height),
     );
     let hovered = hovered_ship_upgrade_plus(mouse, upgrades.len(), scroll);
 
-    draw_text("Upgrade", name_x, y, 16.0, header);
-    draw_text("Level", level_x, y, 16.0, header);
-    draw_text("Next cost", cost_x, y, 16.0, header);
-    draw_text("+", plus_x + 2.0, y, 16.0, header);
+    draw_text("Upgrade", name_column.x, y, 16.0, header);
+    draw_text("Level", level_column.x, y, 16.0, header);
+    draw_text("Next cost", cost_column.x, y, 16.0, header);
+    draw_text("+", plus_column.x + 10.0, y, 16.0, header);
 
     for (row, upgrade) in upgrades.iter().enumerate() {
-        let row_y = y + 42.0 + row as f32 * row_height - scroll;
-        if row_y + 24.0 < viewport_top || row_y - 28.0 > viewport_bottom {
+        let row_rect = ui_table_row_rect(&layout, row, scroll);
+        if !ui_table_row_visible(&layout, row_rect) {
             continue;
         }
+        let row_y = row_rect.y + 24.0;
         let cost = upgrade.next_cost(content_registry);
         let affordable = can_afford_cost(inventory, &cost);
         let is_hovered = hovered == Some(row);
         if row % 2 == 0 || is_hovered {
             draw_rectangle(
-                x,
-                row_y - 25.0,
-                width,
-                row_height,
+                row_rect.x,
+                row_rect.y,
+                row_rect.w,
+                row_rect.h,
                 Color::from_rgba(10, 18, 24, if is_hovered { 170 } else { 100 }),
             );
         }
 
-        draw_text(upgrade.kind.name(), name_x, row_y - 4.0, 21.0, text);
         draw_text(
-            upgrade.kind.effect_text(),
-            name_x,
+            &fit_debug_text(upgrade.kind.name(), name_column.w, 21),
+            name_column.x,
+            row_y - 4.0,
+            21.0,
+            text,
+        );
+        draw_text(
+            &fit_debug_text(upgrade.kind.effect_text(), name_column.w, 15),
+            name_column.x,
             row_y + 18.0,
             15.0,
             detail,
         );
-        draw_text(&upgrade.level.to_string(), level_x, row_y, 22.0, active);
         draw_text(
-            &format_cost(&cost),
-            cost_x,
+            &upgrade.level.to_string(),
+            level_column.x,
+            row_y,
+            22.0,
+            active,
+        );
+        draw_text(
+            &fit_debug_text(&format_cost(&cost), cost_column.w, 18),
+            cost_column.x,
             row_y,
             18.0,
             if affordable { active } else { unavailable },
         );
 
-        draw_plus_button(plus_x - 8.0, row_y - 24.0, affordable, active, unavailable);
+        draw_plus_button(
+            plus_column.x,
+            row_rect.y + 1.0,
+            affordable,
+            active,
+            unavailable,
+        );
     }
     draw_scrollbar(
         x + width - 4.0,
-        viewport_top,
-        viewport_height,
+        layout.viewport.y,
+        layout.viewport.h,
         upgrades.len(),
-        row_height,
+        layout.row_height,
         scroll,
     );
 }
@@ -10908,87 +10967,89 @@ fn skill_table_origin() -> Vec2 {
 fn hovered_skill_plus(mouse: Vec2, row_count: usize) -> Option<usize> {
     let origin = skill_table_origin();
     let (_, _, panel_width, _) = skills_panel_rect();
-    let row_height = 38.0;
-    let first_row_y = origin.y + 40.0;
-    let plus_x = origin.x + panel_width - 116.0;
-
-    if mouse.x < plus_x - 10.0 || mouse.x > plus_x + 28.0 {
-        return None;
-    }
-
-    let row = ((mouse.y - first_row_y + 25.0) / row_height).floor() as isize;
-    if row < 0 || row as usize >= row_count {
-        return None;
-    }
-
-    let row_y = first_row_y + row as f32 * row_height;
-    (mouse.y >= row_y - 25.0 && mouse.y <= row_y + 11.0).then_some(row as usize)
+    let layout = skills_table_layout(origin.x, origin.y, panel_width - 60.0);
+    ui_hovered_table_cell(mouse, &layout, row_count, 0.0)
+        .filter(|cell| cell.column == 3)
+        .map(|cell| cell.row)
 }
 
 fn hovered_skill_row(mouse: Vec2, row_count: usize) -> Option<usize> {
     let origin = skill_table_origin();
     let (_, _, panel_width, _) = skills_panel_rect();
-    let width = panel_width - 60.0;
-    let row_height = 38.0;
-    let first_row_y = origin.y + 40.0;
-
-    if mouse.x < origin.x || mouse.x > origin.x + width {
-        return None;
-    }
-
-    let row = ((mouse.y - first_row_y + 25.0) / row_height).floor() as isize;
-    if row < 0 || row as usize >= row_count {
-        return None;
-    }
-
-    let row_y = first_row_y + row as f32 * row_height;
-    (mouse.y >= row_y - 25.0 && mouse.y <= row_y + 11.0).then_some(row as usize)
+    let layout = skills_table_layout(origin.x, origin.y, panel_width - 60.0);
+    ui_hovered_table_cell(mouse, &layout, row_count, 0.0).map(|cell| cell.row)
 }
 
 fn draw_skills_table(skills: &[Skill; SKILL_COUNT], x: f32, y: f32, width: f32, mouse: Vec2) {
-    let row_height = 38.0;
-    let skill_x = x + 8.0;
-    let level_x = x + 250.0;
-    let xp_x = x + 360.0;
-    let plus_x = x + width - 56.0;
+    let layout = skills_table_layout(x, y, width);
+    let skill_column = layout.columns[0];
+    let level_column = layout.columns[1];
+    let xp_column = layout.columns[2];
+    let plus_column = layout.columns[3];
     let header = Color::from_rgba(168, 204, 210, 255);
     let text = Color::from_rgba(205, 226, 230, 255);
     let active = Color::from_rgba(150, 221, 226, 255);
     let unavailable = Color::from_rgba(126, 143, 148, 255);
 
-    draw_text("Skill", skill_x, y, 16.0, header);
-    draw_text("Level", level_x, y, 16.0, header);
-    draw_text("XP / Cost", xp_x, y, 16.0, header);
-    draw_text("+", plus_x + 2.0, y, 16.0, header);
+    draw_text("Skill", skill_column.x, y, 16.0, header);
+    draw_text("Level", level_column.x, y, 16.0, header);
+    draw_text("XP / Cost", xp_column.x, y, 16.0, header);
+    draw_text("+", plus_column.x + 10.0, y, 16.0, header);
 
     let hovered = hovered_skill_plus(mouse, skills.len());
     let hovered_row = hovered_skill_row(mouse, skills.len());
     for (row, skill) in skills.iter().enumerate() {
-        let row_y = y + 40.0 + row as f32 * row_height;
+        let row_rect = ui_table_row_rect(&layout, row, 0.0);
+        if !ui_table_row_visible(&layout, row_rect) {
+            continue;
+        }
+        let row_y = row_rect.y + 25.0;
         let affordable = skill.can_level_up();
         let is_hovered = hovered == Some(row) || hovered_row == Some(row);
 
         if row % 2 == 0 || is_hovered {
             draw_rectangle(
-                x,
-                row_y - 25.0,
-                width,
-                row_height,
+                row_rect.x,
+                row_rect.y,
+                row_rect.w,
+                row_rect.h,
                 Color::from_rgba(10, 18, 24, if is_hovered { 170 } else { 100 }),
             );
         }
 
-        draw_text(skill.kind.name(), skill_x, row_y, 22.0, text);
-        draw_text(&skill.level.to_string(), level_x, row_y, 22.0, active);
         draw_text(
-            &format!("{:.0} / {:.0}", skill.xp, skill.cost_to_next_level()),
-            xp_x,
+            &fit_debug_text(skill.kind.name(), skill_column.w, 22),
+            skill_column.x,
+            row_y,
+            22.0,
+            text,
+        );
+        draw_text(
+            &skill.level.to_string(),
+            level_column.x,
+            row_y,
+            22.0,
+            active,
+        );
+        draw_text(
+            &fit_debug_text(
+                &format!("{:.0} / {:.0}", skill.xp, skill.cost_to_next_level()),
+                xp_column.w,
+                22,
+            ),
+            xp_column.x,
             row_y,
             22.0,
             if affordable { active } else { unavailable },
         );
 
-        draw_plus_button(plus_x - 8.0, row_y - 24.0, affordable, active, unavailable);
+        draw_plus_button(
+            plus_column.x,
+            row_rect.y + 1.0,
+            affordable,
+            active,
+            unavailable,
+        );
     }
 
     if let Some(row) = hovered_row {
@@ -11046,6 +11107,279 @@ fn draw_skill_tooltip(skill: Skill, mouse: Vec2) {
     );
 }
 
+fn ui_column_spec_fixed(width: f32) -> UiColumnSpec {
+    UiColumnSpec {
+        sizing: UiColumnSizing::Fixed(width),
+    }
+}
+
+fn ui_column_spec_content(measured: f32, min: f32, max: f32) -> UiColumnSpec {
+    UiColumnSpec {
+        sizing: UiColumnSizing::Content { measured, min, max },
+    }
+}
+
+fn ui_column_spec_flex(min: f32, weight: f32) -> UiColumnSpec {
+    UiColumnSpec {
+        sizing: UiColumnSizing::Flex { min, weight },
+    }
+}
+
+fn ui_resolve_columns(rect: Rect, gap: f32, specs: &[UiColumnSpec]) -> Vec<Rect> {
+    if specs.is_empty() {
+        return Vec::new();
+    }
+
+    let gap_total = gap * specs.len().saturating_sub(1) as f32;
+    let mut fixed_total = 0.0;
+    let mut flex_min_total = 0.0;
+    let mut flex_weight_total = 0.0;
+
+    for spec in specs {
+        match spec.sizing {
+            UiColumnSizing::Fixed(width) => fixed_total += width.max(0.0),
+            UiColumnSizing::Content { measured, min, max } => {
+                fixed_total += measured.clamp(min, max).max(0.0);
+            }
+            UiColumnSizing::Flex { min, weight } => {
+                flex_min_total += min.max(0.0);
+                flex_weight_total += weight.max(0.0);
+            }
+        }
+    }
+
+    let available_for_flex = (rect.w - gap_total - fixed_total).max(0.0);
+    let flex_extra = (available_for_flex - flex_min_total).max(0.0);
+    let mut x = rect.x;
+    specs
+        .iter()
+        .map(|spec| {
+            let width = match spec.sizing {
+                UiColumnSizing::Fixed(width) => width.max(0.0),
+                UiColumnSizing::Content { measured, min, max } => measured.clamp(min, max).max(0.0),
+                UiColumnSizing::Flex { min, weight } => {
+                    let share = if flex_weight_total > 0.0 {
+                        flex_extra * weight.max(0.0) / flex_weight_total
+                    } else {
+                        0.0
+                    };
+                    min.max(0.0) + share
+                }
+            };
+            let column = Rect::new(x, rect.y, width, rect.h);
+            x += width + gap;
+            column
+        })
+        .collect()
+}
+
+fn ui_table_layout(
+    bounds: Rect,
+    viewport_top: f32,
+    viewport_height: f32,
+    row_height: f32,
+    column_gap: f32,
+    columns: &[UiColumnSpec],
+) -> UiTableLayout {
+    let viewport = Rect::new(bounds.x, viewport_top, bounds.w, viewport_height);
+    let column_rect = Rect::new(bounds.x, viewport.y, bounds.w, viewport.h);
+    UiTableLayout {
+        bounds,
+        viewport,
+        columns: ui_resolve_columns(column_rect, column_gap, columns),
+        row_height,
+    }
+}
+
+fn ui_table_layout_until_bottom(config: UiTableBottomLayout<'_>) -> UiTableLayout {
+    let viewport_top = config.y + config.row_start_offset;
+    let viewport_height = (config.viewport_bottom - viewport_top).max(0.0);
+    ui_table_layout(
+        Rect::new(config.x, config.y, config.width, viewport_height),
+        viewport_top,
+        viewport_height,
+        config.row_height,
+        config.column_gap,
+        config.columns,
+    )
+}
+
+fn ui_table_row_rect(layout: &UiTableLayout, row: usize, scroll: f32) -> Rect {
+    Rect::new(
+        layout.viewport.x,
+        layout.viewport.y + row as f32 * layout.row_height - scroll,
+        layout.viewport.w,
+        layout.row_height,
+    )
+}
+
+fn ui_table_row_visible(layout: &UiTableLayout, row_rect: Rect) -> bool {
+    row_rect.y >= layout.viewport.y
+        && row_rect.y + row_rect.h <= layout.viewport.y + layout.viewport.h
+}
+
+fn ui_hovered_table_cell(
+    mouse: Vec2,
+    layout: &UiTableLayout,
+    row_count: usize,
+    scroll: f32,
+) -> Option<UiTableCell> {
+    if !layout.viewport.contains(mouse) {
+        return None;
+    }
+
+    let row = ((mouse.y - layout.viewport.y + scroll) / layout.row_height).floor() as isize;
+    if row < 0 || row as usize >= row_count {
+        return None;
+    }
+
+    let row_rect = ui_table_row_rect(layout, row as usize, scroll);
+    if !row_rect.contains(mouse) {
+        return None;
+    }
+
+    layout
+        .columns
+        .iter()
+        .position(|column| mouse.x >= column.x && mouse.x <= column.x + column.w)
+        .map(|column| UiTableCell {
+            row: row as usize,
+            column,
+        })
+}
+
+fn work_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout(
+        Rect::new(x, y, width, work_table_height()),
+        y + 13.0,
+        work_table_height(),
+        WORK_ROW_HEIGHT,
+        12.0,
+        &[
+            ui_column_spec_flex(132.0, 1.0),
+            ui_column_spec_content(48.0, 42.0, 58.0),
+            ui_column_spec_content(76.0, 68.0, 92.0),
+            ui_column_spec_content(46.0, 42.0, 58.0),
+            ui_column_spec_fixed(32.0),
+        ],
+    )
+}
+
+fn inventory_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout(
+        Rect::new(x, y, width, work_table_height()),
+        y + 13.0,
+        work_table_height(),
+        INVENTORY_ROW_HEIGHT,
+        12.0,
+        &[
+            ui_column_spec_flex(130.0, 1.0),
+            ui_column_spec_content(42.0, 38.0, 58.0),
+            ui_column_spec_content(64.0, 58.0, 84.0),
+        ],
+    )
+}
+
+fn npc_interaction_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout_until_bottom(UiTableBottomLayout {
+        x,
+        y,
+        width,
+        row_start_offset: 28.0,
+        viewport_bottom: work_table_y() + work_table_height(),
+        row_height: WORK_ROW_HEIGHT,
+        column_gap: 12.0,
+        columns: &[
+            ui_column_spec_flex(150.0, 1.0),
+            ui_column_spec_content(82.0, 78.0, 104.0),
+        ],
+    })
+}
+
+fn station_service_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout_until_bottom(UiTableBottomLayout {
+        x,
+        y,
+        width,
+        row_start_offset: 28.0,
+        viewport_bottom: work_table_y() + work_table_height(),
+        row_height: WORK_ROW_HEIGHT,
+        column_gap: 12.0,
+        columns: &[
+            ui_column_spec_flex(116.0, 1.0),
+            ui_column_spec_content(72.0, 64.0, 92.0),
+            ui_column_spec_content(72.0, 68.0, 88.0),
+        ],
+    })
+}
+
+fn station_trade_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout_until_bottom(UiTableBottomLayout {
+        x,
+        y,
+        width,
+        row_start_offset: 28.0,
+        viewport_bottom: work_table_y() + work_table_height(),
+        row_height: WORK_ROW_HEIGHT,
+        column_gap: 10.0,
+        columns: &[
+            ui_column_spec_flex(92.0, 1.0),
+            ui_column_spec_content(48.0, 46.0, 62.0),
+            ui_column_spec_content(48.0, 46.0, 62.0),
+            ui_column_spec_content(68.0, 58.0, 86.0),
+        ],
+    })
+}
+
+fn recipe_unlock_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout_until_bottom(UiTableBottomLayout {
+        x,
+        y,
+        width,
+        row_start_offset: 28.0,
+        viewport_bottom: work_table_y() + work_table_height(),
+        row_height: WORK_ROW_HEIGHT,
+        column_gap: 12.0,
+        columns: &[
+            ui_column_spec_flex(160.0, 1.0),
+            ui_column_spec_content(82.0, 72.0, 96.0),
+        ],
+    })
+}
+
+fn ship_upgrade_table_layout(x: f32, y: f32, width: f32, viewport_height: f32) -> UiTableLayout {
+    ui_table_layout(
+        Rect::new(x, y, width, viewport_height),
+        y + 18.0,
+        viewport_height,
+        SHIP_UPGRADE_ROW_HEIGHT,
+        12.0,
+        &[
+            ui_column_spec_flex(220.0, 1.0),
+            ui_column_spec_content(48.0, 44.0, 60.0),
+            ui_column_spec_flex(220.0, 1.35),
+            ui_column_spec_fixed(34.0),
+        ],
+    )
+}
+
+fn skills_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    let row_height = 38.0;
+    ui_table_layout(
+        Rect::new(x, y, width, SKILL_COUNT as f32 * row_height),
+        y + 15.0,
+        SKILL_COUNT as f32 * row_height,
+        row_height,
+        12.0,
+        &[
+            ui_column_spec_flex(190.0, 1.0),
+            ui_column_spec_content(48.0, 44.0, 60.0),
+            ui_column_spec_content(100.0, 92.0, 128.0),
+            ui_column_spec_fixed(34.0),
+        ],
+    )
+}
+
 fn hovered_work_cell(mouse: Vec2, row_count: usize, scroll: f32) -> Option<(usize, WorkColumn)> {
     hovered_work_cell_in_panel(mouse, row_count, false, scroll)
 }
@@ -11064,34 +11398,16 @@ fn hovered_work_cell_in_panel(
     reserve_action_rail: bool,
     scroll: f32,
 ) -> Option<(usize, WorkColumn)> {
-    let (panel_x, _, _, _) = inventory_panel_rect(reserve_action_rail);
-    let origin = vec2(panel_x + 24.0, work_table_y());
-    let row_height = WORK_ROW_HEIGHT;
-    let first_row_y = origin.y + 34.0;
-    let viewport = Rect::new(origin.x, first_row_y - 21.0, 342.0, work_table_height());
-
-    if !viewport.contains(mouse) {
-        return None;
-    }
-
-    let row = ((mouse.y - first_row_y + 21.0 + scroll) / row_height).floor() as isize;
-    if row < 0 || row as usize >= row_count {
-        return None;
-    }
-
-    let row_y = first_row_y + row as f32 * row_height - scroll;
-    if mouse.y < row_y - 21.0 || mouse.y > row_y + 9.0 {
-        return None;
-    }
-
-    let relative_x = mouse.x - origin.x;
-    let column = if relative_x < 236.0 {
-        WorkColumn::Item
-    } else {
-        WorkColumn::Keep
-    };
-
-    Some((row as usize, column))
+    let overlay = inventory_overlay_layout(reserve_action_rail);
+    let layout = work_table_layout(overlay.work_x, work_table_y(), overlay.work_width);
+    ui_hovered_table_cell(mouse, &layout, row_count, scroll).and_then(|cell| {
+        let column = match cell.column {
+            0 => WorkColumn::Item,
+            1 => WorkColumn::Keep,
+            _ => return None,
+        };
+        Some((cell.row, column))
+    })
 }
 
 fn work_table_y() -> f32 {
@@ -11215,6 +11531,11 @@ fn draw_production_text_table(
                     work_row_status(current, setting.keep, setting.queued)
                 } else {
                     "Locked".to_string()
+                },
+                percent: if active_row == Some(index) {
+                    format!("{:.0}%", setting.progress() * 100.0)
+                } else {
+                    String::new()
                 },
                 active: active_row == Some(index),
             }
@@ -11401,21 +11722,20 @@ fn draw_mining_text_table(
         .enumerate()
         .map(|(index, (mineable, setting))| {
             let current = inventory.count(&mineable.item);
-            let status = if planet_has_richness_scan(planet) {
-                mining_row_status_with_richness(
-                    current,
-                    setting.keep,
-                    setting.queued,
-                    mineable_richness_multiplier(planet, index),
+            let percent = if planet_has_richness_scan(planet) {
+                format!(
+                    "{:.0}%",
+                    mineable_richness_multiplier(planet, index) * 100.0
                 )
             } else {
-                work_row_status(current, setting.keep, setting.queued)
+                String::new()
             };
             WorkRow {
                 item: mineable.item.name.clone(),
                 keep: setting.keep,
                 enabled: in_range,
-                status,
+                status: work_row_status(current, setting.keep, setting.queued),
+                percent,
                 active: active_row == Some(index),
             }
         })
@@ -11497,6 +11817,8 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32, height: f32) 
         shields: &game.equipped_shields,
         weapons: &game.equipped_weapons,
         threats: &game.defense_threats,
+        cargo_mass: game.inventory.total_mass(),
+        cargo_capacity: cargo_rating_kg(&game.ship_upgrades),
         current_system_id: &game.current_system_id,
         shield_recharge_delay_remaining: game.shield_recharge_delay_remaining,
         texture: game.ship_texture.as_ref(),
@@ -11513,16 +11835,19 @@ fn draw_npc_ship_interaction_list(
     rect: Rect,
 ) {
     let Rect { x, y, w: width, .. } = rect;
+    let layout = npc_interaction_table_layout(x, y, width);
+    let action_column = layout.columns[0];
+    let status_column = layout.columns[1];
     draw_text(
         "Action",
-        x + 6.0,
+        action_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_text(
         "Status",
-        x + width - 96.0,
+        status_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
@@ -11538,7 +11863,10 @@ fn draw_npc_ship_interaction_list(
 
     let rows = npc_interaction_rows(content_registry, ship, npc_ship);
     for (index, row) in rows.iter().enumerate() {
-        let row_rect = npc_interaction_row_rect(x, y, width, index);
+        let row_rect = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row_rect) {
+            continue;
+        }
         let hovered = row_rect.contains(mouse_vec2());
         draw_rectangle(
             row_rect.x,
@@ -11558,8 +11886,20 @@ fn draw_npc_ship_interaction_list(
             NpcInteractionState::Complete => Color::from_rgba(235, 242, 226, 255),
             NpcInteractionState::Unavailable => Color::from_rgba(126, 143, 148, 220),
         };
-        draw_text(row.action.label(), x + 6.0, row_rect.y + 20.0, 16.0, color);
-        draw_text(row.status, x + width - 96.0, row_rect.y + 20.0, 15.0, color);
+        draw_text(
+            &fit_debug_text(row.action.label(), action_column.w, 16),
+            action_column.x,
+            row_rect.y + 20.0,
+            16.0,
+            color,
+        );
+        draw_text(
+            &fit_debug_text(row.status, status_column.w, 15),
+            status_column.x,
+            row_rect.y + 20.0,
+            15.0,
+            color,
+        );
     }
 
     let hint = if npc_ship.identified {
@@ -11589,24 +11929,28 @@ fn draw_station_service_list(
     rect: Rect,
 ) {
     let Rect { x, y, w: width, .. } = rect;
+    let layout = station_service_table_layout(x, y, width);
+    let service_column = layout.columns[0];
+    let type_column = layout.columns[1];
+    let status_column = layout.columns[2];
 
     draw_text(
         "Service",
-        x + 6.0,
+        service_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_text(
         "Type",
-        x + 156.0,
+        type_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_text(
         "Status",
-        x + width - 72.0,
+        status_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
@@ -11631,11 +11975,11 @@ fn draw_station_service_list(
     }
 
     for (index, service) in station.services.iter().enumerate() {
-        let row = station_service_row_rect(x, y, width, index);
-        let row_y = row.y;
-        if row_y > y + work_table_height() - WORK_ROW_HEIGHT {
-            break;
+        let row = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row) {
+            continue;
         }
+        let row_y = row.y;
         let selected = selected_service == Some(index);
         let hovered = row.contains(mouse_vec2());
         draw_rectangle(
@@ -11654,8 +11998,8 @@ fn draw_station_service_list(
             },
         );
         draw_text(
-            &fit_debug_text(&service.name, 138.0, 16),
-            x + 6.0,
+            &fit_debug_text(&service.name, service_column.w, 16),
+            service_column.x,
             row_y + 20.0,
             16.0,
             if selected {
@@ -11665,15 +12009,15 @@ fn draw_station_service_list(
             },
         );
         draw_text(
-            &fit_debug_text(&service.kind, 72.0, 15),
-            x + 156.0,
+            &fit_debug_text(&service.kind, type_column.w, 15),
+            type_column.x,
             row_y + 20.0,
             15.0,
             Color::from_rgba(150, 221, 226, 255),
         );
         draw_text(
             if in_range { "Ready" } else { "Approach" },
-            x + width - 72.0,
+            status_column.x,
             row_y + 20.0,
             15.0,
             if in_range {
@@ -11698,15 +12042,6 @@ fn draw_station_service_list(
     }
 }
 
-fn station_service_row_rect(x: f32, y: f32, width: f32, index: usize) -> Rect {
-    Rect::new(
-        x,
-        y + 28.0 + index as f32 * WORK_ROW_HEIGHT,
-        width,
-        WORK_ROW_HEIGHT - 3.0,
-    )
-}
-
 fn draw_station_trade_table(
     station: &StationDestination,
     service: &StationService,
@@ -11717,9 +12052,14 @@ fn draw_station_trade_table(
     width: f32,
 ) {
     let y = station_trade_table_y(station);
+    let layout = station_trade_table_layout(x, y, width);
+    let item_column = layout.columns[0];
+    let buy_column = layout.columns[1];
+    let sell_column = layout.columns[2];
+    let stock_column = layout.columns[3];
     draw_text(
         "Trade stock",
-        x + 6.0,
+        item_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
@@ -11752,9 +12092,9 @@ fn draw_station_trade_table(
     }
 
     for (index, offer) in service.trade.iter().enumerate() {
-        let row = station_trade_offer_row_rect(x, y, width, index);
-        if row.y > work_table_y() + work_table_height() - WORK_ROW_HEIGHT {
-            break;
+        let row = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row) {
+            continue;
         }
         let hovered = row.contains(mouse_vec2());
         let can_buy =
@@ -11774,15 +12114,15 @@ fn draw_station_trade_table(
             },
         );
         draw_text(
-            &fit_debug_text(&offer.item.name, 108.0, 15),
-            x + 6.0,
+            &fit_debug_text(&offer.item.name, item_column.w, 15),
+            item_column.x,
             row.y + 20.0,
             15.0,
             Color::from_rgba(205, 226, 230, 255),
         );
         draw_text(
             &format!("B {}", offer.buy_price),
-            x + 124.0,
+            buy_column.x,
             row.y + 20.0,
             15.0,
             if can_buy {
@@ -11793,7 +12133,7 @@ fn draw_station_trade_table(
         );
         draw_text(
             &format!("S {}", offer.sell_price),
-            x + 180.0,
+            sell_column.x,
             row.y + 20.0,
             15.0,
             if can_sell {
@@ -11803,8 +12143,8 @@ fn draw_station_trade_table(
             },
         );
         draw_text(
-            &format_trade_stock(offer),
-            x + width - 92.0,
+            &fit_debug_text(&format_trade_stock(offer), stock_column.w, 15),
+            stock_column.x,
             row.y + 20.0,
             15.0,
             if offer.unavailable || offer.stock == Some(0) {
@@ -11818,15 +12158,6 @@ fn draw_station_trade_table(
 
 fn station_trade_table_y(station: &StationDestination) -> f32 {
     work_table_y() + 28.0 + station.services.len() as f32 * WORK_ROW_HEIGHT + 20.0
-}
-
-fn station_trade_offer_row_rect(x: f32, y: f32, width: f32, index: usize) -> Rect {
-    Rect::new(
-        x,
-        y + 28.0 + index as f32 * WORK_ROW_HEIGHT,
-        width,
-        WORK_ROW_HEIGHT - 3.0,
-    )
 }
 
 fn format_trade_stock(offer: &TradeOffer) -> String {
@@ -11857,9 +12188,12 @@ fn draw_recipe_unlock_table(
         return;
     }
     let y = recipe_unlock_table_y(station, service);
+    let layout = recipe_unlock_table_layout(x, y, width);
+    let recipe_column = layout.columns[0];
+    let price_column = layout.columns[1];
     draw_text(
         "Recipe unlocks",
-        x + 6.0,
+        recipe_column.x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
@@ -11880,9 +12214,9 @@ fn draw_recipe_unlock_table(
         Color::from_rgba(96, 137, 150, 220),
     );
     for (index, unlock) in service.recipe_unlocks.iter().enumerate() {
-        let row = recipe_unlock_row_rect(x, y, width, index);
-        if row.y > work_table_y() + work_table_height() - WORK_ROW_HEIGHT {
-            break;
+        let row = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row) {
+            continue;
         }
         let hovered = row.contains(mouse_vec2());
         let purchased = purchased_unlocks.contains(&unlock.recipe);
@@ -11901,8 +12235,8 @@ fn draw_recipe_unlock_table(
             },
         );
         draw_text(
-            &fit_debug_text(&unlock.recipe, width - 112.0, 15),
-            x + 6.0,
+            &fit_debug_text(&unlock.recipe, recipe_column.w, 15),
+            recipe_column.x,
             row.y + 20.0,
             15.0,
             if unlock.unavailable {
@@ -11917,8 +12251,8 @@ fn draw_recipe_unlock_table(
             unlock.price.to_string()
         };
         draw_text(
-            &price_label,
-            x + width - 82.0,
+            &fit_debug_text(&price_label, price_column.w, 15),
+            price_column.x,
             row.y + 20.0,
             15.0,
             if affordable {
@@ -11935,15 +12269,6 @@ fn recipe_unlock_table_y(station: &StationDestination, service: &StationService)
         + 28.0
         + service.trade.len() as f32 * WORK_ROW_HEIGHT
         + if service.trade.is_empty() { 42.0 } else { 20.0 }
-}
-
-fn recipe_unlock_row_rect(x: f32, y: f32, width: f32, index: usize) -> Rect {
-    Rect::new(
-        x,
-        y + 28.0 + index as f32 * WORK_ROW_HEIGHT,
-        width,
-        WORK_ROW_HEIGHT - 3.0,
-    )
 }
 
 fn draw_station_detail(render: StationDetailRender<'_>) {
@@ -12658,6 +12983,8 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         shields,
         weapons,
         threats,
+        cargo_mass,
+        cargo_capacity,
         current_system_id,
         shield_recharge_delay_remaining,
         texture,
@@ -12691,7 +13018,22 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         );
     }
 
-    let stats_y = y + image_size + 28.0;
+    let cargo_y = y + image_size + 8.0;
+    let cargo_label = format!(
+        "Cargo {} / {}",
+        format_mass(cargo_mass),
+        format_mass(cargo_capacity)
+    );
+    let cargo_width = measure_text(&cargo_label, None, 17, 1.0).width;
+    draw_text(
+        &cargo_label,
+        x + (width - cargo_width) * 0.5,
+        cargo_y,
+        17.0,
+        accent,
+    );
+
+    let stats_y = y + image_size + 48.0;
     draw_line(
         x,
         stats_y - 18.0,
@@ -12983,6 +13325,7 @@ struct WorkRow {
     item: String,
     keep: u32,
     status: String,
+    percent: String,
     enabled: bool,
     active: bool,
 }
@@ -12993,6 +13336,8 @@ struct ShipDetailView<'a> {
     shields: &'a [ShieldSystem],
     weapons: &'a [WeaponSystem],
     threats: &'a [DefenseThreat],
+    cargo_mass: f32,
+    cargo_capacity: f32,
     current_system_id: &'a str,
     shield_recharge_delay_remaining: f32,
     texture: Option<&'a Texture2D>,
@@ -13011,55 +13356,40 @@ fn work_row_status(current: u32, keep: u32, queued: u32) -> String {
     }
 }
 
-fn mining_row_status_with_richness(
-    current: u32,
-    keep: u32,
-    queued: u32,
-    richness_multiplier: f32,
-) -> String {
-    let status = work_row_status(current, keep, queued);
-    let richness = format!("{:.0}%", richness_multiplier * 100.0);
-    if status.is_empty() {
-        richness
-    } else {
-        format!("{status}  {richness}")
-    }
-}
-
 fn draw_work_text_table(rows: &[WorkRow], x: f32, y: f32, width: f32, scroll: f32, mouse: Vec2) {
-    let item_right_x = x + 190.0;
-    let keep_x = x + 244.0;
-    let status_x = x + 286.0;
-    let cog_clearance = 18.0;
-    let row_height = WORK_ROW_HEIGHT;
-    let viewport_top = y + 13.0;
-    let viewport_height = work_table_height();
-    let viewport_bottom = viewport_top + viewport_height;
+    let layout = work_table_layout(x, y, width);
+    let item_column = layout.columns[0];
+    let keep_column = layout.columns[1];
+    let status_column = layout.columns[2];
+    let percent_column = layout.columns[3];
+    let active_column = layout.columns[4];
     let header = Color::from_rgba(168, 204, 210, 255);
     let active = Color::from_rgba(205, 226, 230, 255);
     let available = Color::from_rgba(150, 221, 226, 255);
     let unavailable = Color::from_rgba(126, 143, 148, 255);
 
-    draw_line(
-        item_right_x + 18.0,
-        y - 10.0,
-        item_right_x + 18.0,
-        viewport_bottom,
-        1.0,
-        Color::from_rgba(96, 137, 150, 205),
-    );
+    draw_table_column_separators(&layout, y - 10.0, layout.viewport.y + layout.viewport.h);
 
     let item_header_width = measure_text("Item", None, 16, 1.0).width;
-    draw_text("Item", item_right_x - item_header_width, y, 16.0, header);
-    draw_text("Keep", keep_x, y, 16.0, header);
-    draw_text("Status", status_x, y, 16.0, header);
+    draw_text(
+        "Item",
+        item_column.x + item_column.w - item_header_width,
+        y,
+        16.0,
+        header,
+    );
+    draw_text("Keep", keep_column.x, y, 16.0, header);
+    draw_text("Status", status_column.x, y, 16.0, header);
+    draw_text("%", percent_column.x, y, 16.0, header);
+    draw_text("Active", active_column.x, y, 16.0, header);
 
     let hovered = hovered_work_cell(mouse, rows.len(), scroll);
     for (row, work_row) in rows.iter().enumerate() {
-        let row_y = y + 34.0 + row as f32 * row_height - scroll;
-        if row_y - 21.0 < viewport_top || row_y + 9.0 > viewport_bottom {
+        let row_rect = ui_table_row_rect(&layout, row, scroll);
+        if !ui_table_row_visible(&layout, row_rect) {
             continue;
         }
+        let row_y = row_rect.y + 21.0;
         let row_color = if work_row.enabled {
             active
         } else {
@@ -13074,37 +13404,56 @@ fn draw_work_text_table(rows: &[WorkRow], x: f32, y: f32, width: f32, scroll: f3
 
         if row % 2 == 0 || is_hovered {
             draw_rectangle(
-                x,
-                row_y - 21.0,
-                width,
-                row_height,
+                row_rect.x,
+                row_rect.y,
+                row_rect.w,
+                row_rect.h,
                 Color::from_rgba(10, 18, 24, if is_hovered { 170 } else { 100 }),
             );
         }
-        let item_width = measure_text(&work_row.item, None, 20, 1.0).width;
+        let item_label = fit_debug_text(&work_row.item, item_column.w, 20);
+        let item_width = measure_text(&item_label, None, 20, 1.0).width;
         draw_text(
-            &work_row.item,
-            item_right_x - item_width,
+            &item_label,
+            item_column.x + item_column.w - item_width,
             row_y,
             20.0,
             row_color,
         );
-        draw_text(&work_row.keep.to_string(), keep_x, row_y, 20.0, value_color);
-        draw_text(&work_row.status, status_x, row_y, 18.0, value_color);
+        draw_text(
+            &work_row.keep.to_string(),
+            keep_column.x,
+            row_y,
+            20.0,
+            value_color,
+        );
+        let status_label = fit_debug_text(&work_row.status, status_column.w, 18);
+        draw_text(&status_label, status_column.x, row_y, 18.0, value_color);
+        let percent_label = fit_debug_text(&work_row.percent, percent_column.w, 18);
+        draw_text(&percent_label, percent_column.x, row_y, 18.0, value_color);
         if work_row.active {
-            let status_width = measure_text(&work_row.status, None, 18, 1.0).width;
-            let cog_x = status_x + status_width + cog_clearance;
+            let cog_x = active_column.x + active_column.w * 0.5;
             draw_work_cog(vec2(cog_x, row_y - 6.0), get_time() as f32 * 4.0, available);
         }
     }
     draw_scrollbar(
         x + width - 4.0,
-        viewport_top,
-        viewport_height,
+        layout.viewport.y,
+        layout.viewport.h,
         rows.len(),
-        row_height,
+        layout.row_height,
         scroll,
     );
+}
+
+fn draw_table_column_separators(layout: &UiTableLayout, y1: f32, y2: f32) {
+    let separator_color = Color::from_rgba(96, 137, 150, 105);
+    for pair in layout.columns.windows(2) {
+        let left = pair[0];
+        let right = pair[1];
+        let separator_x = left.x + left.w + (right.x - left.x - left.w) * 0.5;
+        draw_line(separator_x, y1, separator_x, y2, 0.5, separator_color);
+    }
 }
 
 fn draw_work_cog(center: Vec2, rotation: f32, color: Color) {
@@ -13139,28 +13488,26 @@ fn draw_scrollbar(x: f32, y: f32, height: f32, row_count: usize, row_height: f32
 }
 
 fn draw_inventory_text_list(inventory: &Inventory, x: f32, y: f32, width: f32, scroll: f32) {
-    let divider_x = x + width * 0.48;
-    let mass_x = x + width * 0.72;
-    let row_height = INVENTORY_ROW_HEIGHT;
-    let viewport_top = y + 13.0;
-    let viewport_height = work_table_height();
-    let viewport_bottom = viewport_top + viewport_height;
+    let layout = inventory_table_layout(x, y, width);
+    let item_column = layout.columns[0];
+    let quantity_column = layout.columns[1];
+    let mass_column = layout.columns[2];
     let name_color = Color::from_rgba(205, 226, 230, 255);
     let amount_color = Color::from_rgba(150, 221, 226, 255);
     let header = Color::from_rgba(168, 204, 210, 255);
     let empty_text = Color::from_rgba(168, 184, 188, 255);
 
-    draw_line(
-        divider_x,
-        y - 10.0,
-        divider_x,
-        viewport_bottom,
-        1.0,
-        Color::from_rgba(96, 137, 150, 205),
+    draw_table_column_separators(&layout, y - 10.0, layout.viewport.y + layout.viewport.h);
+    let item_header_width = measure_text("Item", None, 16, 1.0).width;
+    draw_text(
+        "Item",
+        item_column.x + item_column.w - item_header_width,
+        y,
+        16.0,
+        header,
     );
-    draw_text("Item", divider_x - 58.0, y, 16.0, header);
-    draw_text("Qty", divider_x + 14.0, y, 16.0, header);
-    draw_text("Mass", mass_x, y, 16.0, header);
+    draw_text("Qty", quantity_column.x, y, 16.0, header);
+    draw_text("Mass", mass_column.x, y, 16.0, header);
 
     let stacks = inventory
         .slots
@@ -13168,28 +13515,48 @@ fn draw_inventory_text_list(inventory: &Inventory, x: f32, y: f32, width: f32, s
         .filter_map(|slot| slot.as_ref())
         .collect::<Vec<_>>();
     for (row, stack) in stacks.iter().enumerate() {
-        let row_y = y + 34.0 + row as f32 * row_height - scroll;
-        if row_y - 21.0 < viewport_top || row_y + 9.0 > viewport_bottom {
+        let row_rect = ui_table_row_rect(&layout, row, scroll);
+        if !ui_table_row_visible(&layout, row_rect) {
             continue;
         }
+        let row_y = row_rect.y + 21.0;
         let name = &stack.item.name;
         let amount = stack.count.to_string();
         let mass = format_mass(stack.item.unit_mass * stack.count as f32);
-        let name_width = measure_text(name, None, 20, 1.0).width;
+        let item_label = fit_debug_text(name, item_column.w, 20);
+        let name_width = measure_text(&item_label, None, 20, 1.0).width;
 
         if row % 2 == 0 {
             draw_rectangle(
-                x,
-                row_y - 21.0,
-                width,
-                row_height,
+                row_rect.x,
+                row_rect.y,
+                row_rect.w,
+                row_rect.h,
                 Color::from_rgba(10, 18, 24, 100),
             );
         }
 
-        draw_text(name, divider_x - name_width - 14.0, row_y, 20.0, name_color);
-        draw_text(&amount, divider_x + 14.0, row_y, 20.0, amount_color);
-        draw_text(&mass, mass_x, row_y, 18.0, amount_color);
+        draw_text(
+            &item_label,
+            item_column.x + item_column.w - name_width,
+            row_y,
+            20.0,
+            name_color,
+        );
+        draw_text(
+            &fit_debug_text(&amount, quantity_column.w, 20),
+            quantity_column.x,
+            row_y,
+            20.0,
+            amount_color,
+        );
+        draw_text(
+            &fit_debug_text(&mass, mass_column.w, 18),
+            mass_column.x,
+            row_y,
+            18.0,
+            amount_color,
+        );
     }
 
     if stacks.is_empty() {
@@ -13197,20 +13564,20 @@ fn draw_inventory_text_list(inventory: &Inventory, x: f32, y: f32, width: f32, s
         let text_width = measure_text(text, None, 20, 1.0).width;
         draw_text(
             text,
-            divider_x - text_width - 14.0,
+            item_column.x + item_column.w - text_width,
             y + 34.0,
             20.0,
             empty_text,
         );
-        draw_text("0", divider_x + 14.0, y + 34.0, 20.0, empty_text);
-        draw_text("0 kg", mass_x, y + 34.0, 18.0, empty_text);
+        draw_text("0", quantity_column.x, y + 34.0, 20.0, empty_text);
+        draw_text("0 kg", mass_column.x, y + 34.0, 18.0, empty_text);
     }
     draw_scrollbar(
         x + width - 4.0,
-        viewport_top,
-        viewport_height,
+        layout.viewport.y,
+        layout.viewport.h,
         stacks.len(),
-        row_height,
+        layout.row_height,
         scroll,
     );
 }
@@ -13910,6 +14277,120 @@ mod tests {
             .iter()
             .all(|threat| threat.hull.current == 24.0));
         assert!(game.weapon_fire_events.is_empty());
+    }
+
+    #[test]
+    fn ui_columns_allocate_fixed_content_and_flexible_widths() {
+        let columns = ui_resolve_columns(
+            Rect::new(10.0, 20.0, 300.0, 40.0),
+            10.0,
+            &[
+                ui_column_spec_fixed(50.0),
+                ui_column_spec_content(80.0, 40.0, 100.0),
+                ui_column_spec_flex(60.0, 1.0),
+            ],
+        );
+
+        assert_eq!(columns.len(), 3);
+        assert!((columns[0].w - 50.0).abs() < 0.01);
+        assert!((columns[1].w - 80.0).abs() < 0.01);
+        assert!((columns[2].w - 150.0).abs() < 0.01);
+        assert!((columns[1].x - 70.0).abs() < 0.01);
+        assert!((columns[2].x - 160.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn ui_table_rows_and_hover_cells_share_geometry() {
+        let layout = ui_table_layout(
+            Rect::new(20.0, 40.0, 240.0, 100.0),
+            52.0,
+            90.0,
+            30.0,
+            8.0,
+            &[ui_column_spec_flex(80.0, 1.0), ui_column_spec_fixed(44.0)],
+        );
+
+        let second_row = ui_table_row_rect(&layout, 1, 6.0);
+        assert!((second_row.y - 76.0).abs() < 0.01);
+        assert_eq!(
+            ui_hovered_table_cell(
+                vec2(layout.columns[1].x + 2.0, second_row.y + 8.0),
+                &layout,
+                4,
+                6.0
+            ),
+            Some(UiTableCell { row: 1, column: 1 })
+        );
+        assert_eq!(
+            ui_hovered_table_cell(
+                vec2(layout.viewport.x - 2.0, second_row.y + 8.0),
+                &layout,
+                4,
+                6.0
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn ui_table_layout_until_bottom_clamps_viewport_height() {
+        let layout = ui_table_layout_until_bottom(UiTableBottomLayout {
+            x: 12.0,
+            y: 30.0,
+            width: 180.0,
+            row_start_offset: 24.0,
+            viewport_bottom: 130.0,
+            row_height: 28.0,
+            column_gap: 8.0,
+            columns: &[ui_column_spec_flex(70.0, 1.0), ui_column_spec_fixed(40.0)],
+        });
+
+        assert!((layout.viewport.y - 54.0).abs() < 0.01);
+        assert!((layout.viewport.h - 76.0).abs() < 0.01);
+        assert!(ui_table_row_visible(
+            &layout,
+            ui_table_row_rect(&layout, 1, 0.0)
+        ));
+        assert!(!ui_table_row_visible(
+            &layout,
+            ui_table_row_rect(&layout, 3, 0.0)
+        ));
+    }
+
+    #[test]
+    fn work_table_hover_uses_adaptive_columns() {
+        let layout = ui_table_layout(
+            Rect::new(100.0, 80.0, 342.0, 180.0),
+            93.0,
+            180.0,
+            WORK_ROW_HEIGHT,
+            12.0,
+            &[
+                ui_column_spec_flex(132.0, 1.0),
+                ui_column_spec_fixed(42.0),
+                ui_column_spec_content(56.0, 50.0, 82.0),
+            ],
+        );
+        let row_rect = ui_table_row_rect(&layout, 2, 0.0);
+
+        assert_eq!(
+            ui_hovered_table_cell(
+                vec2(layout.columns[0].x + 12.0, row_rect.y + 8.0),
+                &layout,
+                5,
+                0.0
+            ),
+            Some(UiTableCell { row: 2, column: 0 })
+        );
+        assert_eq!(
+            ui_hovered_table_cell(
+                vec2(layout.columns[2].x + 12.0, row_rect.y + 8.0),
+                &layout,
+                5,
+                0.0
+            ),
+            Some(UiTableCell { row: 2, column: 2 })
+        );
     }
 
     #[test]
