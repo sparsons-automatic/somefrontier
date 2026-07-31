@@ -50,6 +50,21 @@ upgrade chains.
 | Energy expansion | Uranium, thorium, helium-3 | Reactor fuels, fusion cells, long-range engines |
 | Late-game expansion | Exotic matter, vitrine crystal, eldridium nodule | Jump systems, exotic containment, endgame upgrades |
 
+## Early-To-Remote Arc
+
+The current first progression arc is operational rather than quest-driven. The
+starter system should teach surveying, mining, production, trading, and ship
+upgrades, then prepare the player for the first remote route.
+
+| Step | Player Goal | Material Or Service Link |
+|---|---|---|
+| Establish income | Survey nearby bodies, mine common ore, and sell surplus stock | Iron ore, copper ore, and early station markets |
+| Build survey capacity | Craft or buy survey drones before exploring unscanned bodies | Circuits, gears, copper wire, Freebelt Commissary |
+| Make route fuel | Process water ice into hydrogen fuel, then package fuel canisters | Water ice, hydrogen fuel, aluminum plate |
+| Improve remote scans | Upgrade Scanner Array toward level 2 before remote exploration | Electronics, silver contacts, advanced scanner cores |
+| Depart prepared | Carry fuel and useful repair or cargo capacity before remote warp | Fuel canisters, ship upgrades, station stock |
+| Exploit remote space | Use the remote system for harsher and more advanced resources | Vanadium, reactor materials, advanced industrial resources |
+
 ## Current Materials
 
 Core item definitions include `unit_mass` in kilograms per inventory unit.
