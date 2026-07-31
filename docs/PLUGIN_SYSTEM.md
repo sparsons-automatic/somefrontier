@@ -443,6 +443,10 @@ Rules:
 - Service `id` values resolve to namespaced IDs and must be unique within the
   station.
 - Service `name` and `kind` must not be empty.
+- Service `kind` is player-facing context unless the base game has specific
+  behavior for it. Supported mechanics currently include trade stock and recipe
+  unlocks; other concise kinds such as `garage`, `cargo`, `navigation`,
+  `signals`, or `contracts` can label future hooks without adding behavior.
 - Trade `item` values must reference existing items. `buy_price` and
   `sell_price` must be positive. `stock` and `restock_days` are optional, and
   `restock_days` must be positive when present.
