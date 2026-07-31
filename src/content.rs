@@ -3251,6 +3251,83 @@ mod tests {
                     .find(|service| service.id == "core:pale_archive_recipes")
             })
             .is_some_and(|service| service.recipe_unlocks.len() == 3));
+        assert!(registry
+            .stations
+            .get("core:frontier_exchange")
+            .and_then(|station| station.services.iter().find(|service| {
+                service.id == "core:market"
+                    && service.name == "Starter Market"
+                    && service.kind == "shop"
+            }))
+            .is_some_and(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|stock| stock.item == "core:survey_drone")
+            }));
+        assert!(registry
+            .stations
+            .get("core:ore_lattice_depot")
+            .and_then(|station| {
+                station
+                    .services
+                    .iter()
+                    .find(|service| service.id == "core:ore_lattice_bulk_market")
+            })
+            .is_some_and(|service| {
+                service.kind == "shop"
+                    && service
+                        .trade
+                        .iter()
+                        .any(|stock| stock.item == "core:cobalt_ore")
+            }));
+        assert!(registry
+            .stations
+            .get("core:cinder_repair_yard")
+            .and_then(|station| {
+                station
+                    .services
+                    .iter()
+                    .find(|service| service.id == "core:cinder_yard_parts")
+            })
+            .is_some_and(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|stock| stock.item == "core:balanced_shield_matrix")
+                    && service
+                        .trade
+                        .iter()
+                        .any(|stock| stock.item == "core:point_defense_turret")
+            }));
+        assert!(registry
+            .stations
+            .get("core:freebelt_commissary")
+            .and_then(|station| station.services.iter().find(|service| {
+                service.id == "core:freebelt_supply" && service.name == "Supply Counter"
+            }))
+            .is_some_and(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|stock| stock.item == "core:fuel_canister")
+                    && service
+                        .trade
+                        .iter()
+                        .any(|stock| stock.item == "core:improved_survey_drone")
+            }));
+        assert!(registry
+            .stations
+            .get("core:ember_watch_array")
+            .is_some_and(|station| {
+                station.services.iter().any(|service| {
+                    service.id == "core:ember_watch_beacon"
+                        && service.name == "Route Intel"
+                        && service.kind == "navigation"
+                }) && station.services.iter().any(|service| {
+                    service.id == "core:ember_watch_listening_post" && service.kind == "signals"
+                })
+            }));
         assert!(registry.upgrades.contains_key("core:engine"));
         assert_eq!(
             registry.recipe_order.first().map(String::as_str),

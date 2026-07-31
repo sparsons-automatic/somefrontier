@@ -179,6 +179,15 @@ let you buy one unit with left click or sell one unit with right click when the
 ship is in range and the offer is available. Recipe unlocks can expose
 additional production recipes after purchase.
 
+Core stations have distinct practical roles:
+
+- Frontier Exchange: broad starter commerce and common early cargo.
+- Ore Lattice Depot: bulk ore stock, freight staging, and future contracts.
+- Cinder Repair Yard: repairs, refits, shield and turret parts, and upgrade support.
+- Pale Orbit Archive: scan data, route knowledge, and recipe unlocks.
+- Freebelt Commissary: drones, fuel, coolant, and independent-hauler supplies.
+- Ember Watch Array: navigation, route intel, signal logs, and remote warnings.
+
 Some service groups are present as player-facing station context before their
 full mechanics exist.
 
