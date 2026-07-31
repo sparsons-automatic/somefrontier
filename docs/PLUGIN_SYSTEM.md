@@ -905,6 +905,9 @@ Rules:
 - `texture` is optional. Paths starting with `./` or `../` resolve relative to
   the pack folder. Paths starting with `assets/` or `content/` resolve from the
   game root. Other relative paths resolve relative to the pack folder.
+- Runtime object textures for planets, stations, player ships, and NPC ships
+  should be transparent PNGs. Opaque source renders and full-screen transition
+  backgrounds can remain outside the content-pack runtime asset folders.
 - `system` is required and should reference an existing system.
 - `faction` is optional. When present, it resolves to a namespaced faction ID
   and must reference a loaded faction record.

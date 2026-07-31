@@ -14,7 +14,23 @@ Shared game art, audio, and engine/UI assets live here.
 - `effects/`: particles, projectiles, engine flames, shields, impacts, and explosions.
 - `audio/`: music, ambient loops, engine sounds, alerts, and UI sounds.
 
-Current image assets are created through Codex image generation, then post-processed to transparent PNGs when needed. Keep shared engine assets at the top level of their asset folder and keep source chroma-key renders or previews under that folder's `generated/` directory.
+Current image assets are created through Codex image generation, then
+post-processed to transparent PNGs when needed. Keep shared engine assets at the
+top level of their asset folder and keep source chroma-key renders or previews
+under that folder's `generated/` directory.
+
+Runtime object sprites under `content/packs/<pack>/assets/ships/`,
+`content/packs/<pack>/assets/planets/`, and
+`content/packs/<pack>/assets/stations/` should be transparent PNGs so they
+composite cleanly over the game scene. Full-screen transition images under
+`assets/transitions/` and generated/source files under `assets/*/generated/` may
+remain opaque when they are backgrounds or source material.
+
+Check committed runtime object sprites with:
+
+```sh
+scripts/audit-runtime-asset-alpha.sh
+```
 
 Content-pack runtime assets:
 
