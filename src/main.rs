@@ -80,7 +80,7 @@ const STARTUP_BACKGROUND_HOLD_SECONDS: f32 = 3.0;
 const STARTUP_BACKGROUND_FADE_SECONDS: f32 = 2.0;
 const STATION_APPROACH_TRANSITION_ID: &str = "frontier-station-approach";
 const KNOWN_SYSTEMS_PANEL_WIDTH: f32 = 280.0;
-const KNOWN_SYSTEM_ROW_HEIGHT: f32 = 54.0;
+const KNOWN_SYSTEM_ROW_HEIGHT: f32 = 70.0;
 const WARP_CHARGE_SECONDS: f32 = 2.0;
 const MAX_SCAN_LEVEL: u8 = 3;
 const STARTER_SYSTEM_ID: &str = "core:frontier";
@@ -6604,6 +6604,80 @@ fn format_warp_cost(cost: &[ItemStack]) -> String {
         .join(", ")
 }
 
+fn station_stock_source_for_item<'a>(
+    stations: &'a [StationDestination],
+    system_id: &str,
+    item_id: &str,
+) -> Option<&'a str> {
+    stations
+        .iter()
+        .filter(|station| station.system == system_id)
+        .find(|station| {
+            station.services.iter().any(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|offer| !offer.unavailable && offer.item.id == item_id)
+            })
+        })
+        .map(|station| station.name.as_str())
+}
+
+fn route_readiness_summary(game: &GameState, target_system_id: &str) -> String {
+    if target_system_id == game.current_system_id {
+        return "Operating locally".to_string();
+    }
+
+    let Some(target_system) = game.content_registry.systems.get(target_system_id) else {
+        return "Route data unavailable".to_string();
+    };
+    let cost = warp_cost(
+        &game.content_registry,
+        &game.current_system_id,
+        target_system_id,
+    );
+    let can_warp = can_afford_cost(&game.inventory, &cost);
+    let is_remote = target_system.tags.iter().any(|tag| tag == "remote");
+
+    if !can_warp {
+        if let Some(stack) = cost
+            .iter()
+            .find(|stack| game.inventory.count(&stack.item) < stack.count)
+        {
+            let missing = stack
+                .count
+                .saturating_sub(game.inventory.count(&stack.item));
+            if let Some(source) = station_stock_source_for_item(
+                &game.stations,
+                &game.current_system_id,
+                &stack.item.id,
+            ) {
+                return format!(
+                    "Need {} x{}; {} stocks it",
+                    stack.item.name, missing, source
+                );
+            }
+
+            return format!(
+                "Need {} x{}; craft or buy before warp",
+                stack.item.name, missing
+            );
+        }
+
+        return "Route needs supplies".to_string();
+    }
+
+    if is_remote && ship_upgrade_level(&game.ship_upgrades, ShipUpgradeKind::ScannerArray) < 2 {
+        return "Route ready; Scanner array 2 recommended".to_string();
+    }
+
+    if is_remote {
+        return "Remote prep ready".to_string();
+    }
+
+    "Route ready".to_string()
+}
+
 fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     let Some(target_system) = game.content_registry.systems.get(target_system_id) else {
         eprintln!("Cannot switch to missing system `{target_system_id}`");
@@ -10900,6 +10974,17 @@ fn draw_known_systems_panel(game: &GameState) {
             row.y + 39.0,
             13.0,
             Color::from_rgba(126, 156, 164, 220),
+        );
+        draw_text(
+            &fit_debug_text(&route_readiness_summary(game, system_id), row.w - 20.0, 13),
+            row.x + 10.0,
+            row.y + 59.0,
+            13.0,
+            if can_warp {
+                Color::from_rgba(150, 221, 226, 220)
+            } else {
+                Color::from_rgba(220, 126, 116, 220)
+            },
         );
     }
 }
@@ -16341,6 +16426,69 @@ mod tests {
         assert!(known_systems
             .iter()
             .all(|system_id| system_is_known(&registry, system_id)));
+    }
+
+    #[test]
+    fn remote_route_readiness_points_to_local_fuel_stock_when_missing() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let fuel_canister =
+            core_item(&registry, "fuel_canister").expect("core fuel canister should exist");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].name = "Fuel Stop".to_string();
+        game.stations[0].services[0].trade = vec![TradeOffer {
+            item: fuel_canister,
+            buy_price: 190,
+            sell_price: 64,
+            stock: Some(4),
+            restock_days: Some(5.0),
+            unavailable: false,
+        }];
+
+        assert_eq!(
+            route_readiness_summary(&game, "remote-duskfall:duskfall_reach"),
+            "Need Fuel canister x1; Fuel Stop stocks it"
+        );
+    }
+
+    #[test]
+    fn remote_route_readiness_recommends_scanner_array_after_fuel_is_ready() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let fuel_canister =
+            core_item(&registry, "fuel_canister").expect("core fuel canister should exist");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.inventory.add_item(fuel_canister, 1);
+
+        assert_eq!(
+            route_readiness_summary(&game, "remote-duskfall:duskfall_reach"),
+            "Route ready; Scanner array 2 recommended"
+        );
+    }
+
+    #[test]
+    fn remote_route_readiness_reports_ready_after_scanner_prep() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let fuel_canister =
+            core_item(&registry, "fuel_canister").expect("core fuel canister should exist");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.inventory.add_item(fuel_canister, 1);
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::ScannerArray)
+            .expect("scanner array upgrade should exist")
+            .level = 2;
+
+        assert_eq!(
+            route_readiness_summary(&game, "remote-duskfall:duskfall_reach"),
+            "Remote prep ready"
+        );
     }
 
     #[test]

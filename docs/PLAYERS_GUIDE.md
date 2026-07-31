@@ -54,6 +54,11 @@ starter, surveyed, known, or remote can appear in the known systems panel. Warp
 travel charges before switching systems, and non-starter routes can require fuel
 canisters. The starter system is always free to return to.
 
+Known system rows include route readiness guidance. If a remote route is not
+ready, the row calls out the missing fuel and can point at a local station that
+stocks it. If the ship can warp but the route leads to harsher remote space, the
+row can recommend scanner preparation before departure.
+
 Planets can be selected from local space or the map. When you are close enough,
 the planet panel shows available actions. You can enter orbit from the planet
 panel while in range; applying manual thrust or starting warp breaks orbit.
@@ -136,6 +141,10 @@ Open inventory, then click the ship preview to open ship upgrades. Upgrades
 consume crafted components and immediately improve ship systems such as thrust,
 turning, energy, shields, survey drone behavior, warp charge time, scan depth,
 and cargo rating.
+
+For the first remote route, fuel canisters make the jump possible and Scanner
+Array level 2 is recommended so improved survey work reaches deeper resource
+data after arrival.
 
 Upgrade costs scale by level. If you cannot afford an upgrade, its action is
 disabled until the required items are in inventory.
