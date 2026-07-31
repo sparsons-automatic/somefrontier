@@ -3005,7 +3005,15 @@ mod tests {
                     && faction.tags.iter().any(|tag| tag == "raider")
                     && faction.tags.iter().any(|tag| tag == "probe")
             }));
-        assert_eq!(registry.npc_ships.len(), 3);
+        assert_eq!(registry.npc_ships.len(), 4);
+        assert!(registry
+            .npc_ships
+            .get("remote-duskfall:redwake_remote_probe")
+            .is_some_and(|npc_ship| {
+                npc_ship.system == "remote-duskfall:duskfall_reach"
+                    && npc_ship.role == "hostile"
+                    && npc_ship.behavior_tags.iter().any(|tag| tag == "pressure")
+            }));
         assert!(registry
             .ships
             .get("core:frontier_cargo_ship_01")

@@ -162,6 +162,12 @@ range, fire when ready, and spend ship energy. They ignore neutral, owned, and
 environmental threats. There is no manual targeting or fire button in the
 current build.
 
+Hostile probes in remote space can create light pressure when they get close,
+draining shields and causing limited hull spillover if shields are down. The HUD
+shows `Redwake probe pressure` while this is happening. Damage resistance
+reduces this pressure, and existing shield recharge resumes after the pressure
+delay clears.
+
 ## Stations And Services
 
 Stations appear as local-space destinations. Fly within dock range and inspect
@@ -192,8 +198,8 @@ mechanics exist, so unavailable rows describe the current blocker.
 
 Factions and societies own systems, planets, stations, and NPC ships. The UI can
 show faction names and default disposition such as friendly, neutral, hostile,
-or unknown. Disposition is currently informational except where existing turret
-threat filtering already distinguishes hostile threats.
+or unknown. Hostile disposition can drive intercept behavior, turret targeting,
+and pressure effects when an NPC is tagged for pressure.
 
 ## Content Packs
 
