@@ -30,6 +30,9 @@ const NPC_STATION_CLEARANCE: f32 = 72.0;
 const NPC_PLANET_CLEARANCE: f32 = 96.0;
 const NPC_FOLLOW_DISTANCE: f32 = 420.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
+const NPC_PRESSURE_RANGE: f32 = 520.0;
+const REDWAKE_PROBE_PRESSURE_PER_SECOND: f32 = 2.4;
+const REDWAKE_PRESSURE_HULL_SPILLOVER: f32 = 0.35;
 const NPC_ROUTE_RADIUS: f32 = 520.0;
 const NPC_ROUTE_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 const NPC_INTERACTION_PADDING: f32 = 126.0;
@@ -2386,6 +2389,12 @@ fn active_shield_hazard_resistance(game: &GameState) -> f32 {
         .unwrap_or(0.0)
 }
 
+fn active_shield_damage_resistance(game: &GameState) -> f32 {
+    active_shield(game)
+        .map(|shield| shield.damage_resistance)
+        .unwrap_or(0.0)
+}
+
 fn shield_hazard_drain_after_resistance(game: &GameState, drain: f32) -> f32 {
     drain.max(0.0) * (1.0 - active_shield_hazard_resistance(game)).clamp(0.0, 1.0)
 }
@@ -2397,6 +2406,35 @@ fn apply_shield_hazard_drain(game: &mut GameState, amount: f32) {
     }
     game.ship.systems.shields.spend(damage);
     game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+}
+
+fn ship_pressure_damage_after_resistance(game: &GameState, damage: f32) -> f32 {
+    damage.max(0.0) * (1.0 - active_shield_damage_resistance(game)).clamp(0.0, 1.0)
+}
+
+fn apply_ship_pressure_damage(game: &mut GameState, amount: f32) -> bool {
+    let damage = ship_pressure_damage_after_resistance(game, amount);
+    if damage <= 0.0 {
+        return false;
+    }
+
+    let shields_before = game.ship.systems.shields.current;
+    let hull_before = game.ship.systems.hull.current;
+    let shield_absorbed = damage.min(game.ship.systems.shields.current);
+    game.ship.systems.shields.spend(shield_absorbed);
+
+    let spillover = (damage - shield_absorbed) * REDWAKE_PRESSURE_HULL_SPILLOVER;
+    if spillover > 0.0 {
+        game.ship.systems.hull.spend(spillover);
+    }
+
+    let changed = game.ship.systems.shields.current < shields_before
+        || game.ship.systems.hull.current < hull_before;
+    if changed {
+        game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        game.save_dirty = true;
+    }
+    changed
 }
 
 fn make_defense_threats() -> Vec<DefenseThreat> {
@@ -5945,6 +5983,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_orbital_hazards(game, dt);
     update_shield_recharge(game, dt);
     update_npc_ships(game, dt);
+    update_hostile_npc_pressure(game, dt);
     update_weapon_systems(game, dt);
 
     let wheel = mouse_wheel().1;
@@ -8182,6 +8221,54 @@ fn update_npc_ships(game: &mut GameState, dt: f32) {
     }
 }
 
+fn update_hostile_npc_pressure(game: &mut GameState, dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+
+    let pressure_count = active_hostile_pressure_count(
+        &game.content_registry,
+        &game.ship,
+        &game.npc_ships,
+        &game.current_system_id,
+    );
+    if pressure_count == 0 {
+        return;
+    }
+
+    apply_ship_pressure_damage(
+        game,
+        REDWAKE_PROBE_PRESSURE_PER_SECOND * pressure_count as f32 * dt,
+    );
+}
+
+fn active_hostile_pressure_count(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    npc_ships: &[NpcShip],
+    current_system_id: &str,
+) -> usize {
+    npc_ships
+        .iter()
+        .filter(|npc_ship| {
+            npc_ship_exerts_pressure(content_registry, ship, npc_ship, current_system_id)
+        })
+        .count()
+}
+
+fn npc_ship_exerts_pressure(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    npc_ship: &NpcShip,
+    current_system_id: &str,
+) -> bool {
+    npc_ship.system == current_system_id
+        && npc_ship.hull.current > 0.0
+        && npc_ship.behavior_tags.iter().any(|tag| tag == "pressure")
+        && npc_ship_is_hostile(content_registry, npc_ship)
+        && npc_ship_surface_distance(ship, npc_ship) <= NPC_PRESSURE_RANGE
+}
+
 fn npc_behavior_target(
     npc_ship: &NpcShip,
     player_position: Vec2,
@@ -8652,6 +8739,12 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&T
         planets: &game.planets,
         stations: &game.stations,
         npc_ships: &game.npc_ships,
+        pressure_contacts: active_hostile_pressure_count(
+            &game.content_registry,
+            ship,
+            &game.npc_ships,
+            &game.current_system_id,
+        ),
         selected_planet: game.selected_planet,
         selected_station: game.selected_station,
         selected_npc_ship: game.selected_npc_ship,
@@ -14922,6 +15015,7 @@ struct HudView<'a> {
     planets: &'a [Planet],
     stations: &'a [StationDestination],
     npc_ships: &'a [NpcShip],
+    pressure_contacts: usize,
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
     selected_npc_ship: Option<usize>,
@@ -14938,6 +15032,7 @@ fn draw_hud(view: HudView<'_>) {
         planets,
         stations,
         npc_ships,
+        pressure_contacts,
         selected_planet,
         selected_station,
         selected_npc_ship,
@@ -14997,6 +15092,17 @@ fn draw_hud(view: HudView<'_>) {
         18.0,
         Color::from_rgba(178, 197, 203, 255),
     );
+
+    if pressure_contacts > 0 {
+        draw_text(
+            &format!("Redwake probe pressure x{pressure_contacts}"),
+            34.0,
+            184.0,
+            20.0,
+            Color::from_rgba(226, 104, 96, 255),
+        );
+        return;
+    }
 
     if let Some(planet) = orbiting_planet
         .and_then(|index| planets.get(index))
@@ -15658,6 +15764,138 @@ mod tests {
             .iter()
             .all(|threat| threat.hull.current == 24.0));
         assert!(game.weapon_fire_events.is_empty());
+    }
+
+    #[test]
+    fn hostile_pressure_probe_drains_shields_in_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.current_system_id = "remote-duskfall:duskfall_reach".to_string();
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(100.0, 0.0));
+        probe.system = game.current_system_id.clone();
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string(), "pressure".to_string()];
+        game.npc_ships = vec![probe];
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 50.0;
+        game.save_dirty = false;
+
+        update_hostile_npc_pressure(&mut game, 1.0);
+
+        assert_eq!(
+            active_hostile_pressure_count(
+                &game.content_registry,
+                &game.ship,
+                &game.npc_ships,
+                &game.current_system_id,
+            ),
+            1
+        );
+        assert!((game.ship.systems.shields.current - 47.6).abs() < 0.01);
+        assert_eq!(game.ship.systems.hull.current, game.ship.systems.hull.max);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn hostile_pressure_respects_shield_damage_resistance() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.current_system_id = "remote-duskfall:duskfall_reach".to_string();
+        game.equipped_shields = equipped_shields_from_ids(
+            &game.content_registry,
+            &["core:balanced_shield_matrix".to_string()],
+        );
+        game.rebuild_ship_from_upgrades();
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(100.0, 0.0));
+        probe.system = game.current_system_id.clone();
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string(), "pressure".to_string()];
+        game.npc_ships = vec![probe];
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 50.0;
+
+        update_hostile_npc_pressure(&mut game, 1.0);
+
+        assert_eq!(game.equipped_shields[0].damage_resistance, 0.10);
+        assert!((game.ship.systems.shields.current - 47.84).abs() < 0.01);
+    }
+
+    #[test]
+    fn hostile_pressure_spills_to_hull_only_after_shields_drop() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.current_system_id = "remote-duskfall:duskfall_reach".to_string();
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(100.0, 0.0));
+        probe.system = game.current_system_id.clone();
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string(), "pressure".to_string()];
+        game.npc_ships = vec![probe];
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 1.0;
+        game.ship.systems.hull.current = 80.0;
+
+        update_hostile_npc_pressure(&mut game, 1.0);
+
+        assert_eq!(game.ship.systems.shields.current, 0.0);
+        assert!((game.ship.systems.hull.current - 79.51).abs() < 0.01);
+    }
+
+    #[test]
+    fn pressure_requires_hostile_pressure_tag_active_system_and_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.current_system_id = "remote-duskfall:duskfall_reach".to_string();
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 50.0;
+        let mut neutral_pressure = test_npc_ship(NpcBehaviorMode::Patrol, vec2(100.0, 0.0));
+        neutral_pressure.system = game.current_system_id.clone();
+        neutral_pressure.behavior_tags = vec!["pressure".to_string()];
+        let mut hostile_without_pressure =
+            test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile_without_pressure.system = game.current_system_id.clone();
+        hostile_without_pressure.role = "hostile".to_string();
+        hostile_without_pressure.behavior_tags = vec!["hostile".to_string()];
+        let mut hostile_other_system =
+            test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(100.0, 0.0));
+        hostile_other_system.system = STARTER_SYSTEM_ID.to_string();
+        hostile_other_system.role = "hostile".to_string();
+        hostile_other_system.behavior_tags = vec!["hostile".to_string(), "pressure".to_string()];
+        let mut hostile_out_of_range =
+            test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(900.0, 0.0));
+        hostile_out_of_range.system = game.current_system_id.clone();
+        hostile_out_of_range.role = "hostile".to_string();
+        hostile_out_of_range.behavior_tags = vec!["hostile".to_string(), "pressure".to_string()];
+        game.npc_ships = vec![
+            neutral_pressure,
+            hostile_without_pressure,
+            hostile_other_system,
+            hostile_out_of_range,
+        ];
+        game.save_dirty = false;
+
+        update_hostile_npc_pressure(&mut game, 1.0);
+
+        assert_eq!(game.ship.systems.shields.current, 50.0);
+        assert!(!game.save_dirty);
+    }
+
+    #[test]
+    fn duskfall_content_adds_redwake_pressure_probe() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let probe = registry
+            .npc_ships
+            .get("remote-duskfall:redwake_remote_probe")
+            .expect("remote Duskfall pack should define a Redwake pressure probe");
+
+        assert_eq!(probe.system, "remote-duskfall:duskfall_reach");
+        assert_eq!(probe.role, "hostile");
+        assert_eq!(probe.faction.as_deref(), Some("core:redwake_raiders"));
+        assert!(probe.behavior_tags.iter().any(|tag| tag == "pressure"));
     }
 
     #[test]

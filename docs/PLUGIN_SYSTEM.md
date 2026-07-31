@@ -650,7 +650,9 @@ Rules:
 - `behavior_tags` defaults to an empty list. The runtime currently recognizes
   `patrol`, `traffic`, `trade-route`, `follow`, `flee`, and `hostile` as
   behavior-selection hints. Faction default disposition and `role = "hostile"`
-  can also select hostile interception.
+  can also select hostile interception. Hostile NPCs tagged `pressure` apply
+  light shield pressure while close to the player, with limited hull spillover
+  after shields are depleted.
 - `spawn_weight` defaults to 1.0 and must be positive.
 - `spawn_count` defaults to 1 and must be greater than zero.
 - `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
