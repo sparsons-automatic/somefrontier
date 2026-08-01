@@ -494,9 +494,9 @@ Rules:
 Weapon files define ship-mounted weapon equipment. The first supported weapon
 type is automatic turret defense: the player does not manually target or fire
 these weapons. The base game owns threat scanning, cooldowns, energy spending,
-damage application, and future NPC/faction integration. Each weapon also points
-at an inventory install item, allowing crafted turret objects to be swapped into
-ship weapon slots as equipment UI is added.
+target resolution, projectile visuals, and damage application. Each weapon also
+points at an inventory install item, allowing crafted turret objects to be
+swapped into ship weapon slots through the ship Defense rail.
 
 ```toml
 [[weapons]]
@@ -609,8 +609,10 @@ appear in local space independently of the player. The runtime derives a
 behavior mode from each ship's role, faction, and behavior tags, then moves the
 ship with lightweight steering and spacing rules. Players can inspect nearby
 NPC ships and identify contacts to reveal faction, disposition, systems, loadout,
-and action hooks. Full hailing, docking, trade exchanges, and autonomous combat
-are owned by later base-game systems.
+and action hooks. Configured turret weapons are active at runtime: non-hostile
+NPCs engage hostile threats, and hostile NPCs can fire on the player when in
+range. Full hailing, docking, and trade exchanges are owned by later base-game
+systems.
 
 ```toml
 [[npc_ships]]
@@ -662,9 +664,13 @@ Rules:
 - `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
   positive.
 - `cargo_defaults` defaults to an empty list. Entries resolve to namespaced item
-  IDs and must reference loaded items; counts must be greater than zero.
+  IDs and must reference loaded items; counts must be greater than zero. At
+  runtime, destroyed NPC ships use these entries as automatic loot, adding each
+  full stack to the player inventory only when it fits within the player's cargo
+  rating.
 - `shield_slots` and `weapon_slots` default to empty lists and must reference
-  loaded shields and weapons when present.
+  loaded shields and weapons when present. NPC `weapon_slots` create live turret
+  systems from the same weapon definitions used by player ships.
 - `summary` is optional player-facing metadata.
 
 ## `factions.toml`

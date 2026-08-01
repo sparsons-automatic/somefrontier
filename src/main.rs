@@ -18,7 +18,7 @@ const STARFIELD_RADIUS: f32 = 9000.0;
 const SHIP_RADIUS: f32 = 22.0;
 const SHIP_SPRITE_SIZE: f32 = 72.0;
 const DEFENSE_THREAT_RADIUS: f32 = 18.0;
-const WEAPON_FIRE_EVENT_SECONDS: f32 = 0.18;
+const WEAPON_FIRE_EVENT_SECONDS: f32 = 0.55;
 const NPC_PATROL_SPEED: f32 = 34.0;
 const NPC_TRAFFIC_SPEED: f32 = 26.0;
 const NPC_FOLLOW_SPEED: f32 = 46.0;
@@ -441,6 +441,19 @@ struct WeaponFireEvent {
     from: Vec2,
     to: Vec2,
     timer: f32,
+    origin: WeaponFireOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WeaponFireOrigin {
+    Player,
+    Npc,
+}
+
+#[derive(Clone, Copy)]
+enum PlayerTurretTarget {
+    DefenseThreat(usize),
+    NpcShip(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -520,6 +533,7 @@ struct NpcShip {
     energy: ShipResource,
     shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
+    equipped_weapons: Vec<WeaponSystem>,
     summary: String,
 }
 
@@ -1645,6 +1659,10 @@ async fn make_npc_ships(
             energy: ShipResource::full(npc_ship_def.energy_capacity),
             shield_slots: npc_ship_def.shield_slots.clone(),
             weapon_slots: npc_ship_def.weapon_slots.clone(),
+            equipped_weapons: equipped_weapons_from_ids(
+                content_registry,
+                &npc_ship_def.weapon_slots,
+            ),
             summary: npc_ship_def
                 .summary
                 .clone()
@@ -2445,6 +2463,31 @@ fn apply_ship_pressure_damage(game: &mut GameState, amount: f32) -> bool {
     game.ship.systems.shields.spend(shield_absorbed);
 
     let spillover = (damage - shield_absorbed) * REDWAKE_PRESSURE_HULL_SPILLOVER;
+    if spillover > 0.0 {
+        game.ship.systems.hull.spend(spillover);
+    }
+
+    let changed = game.ship.systems.shields.current < shields_before
+        || game.ship.systems.hull.current < hull_before;
+    if changed {
+        game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        game.save_dirty = true;
+    }
+    changed
+}
+
+fn apply_ship_weapon_damage(game: &mut GameState, amount: f32) -> bool {
+    let damage = ship_pressure_damage_after_resistance(game, amount);
+    if damage <= 0.0 {
+        return false;
+    }
+
+    let shields_before = game.ship.systems.shields.current;
+    let hull_before = game.ship.systems.hull.current;
+    let shield_absorbed = damage.min(game.ship.systems.shields.current);
+    game.ship.systems.shields.spend(shield_absorbed);
+
+    let spillover = damage - shield_absorbed;
     if spillover > 0.0 {
         game.ship.systems.hull.spend(spillover);
     }
@@ -6107,6 +6150,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_npc_ships(game, dt);
     update_hostile_npc_pressure(game, dt);
     update_weapon_systems(game, dt);
+    remove_destroyed_npc_ships(game);
 
     let wheel = mouse_wheel().1;
     if game.map_open {
@@ -6174,7 +6218,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             {
                 click_handled = true;
             } else if is_mouse_button_pressed(MouseButton::Left)
-                && ship_detail_preview_rect().contains(mouse)
+                && ship_detail_preview_rect(selected_action_rail_width(game)).contains(mouse)
             {
                 game.upgrades_open = true;
                 game.inventory_open = false;
@@ -7228,7 +7272,9 @@ fn handle_ship_shield_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
     }
 
     (0..shield_slot_capacity(game))
-        .find(|slot_index| ship_shield_slot_rect(*slot_index).contains(mouse))
+        .find(|slot_index| {
+            ship_shield_slot_rect(*slot_index, selected_action_rail_width(game)).contains(mouse)
+        })
         .is_some_and(|slot_index| install_first_available_shield_for_slot(game, slot_index))
 }
 
@@ -7260,34 +7306,67 @@ fn handle_ship_weapon_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
     if !is_mouse_button_pressed(MouseButton::Left) {
         return false;
     }
+    let Some(width) = selected_action_rail_width(game) else {
+        return false;
+    };
+    let rail = action_rail_rect(width);
 
     (0..weapon_slot_capacity(game))
-        .find(|slot_index| ship_weapon_slot_rect(*slot_index).contains(mouse))
+        .find(|slot_index| ship_weapon_slot_rect_for_rail(rail, *slot_index).contains(mouse))
         .is_some_and(|slot_index| install_first_available_weapon_for_slot(game, slot_index))
 }
 
 fn install_first_available_weapon_for_slot(game: &mut GameState, slot_index: usize) -> bool {
-    let current_weapon_id = game
-        .equipped_weapons
-        .get(slot_index)
-        .map(|weapon| weapon.id.as_str());
-    let Some(weapon_id) = game
-        .content_registry
-        .weapon_order
-        .iter()
-        .find_map(|weapon_id| {
-            if current_weapon_id == Some(weapon_id.as_str()) {
-                return None;
-            }
-            let weapon = game.content_registry.weapons.get(weapon_id)?;
-            let install_item = registry_item(&game.content_registry, &weapon.install_item)?;
-            (game.inventory.count(&install_item) > 0).then(|| weapon_id.clone())
-        })
-    else {
+    let Some(weapon_id) = next_available_weapon_id_for_slot(
+        &game.content_registry,
+        &game.inventory,
+        &game.equipped_weapons,
+        slot_index,
+    ) else {
         return false;
     };
 
     install_weapon_in_slot(game, slot_index, &weapon_id).is_ok()
+}
+
+fn next_available_weapon_id_for_slot(
+    content_registry: &content::ContentRegistry,
+    inventory: &Inventory,
+    equipped_weapons: &[WeaponSystem],
+    slot_index: usize,
+) -> Option<String> {
+    let current_weapon_id = equipped_weapons
+        .get(slot_index)
+        .map(|weapon| weapon.id.as_str());
+    content_registry.weapon_order.iter().find_map(|weapon_id| {
+        if current_weapon_id == Some(weapon_id.as_str()) {
+            return None;
+        }
+        let weapon = content_registry.weapons.get(weapon_id)?;
+        let install_item = registry_item(content_registry, &weapon.install_item)?;
+        (inventory.count(&install_item) > 0).then(|| weapon_id.clone())
+    })
+}
+
+fn weapon_slot_swap_label(
+    content_registry: &content::ContentRegistry,
+    inventory: &Inventory,
+    equipped_weapons: &[WeaponSystem],
+    slot_index: usize,
+) -> String {
+    let Some(weapon_id) = next_available_weapon_id_for_slot(
+        content_registry,
+        inventory,
+        equipped_weapons,
+        slot_index,
+    ) else {
+        return "No crafted".to_string();
+    };
+    content_registry
+        .weapons
+        .get(&weapon_id)
+        .map(|weapon| format!("Install {}", weapon.name))
+        .unwrap_or_else(|| "Install turret".to_string())
 }
 
 fn handle_production_table_input(game: &mut GameState, mouse: Vec2, wheel: f32) -> bool {
@@ -7563,8 +7642,12 @@ fn npc_interaction_rows(
 }
 
 fn npc_ship_is_hostile(content_registry: &content::ContentRegistry, npc_ship: &NpcShip) -> bool {
-    npc_ship.role == "hostile"
-        || npc_ship.behavior_tags.iter().any(|tag| tag == "hostile")
+    matches!(npc_ship.behavior, NpcBehaviorMode::HostileIntercept)
+        || npc_ship.role.eq_ignore_ascii_case("hostile")
+        || npc_ship
+            .behavior_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case("hostile"))
         || npc_ship.faction.as_deref().is_some_and(|faction_id| {
             content_registry
                 .factions
@@ -8050,8 +8133,7 @@ fn handle_inventory_overlay_scroll(game: &mut GameState, mouse: Vec2, wheel: f32
 }
 
 fn handle_action_rail_resize_input(game: &mut GameState, mouse: Vec2) -> bool {
-    let Some(width) = selected_action_rail_width(game).filter(|_| selected_world_object(game))
-    else {
+    let Some(width) = selected_action_rail_width(game) else {
         game.action_rail_resize_previous_mouse = None;
         return false;
     };
@@ -8081,8 +8163,7 @@ fn action_rail_consumes_pointer_click(game: &GameState, mouse: Vec2) -> bool {
     if !is_mouse_button_pressed(MouseButton::Left) && !is_mouse_button_pressed(MouseButton::Right) {
         return false;
     }
-    let Some(width) = selected_action_rail_width(game).filter(|_| selected_world_object(game))
-    else {
+    let Some(width) = selected_action_rail_width(game) else {
         return false;
     };
 
@@ -8693,6 +8774,63 @@ fn update_weapon_systems(game: &mut GameState, dt: f32) {
         event.timer > 0.0
     });
 
+    update_player_weapon_systems(game, dt);
+    update_npc_weapon_systems(game, dt);
+}
+
+fn remove_destroyed_npc_ships(game: &mut GameState) {
+    if game
+        .npc_ships
+        .iter()
+        .all(|npc_ship| npc_ship.hull.current > 0.0)
+    {
+        return;
+    }
+
+    let previous_selection = game.selected_npc_ship;
+    let mut surviving_npc_ships = Vec::with_capacity(game.npc_ships.len());
+    let mut next_selected_npc_ship = None;
+
+    for (old_index, npc_ship) in game.npc_ships.drain(..).enumerate() {
+        if npc_ship.hull.current > 0.0 {
+            let new_index = surviving_npc_ships.len();
+            if previous_selection == Some(old_index) {
+                next_selected_npc_ship = Some(new_index);
+            }
+            surviving_npc_ships.push(npc_ship);
+        } else {
+            transfer_destroyed_npc_loot(
+                &mut game.inventory,
+                &game.ship_upgrades,
+                &npc_ship.cargo_defaults,
+            );
+        }
+    }
+
+    game.npc_ships = surviving_npc_ships;
+    game.selected_npc_ship = next_selected_npc_ship;
+    game.save_dirty = true;
+}
+
+fn transfer_destroyed_npc_loot(
+    inventory: &mut Inventory,
+    ship_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+    cargo_defaults: &[ItemStack],
+) {
+    let cargo_capacity = cargo_rating_kg(ship_upgrades);
+    let mut cargo_mass = inventory.total_mass();
+    for stack in cargo_defaults {
+        let stack_mass = stack.item.unit_mass * stack.count as f32;
+        if cargo_mass + stack_mass > cargo_capacity {
+            continue;
+        }
+
+        inventory.add_item(stack.item.clone(), stack.count);
+        cargo_mass += stack_mass;
+    }
+}
+
+fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
     for weapon_index in 0..game.equipped_weapons.len() {
         {
             let weapon = &mut game.equipped_weapons[weapon_index];
@@ -8703,13 +8841,15 @@ fn update_weapon_systems(game: &mut GameState, dt: f32) {
             }
         }
 
-        let target_index = defense_turret_target_index(
+        let target = player_turret_target(
+            &game.content_registry,
             &game.ship,
             &game.equipped_weapons[weapon_index],
             &game.defense_threats,
+            &game.npc_ships,
             &game.current_system_id,
         );
-        let Some(target_index) = target_index else {
+        let Some(target) = target else {
             game.equipped_weapons[weapon_index].status = WeaponStatus::NoThreat;
             continue;
         };
@@ -8720,18 +8860,189 @@ fn update_weapon_systems(game: &mut GameState, dt: f32) {
             continue;
         }
 
-        let target = &mut game.defense_threats[target_index];
+        let target_position = match target {
+            PlayerTurretTarget::DefenseThreat(target_index) => {
+                let target = &mut game.defense_threats[target_index];
+                target.hull.spend(weapon.damage);
+                target.position
+            }
+            PlayerTurretTarget::NpcShip(npc_ship_index) => {
+                let target = &mut game.npc_ships[npc_ship_index];
+                apply_npc_weapon_damage(target, weapon.damage);
+                target.position
+            }
+        };
         game.ship.systems.energy.spend(weapon.energy_cost);
-        target.hull.spend(weapon.damage);
         weapon.cooldown_remaining = weapon.cooldown_seconds;
         weapon.status = WeaponStatus::Fired;
         game.weapon_fire_events.push(WeaponFireEvent {
             from: game.ship.position,
-            to: target.position,
+            to: target_position,
             timer: WEAPON_FIRE_EVENT_SECONDS,
+            origin: WeaponFireOrigin::Player,
         });
         game.save_dirty = true;
     }
+}
+
+fn update_npc_weapon_systems(game: &mut GameState, dt: f32) {
+    for npc_index in 0..game.npc_ships.len() {
+        if game.npc_ships[npc_index].system != game.current_system_id
+            || game.npc_ships[npc_index].hull.current <= 0.0
+        {
+            continue;
+        }
+
+        let hostile = npc_ship_is_hostile(&game.content_registry, &game.npc_ships[npc_index]);
+        let weapon_count = game.npc_ships[npc_index].equipped_weapons.len();
+        for weapon_index in 0..weapon_count {
+            {
+                let weapon = &mut game.npc_ships[npc_index].equipped_weapons[weapon_index];
+                weapon.cooldown_remaining = (weapon.cooldown_remaining - dt).max(0.0);
+                if weapon.cooldown_remaining > 0.0 {
+                    weapon.status = WeaponStatus::Cooldown;
+                    continue;
+                }
+            }
+
+            if hostile && fire_npc_weapon_at_player(game, npc_index, weapon_index) {
+                continue;
+            }
+            if !hostile && fire_npc_weapon_at_defense_threat(game, npc_index, weapon_index) {
+                continue;
+            }
+
+            game.npc_ships[npc_index].equipped_weapons[weapon_index].status =
+                WeaponStatus::NoThreat;
+        }
+    }
+}
+
+fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_index: usize) -> bool {
+    let Some(npc_ship) = game.npc_ships.get(npc_index) else {
+        return false;
+    };
+    let Some(weapon) = npc_ship.equipped_weapons.get(weapon_index) else {
+        return false;
+    };
+    if !npc_weapon_can_target_player(npc_ship, weapon, &game.ship, &game.current_system_id) {
+        return false;
+    }
+    if npc_ship.energy.current < weapon.energy_cost {
+        game.npc_ships[npc_index].equipped_weapons[weapon_index].status =
+            WeaponStatus::InsufficientEnergy;
+        return true;
+    }
+
+    let origin = npc_ship.position;
+    let damage = weapon.damage;
+    let energy_cost = weapon.energy_cost;
+    let cooldown_seconds = weapon.cooldown_seconds;
+    game.npc_ships[npc_index].energy.spend(energy_cost);
+    apply_ship_weapon_damage(game, damage);
+    game.npc_ships[npc_index].equipped_weapons[weapon_index].cooldown_remaining = cooldown_seconds;
+    game.npc_ships[npc_index].equipped_weapons[weapon_index].status = WeaponStatus::Fired;
+    game.weapon_fire_events.push(WeaponFireEvent {
+        from: origin,
+        to: game.ship.position,
+        timer: WEAPON_FIRE_EVENT_SECONDS,
+        origin: WeaponFireOrigin::Npc,
+    });
+    true
+}
+
+fn fire_npc_weapon_at_defense_threat(
+    game: &mut GameState,
+    npc_index: usize,
+    weapon_index: usize,
+) -> bool {
+    let Some(npc_ship) = game.npc_ships.get(npc_index) else {
+        return false;
+    };
+    let Some(weapon) = npc_ship.equipped_weapons.get(weapon_index) else {
+        return false;
+    };
+    let Some(target_index) = npc_defense_turret_target_index(
+        npc_ship,
+        weapon,
+        &game.defense_threats,
+        &game.current_system_id,
+    ) else {
+        return false;
+    };
+    if npc_ship.energy.current < weapon.energy_cost {
+        game.npc_ships[npc_index].equipped_weapons[weapon_index].status =
+            WeaponStatus::InsufficientEnergy;
+        return true;
+    }
+
+    let origin = npc_ship.position;
+    let target_position = game.defense_threats[target_index].position;
+    let damage = weapon.damage;
+    let energy_cost = weapon.energy_cost;
+    let cooldown_seconds = weapon.cooldown_seconds;
+    game.npc_ships[npc_index].energy.spend(energy_cost);
+    game.defense_threats[target_index].hull.spend(damage);
+    game.npc_ships[npc_index].equipped_weapons[weapon_index].cooldown_remaining = cooldown_seconds;
+    game.npc_ships[npc_index].equipped_weapons[weapon_index].status = WeaponStatus::Fired;
+    game.weapon_fire_events.push(WeaponFireEvent {
+        from: origin,
+        to: target_position,
+        timer: WEAPON_FIRE_EVENT_SECONDS,
+        origin: WeaponFireOrigin::Npc,
+    });
+    true
+}
+
+fn apply_npc_weapon_damage(npc_ship: &mut NpcShip, damage: f32) {
+    let damage = damage.max(0.0);
+    let shield_absorbed = damage.min(npc_ship.shields.current);
+    npc_ship.shields.spend(shield_absorbed);
+
+    let spillover = damage - shield_absorbed;
+    if spillover > 0.0 {
+        npc_ship.hull.spend(spillover);
+    }
+}
+
+fn player_turret_target(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    weapon: &WeaponSystem,
+    threats: &[DefenseThreat],
+    npc_ships: &[NpcShip],
+    current_system_id: &str,
+) -> Option<PlayerTurretTarget> {
+    if weapon.kind != content::WeaponKind::TurretDefense {
+        return None;
+    }
+
+    let threat_target =
+        defense_turret_target_index(ship, weapon, threats, current_system_id).map(|index| {
+            (
+                PlayerTurretTarget::DefenseThreat(index),
+                threats[index].position.distance_squared(ship.position),
+            )
+        });
+    let npc_target = hostile_npc_turret_target_index(
+        content_registry,
+        ship,
+        weapon,
+        npc_ships,
+        current_system_id,
+    )
+    .map(|index| {
+        (
+            PlayerTurretTarget::NpcShip(index),
+            npc_ships[index].position.distance_squared(ship.position),
+        )
+    });
+
+    [threat_target, npc_target]
+        .into_iter()
+        .flatten()
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(target, _)| target)
 }
 
 fn defense_turret_target_index(
@@ -8758,6 +9069,61 @@ fn defense_turret_target_index(
         .map(|(index, _)| index)
 }
 
+fn hostile_npc_turret_target_index(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    weapon: &WeaponSystem,
+    npc_ships: &[NpcShip],
+    current_system_id: &str,
+) -> Option<usize> {
+    if weapon.kind != content::WeaponKind::TurretDefense {
+        return None;
+    }
+
+    npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc_ship)| {
+            hostile_npc_is_valid_player_turret_target(
+                content_registry,
+                ship,
+                weapon,
+                npc_ship,
+                current_system_id,
+            )
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.position
+                .distance_squared(ship.position)
+                .total_cmp(&b.position.distance_squared(ship.position))
+        })
+        .map(|(index, _)| index)
+}
+
+fn npc_defense_turret_target_index(
+    npc_ship: &NpcShip,
+    weapon: &WeaponSystem,
+    threats: &[DefenseThreat],
+    current_system_id: &str,
+) -> Option<usize> {
+    if weapon.kind != content::WeaponKind::TurretDefense {
+        return None;
+    }
+
+    threats
+        .iter()
+        .enumerate()
+        .filter(|(_, threat)| {
+            npc_defense_threat_is_valid_target(npc_ship, weapon, threat, current_system_id)
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.position
+                .distance_squared(npc_ship.position)
+                .total_cmp(&b.position.distance_squared(npc_ship.position))
+        })
+        .map(|(index, _)| index)
+}
+
 fn defense_threat_is_valid_target(
     ship: &Ship,
     weapon: &WeaponSystem,
@@ -8771,15 +9137,70 @@ fn defense_threat_is_valid_target(
         && target_within_tracking_arc(ship, weapon, threat.position)
 }
 
+fn hostile_npc_is_valid_player_turret_target(
+    content_registry: &content::ContentRegistry,
+    ship: &Ship,
+    weapon: &WeaponSystem,
+    npc_ship: &NpcShip,
+    current_system_id: &str,
+) -> bool {
+    npc_ship_is_hostile(content_registry, npc_ship)
+        && npc_ship.system == current_system_id
+        && npc_ship.hull.current > 0.0
+        && ship.position.distance(npc_ship.position) <= weapon.range + npc_ship.radius
+        && target_within_tracking_arc(ship, weapon, npc_ship.position)
+}
+
+fn npc_defense_threat_is_valid_target(
+    npc_ship: &NpcShip,
+    weapon: &WeaponSystem,
+    threat: &DefenseThreat,
+    current_system_id: &str,
+) -> bool {
+    threat.disposition == ThreatDisposition::Hostile
+        && threat.system == current_system_id
+        && threat.hull.current > 0.0
+        && npc_ship.position.distance(threat.position) <= weapon.range + threat.radius
+        && target_within_tracking_arc_from(
+            npc_ship.position,
+            npc_ship.angle,
+            weapon,
+            threat.position,
+        )
+}
+
+fn npc_weapon_can_target_player(
+    npc_ship: &NpcShip,
+    weapon: &WeaponSystem,
+    ship: &Ship,
+    current_system_id: &str,
+) -> bool {
+    weapon.kind == content::WeaponKind::TurretDefense
+        && npc_ship.system == current_system_id
+        && npc_ship.hull.current > 0.0
+        && ship.systems.hull.current > 0.0
+        && npc_ship.position.distance(ship.position) <= weapon.range + SHIP_RADIUS + npc_ship.radius
+        && target_within_tracking_arc_from(npc_ship.position, npc_ship.angle, weapon, ship.position)
+}
+
 fn target_within_tracking_arc(ship: &Ship, weapon: &WeaponSystem, target_position: Vec2) -> bool {
+    target_within_tracking_arc_from(ship.position, ship.angle, weapon, target_position)
+}
+
+fn target_within_tracking_arc_from(
+    source_position: Vec2,
+    source_angle: f32,
+    weapon: &WeaponSystem,
+    target_position: Vec2,
+) -> bool {
     if weapon.tracking_degrees >= 359.0 {
         return true;
     }
-    let to_target = target_position - ship.position;
+    let to_target = target_position - source_position;
     if to_target.length_squared() <= f32::EPSILON {
         return true;
     }
-    let forward = vec2(ship.angle.cos(), ship.angle.sin());
+    let forward = vec2(source_angle.cos(), source_angle.sin());
     let target_direction = to_target.normalize();
     let angle = forward.dot(target_direction).clamp(-1.0, 1.0).acos();
     angle <= weapon.tracking_degrees.to_radians() * 0.5
@@ -8986,9 +9407,6 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&T
     {
         draw_defense_threat(center, ship, threat, zoom);
     }
-    for event in &game.weapon_fire_events {
-        draw_weapon_fire_event(center, ship, event, zoom);
-    }
     draw_poi_indicator(
         center,
         ship,
@@ -8999,6 +9417,9 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&T
     );
     draw_ship_status_arcs(center, ship, zoom);
     draw_ship(center, ship, game.ship_texture.as_ref(), zoom);
+    for event in &game.weapon_fire_events {
+        draw_weapon_fire_event(center, ship, event, zoom);
+    }
     let turn = ship.angular_velocity;
     draw_hud(HudView {
         ship,
@@ -9011,6 +9432,7 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&T
             &game.npc_ships,
             &game.current_system_id,
         ),
+        incoming_weapon_fire: incoming_weapon_fire_count(ship, &game.weapon_fire_events),
         selected_planet: game.selected_planet,
         selected_station: game.selected_station,
         selected_npc_ship: game.selected_npc_ship,
@@ -9984,7 +10406,10 @@ fn draw_npc_ship(
         npc_ship.shields.max,
         npc_ship.energy.max,
         npc_ship.shield_slots.len(),
-        npc_ship.weapon_slots.len()
+        npc_ship
+            .equipped_weapons
+            .len()
+            .max(npc_ship.weapon_slots.len())
     );
     draw_text(
         &fit_debug_text(&metadata, 230.0, 12),
@@ -10059,20 +10484,64 @@ fn draw_weapon_fire_event(center: Vec2, ship: &Ship, event: &WeaponFireEvent, zo
     let from = world_to_screen(event.from, center, ship, zoom);
     let to = world_to_screen(event.to, center, ship, zoom);
     let alpha = (event.timer / WEAPON_FIRE_EVENT_SECONDS).clamp(0.0, 1.0);
-    draw_line(
-        from.x,
-        from.y,
-        to.x,
-        to.y,
-        2.5,
-        Color::new(0.95, 0.34, 0.28, alpha),
-    );
-    draw_circle(
-        to.x,
-        to.y,
-        5.0 + alpha * 5.0,
-        Color::new(1.0, 0.72, 0.35, alpha),
-    );
+    let travel = 1.0 - alpha;
+    let (beam, core, impact) = match event.origin {
+        WeaponFireOrigin::Player => (
+            Color::new(0.24, 0.70, 1.0, alpha),
+            Color::new(0.72, 0.96, 1.0, alpha),
+            Color::new(0.56, 0.92, 1.0, alpha * 0.9),
+        ),
+        WeaponFireOrigin::Npc => (
+            Color::new(0.95, 0.34, 0.28, alpha),
+            Color::new(1.0, 0.86, 0.48, alpha),
+            Color::new(1.0, 0.72, 0.35, alpha * 0.9),
+        ),
+    };
+    let delta = to - from;
+    let distance = delta.length().max(1.0);
+    let direction = delta / distance;
+    let normal = vec2(-direction.y, direction.x);
+    let arc = normal * (distance * 0.18).clamp(22.0, 92.0);
+    let shimmer =
+        normal * ((get_time() as f32 * 18.0 + distance * 0.03).sin() * 8.0 * alpha.clamp(0.0, 1.0));
+
+    let head = curved_weapon_fire_point(from, to, arc + shimmer, travel);
+    let trail_steps = 9;
+    for step in 0..trail_steps {
+        let trail_end_t = (travel - step as f32 * 0.045).clamp(0.0, 1.0);
+        let trail_start_t = (trail_end_t - 0.055).clamp(0.0, 1.0);
+        if trail_end_t <= 0.0 {
+            continue;
+        }
+        let trail_start = curved_weapon_fire_point(from, to, arc + shimmer, trail_start_t);
+        let trail_end = curved_weapon_fire_point(from, to, arc + shimmer, trail_end_t);
+        let fade = alpha * (1.0 - step as f32 / trail_steps as f32).powf(1.4);
+        draw_line(
+            trail_start.x,
+            trail_start.y,
+            trail_end.x,
+            trail_end.y,
+            (6.0 - step as f32 * 0.45).max(1.2),
+            Color { a: fade, ..beam },
+        );
+    }
+    draw_circle(head.x, head.y, 5.0 + alpha * 5.0, beam);
+    draw_circle(head.x, head.y, 2.6 + alpha * 2.2, core);
+    if travel > 0.72 {
+        let flare = ((travel - 0.72) / 0.28).clamp(0.0, 1.0) * alpha;
+        draw_circle(to.x, to.y, 8.0 + flare * 13.0, Color { a: flare, ..impact });
+    }
+}
+
+fn curved_weapon_fire_point(from: Vec2, to: Vec2, arc: Vec2, t: f32) -> Vec2 {
+    from.lerp(to, t) + arc * (std::f32::consts::PI * t).sin()
+}
+
+fn incoming_weapon_fire_count(ship: &Ship, weapon_fire_events: &[WeaponFireEvent]) -> usize {
+    weapon_fire_events
+        .iter()
+        .filter(|event| event.to.distance(ship.position) <= SHIP_RADIUS + 12.0)
+        .count()
 }
 
 fn draw_station_icon(center: Vec2, radius: f32, icon: &str) {
@@ -11431,12 +11900,6 @@ fn inventory_overlay_layout(action_rail_width: Option<f32>) -> InventoryOverlayL
     }
 }
 
-fn selected_world_object(game: &GameState) -> bool {
-    game.selected_planet.is_some()
-        || game.selected_station.is_some()
-        || game.selected_npc_ship.is_some()
-}
-
 fn selected_action_rail_width(game: &GameState) -> Option<f32> {
     if let Some(planet_index) = game.selected_planet {
         return game
@@ -11458,7 +11921,10 @@ fn selected_action_rail_width(game: &GameState) -> Option<f32> {
         });
     }
 
-    None
+    Some(action_rail_width_with_override(
+        ship_defense_action_rail_width(game),
+        game,
+    ))
 }
 
 fn action_rail_width_with_override(auto_width: f32, game: &GameState) -> f32 {
@@ -11547,8 +12013,33 @@ fn npc_ship_action_rail_width(
     clamp_action_rail_width(action_width.max(150.0) + status_width.max(78.0) + 12.0 + 34.0)
 }
 
+fn ship_defense_action_rail_width(game: &GameState) -> f32 {
+    let slot_width = (0..weapon_slot_capacity(game))
+        .map(|slot_index| {
+            game.equipped_weapons
+                .get(slot_index)
+                .map(|weapon| measure_text(&weapon.name, None, 17, 1.0).width)
+                .unwrap_or_else(|| measure_text("Empty turret slot", None, 17, 1.0).width)
+        })
+        .fold(
+            measure_text("Point Defense Turret", None, 17, 1.0).width,
+            f32::max,
+        );
+    let candidate_width = game
+        .content_registry
+        .weapon_order
+        .iter()
+        .filter_map(|weapon_id| game.content_registry.weapons.get(weapon_id))
+        .map(|weapon| measure_text(&weapon.name, None, 16, 1.0).width)
+        .fold(
+            measure_text("No crafted turrets", None, 16, 1.0).width,
+            f32::max,
+        );
+
+    clamp_action_rail_width(slot_width.max(candidate_width).max(240.0) + 64.0)
+}
+
 fn draw_inventory_overlay(game: &GameState) {
-    let has_object_actions = selected_world_object(game);
     let action_rail_width = selected_action_rail_width(game);
     let layout = inventory_overlay_layout(action_rail_width);
 
@@ -11635,7 +12126,7 @@ fn draw_inventory_overlay(game: &GameState) {
         layout.panel_y + 66.0,
         layout.detail_width,
     );
-    if has_object_actions {
+    if action_rail_width.is_some() {
         draw_object_action_rail(game, &layout, mouse);
     }
     if let Some(recipe) = hovered_production_recipe(game, mouse, game.work_scroll) {
@@ -11713,6 +12204,162 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
                 Rect::new(rail.x + 12.0, rail.y + 48.0, rail.w - 24.0, rail.h - 60.0),
             );
         }
+    } else {
+        draw_ship_defense_action_rail(game, rail, mouse);
+    }
+}
+
+fn draw_ship_defense_action_rail(game: &GameState, rail: Rect, mouse: Vec2) {
+    draw_action_rail_frame(rail, "Defense");
+    let label = Color::from_rgba(88, 116, 126, 180);
+    let text = Color::from_rgba(205, 226, 230, 255);
+    let accent = Color::from_rgba(150, 221, 226, 255);
+    let unavailable = Color::from_rgba(126, 143, 148, 210);
+    let slot_count = weapon_slot_capacity(game);
+    let hostile_count = game
+        .defense_threats
+        .iter()
+        .filter(|threat| {
+            threat.system == game.current_system_id
+                && threat.disposition == ThreatDisposition::Hostile
+                && threat.hull.current > 0.0
+        })
+        .count();
+
+    draw_text(
+        &format!("{} slot(s) / {} hostile", slot_count, hostile_count),
+        rail.x + 12.0,
+        rail.y + 52.0,
+        16.0,
+        text,
+    );
+    draw_text(
+        "Click a slot to install the next crafted turret.",
+        rail.x + 12.0,
+        rail.y + 76.0,
+        14.0,
+        label,
+    );
+
+    if slot_count == 0 {
+        draw_text(
+            "No turret slots configured",
+            rail.x + 12.0,
+            rail.y + 116.0,
+            16.0,
+            unavailable,
+        );
+        return;
+    }
+
+    for slot_index in 0..slot_count.min(5) {
+        let rect = ship_weapon_slot_rect_for_rail(rail, slot_index);
+        let hovered = rect.contains(mouse);
+        draw_rectangle(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if hovered {
+                Color::from_rgba(13, 32, 40, 220)
+            } else if slot_index % 2 == 0 {
+                Color::from_rgba(8, 18, 24, 128)
+            } else {
+                Color::from_rgba(6, 12, 18, 88)
+            },
+        );
+        draw_rectangle_lines(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            1.0,
+            if hovered {
+                Color::from_rgba(150, 221, 226, 155)
+            } else {
+                Color::from_rgba(82, 114, 124, 90)
+            },
+        );
+        draw_text(
+            &format!("Slot {}", slot_index + 1),
+            rect.x + 8.0,
+            rect.y + 20.0,
+            15.0,
+            label,
+        );
+        if let Some(weapon) = game.equipped_weapons.get(slot_index) {
+            draw_text(
+                &fit_debug_text(&weapon.name, rect.w - 112.0, 17),
+                rect.x + 70.0,
+                rect.y + 20.0,
+                17.0,
+                accent,
+            );
+            let status = format!(
+                "{}  rng {:.0}  dmg {:.0}  e {:.0}",
+                weapon.readiness_label(),
+                weapon.range,
+                weapon.damage,
+                weapon.energy_cost
+            );
+            draw_text(
+                &fit_debug_text(&status, rect.w - 78.0, 14),
+                rect.x + 70.0,
+                rect.y + 41.0,
+                14.0,
+                if weapon.status == WeaponStatus::InsufficientEnergy {
+                    Color::from_rgba(226, 190, 150, 245)
+                } else {
+                    text
+                },
+            );
+        } else {
+            draw_text(
+                "Empty turret slot",
+                rect.x + 70.0,
+                rect.y + 20.0,
+                17.0,
+                text,
+            );
+            draw_text(
+                "Ready for install",
+                rect.x + 70.0,
+                rect.y + 41.0,
+                14.0,
+                unavailable,
+            );
+        }
+
+        let swap_label = weapon_slot_swap_label(
+            &game.content_registry,
+            &game.inventory,
+            &game.equipped_weapons,
+            slot_index,
+        );
+        let swap_enabled = next_available_weapon_id_for_slot(
+            &game.content_registry,
+            &game.inventory,
+            &game.equipped_weapons,
+            slot_index,
+        )
+        .is_some();
+        draw_text(
+            &fit_debug_text(&swap_label, rect.w - 16.0, 14),
+            rect.x + 8.0,
+            rect.y + 63.0,
+            14.0,
+            if swap_enabled { accent } else { unavailable },
+        );
+    }
+
+    if slot_count > 5 {
+        draw_text(
+            &format!("{} more turret slot(s)", slot_count - 5),
+            rail.x + 12.0,
+            rail.y + 112.0 + 5.0 * 76.0,
+            15.0,
+            accent,
+        );
     }
 }
 
@@ -11781,8 +12428,8 @@ fn draw_action_rail_resize_handle(rail: Rect) {
     }
 }
 
-fn ship_detail_preview_rect() -> Rect {
-    let layout = inventory_overlay_layout(None);
+fn ship_detail_preview_rect(action_rail_width: Option<f32>) -> Rect {
+    let layout = inventory_overlay_layout(action_rail_width);
     let detail_width = layout.detail_width;
     let detail_x = layout.detail_x;
     let detail_y = layout.panel_y + 66.0;
@@ -11797,8 +12444,8 @@ fn ship_detail_preview_rect() -> Rect {
     )
 }
 
-fn ship_shield_slot_rect(slot_index: usize) -> Rect {
-    let layout = inventory_overlay_layout(None);
+fn ship_shield_slot_rect(slot_index: usize, action_rail_width: Option<f32>) -> Rect {
+    let layout = inventory_overlay_layout(action_rail_width);
     let detail_width = layout.detail_width;
     let detail_x = layout.detail_x;
     let detail_y = layout.panel_y + 66.0;
@@ -11808,17 +12455,13 @@ fn ship_shield_slot_rect(slot_index: usize) -> Rect {
     Rect::new(detail_x, row_y - 18.0, detail_width * 0.48, 62.0)
 }
 
-fn ship_weapon_slot_rect(slot_index: usize) -> Rect {
-    let layout = inventory_overlay_layout(None);
-    let detail_width = layout.detail_width;
-    let detail_x = layout.detail_x;
-    let detail_y = layout.panel_y + 66.0;
-    let stats_y = detail_y + 190.0 + 28.0;
-    let power_y = stats_y + 132.0;
-    let weapons_y = power_y + 132.0;
-    let row_y = weapons_y + 28.0 + slot_index as f32 * 44.0;
-
-    Rect::new(detail_x, row_y - 18.0, detail_width, 40.0)
+fn ship_weapon_slot_rect_for_rail(rail: Rect, slot_index: usize) -> Rect {
+    Rect::new(
+        rail.x + 12.0,
+        rail.y + 100.0 + slot_index as f32 * 76.0,
+        rail.w - 24.0,
+        68.0,
+    )
 }
 
 fn planet_scan_button_rect(action_rail_width: f32) -> Rect {
@@ -13394,6 +14037,7 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
         power_modules: &game.installed_power_modules,
         shields: &game.equipped_shields,
         weapons: &game.equipped_weapons,
+        weapon_slot_capacity: weapon_slot_capacity(game),
         threats: &game.defense_threats,
         cargo_mass: game.inventory.total_mass(),
         cargo_capacity: cargo_rating_kg(&game.ship_upgrades),
@@ -14658,10 +15302,11 @@ fn draw_npc_ship_detail(
 
     draw_text("Loadout", x, detail_y, 16.0, label);
     let loadout = if identified {
+        let weapon_count = npc_ship.equipped_weapons.len();
         format!(
-            "{} shield / {} weapon / cargo {}",
+            "{} shield / {} turret / cargo {}",
             npc_ship.shield_slots.len(),
-            npc_ship.weapon_slots.len(),
+            weapon_count,
             format_mass(npc_ship.cargo_capacity)
         )
     } else {
@@ -14675,6 +15320,30 @@ fn draw_npc_ship_detail(
         text,
     );
     detail_y += 64.0;
+
+    if identified && !npc_ship.equipped_weapons.is_empty() {
+        let weapon = &npc_ship.equipped_weapons[0];
+        let defense = format!(
+            "{} / {} / rng {:.0} / dmg {:.0}",
+            weapon.name,
+            weapon.readiness_label(),
+            weapon.range,
+            weapon.damage
+        );
+        draw_text("Defense", x, detail_y, 16.0, label);
+        draw_text(
+            &fit_debug_text(&defense, width, 16),
+            x,
+            detail_y + 26.0,
+            16.0,
+            if weapon.status == WeaponStatus::InsufficientEnergy {
+                warning
+            } else {
+                active
+            },
+        );
+        detail_y += 64.0;
+    }
 
     if identified {
         let cargo_units = npc_ship
@@ -14720,6 +15389,7 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         power_modules,
         shields,
         weapons,
+        weapon_slot_capacity,
         threats,
         cargo_mass,
         cargo_capacity,
@@ -14745,7 +15415,12 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_ship_sprite(center, texture, image_size, false, 0.0);
-    let preview_rect = ship_detail_preview_rect();
+    let preview_rect = Rect::new(
+        center.x - image_size * 0.5,
+        center.y - image_size * 0.5,
+        image_size,
+        image_size,
+    );
     if preview_rect.contains(vec2(mouse_position().0, mouse_position().1)) {
         draw_rectangle_lines(
             preview_rect.x,
@@ -15004,6 +15679,13 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         Color::from_rgba(82, 114, 124, 95),
     );
     draw_text("Turret defense", x, weapons_y, 15.0, label);
+    draw_text(
+        "Use the Defense rail to assign crafted turrets.",
+        x,
+        weapons_y + 28.0,
+        15.0,
+        text,
+    );
     let hostile_count = threats
         .iter()
         .filter(|threat| {
@@ -15012,55 +15694,20 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
                 && threat.hull.current > 0.0
         })
         .count();
-    let threat_label = format!("Threats {hostile_count}");
-    draw_text(
-        &fit_debug_text(&threat_label, right_width, 15),
-        right_x,
-        weapons_y,
-        15.0,
-        label,
+    let active_turrets = weapons.len().min(weapon_slot_capacity);
+    let threat_label = format!(
+        "{} active / {} slot(s) / {} hostile",
+        active_turrets, weapon_slot_capacity, hostile_count
     );
-    let operation_y = if weapons.is_empty() {
-        draw_text("No turret slots equipped", x, weapons_y + 28.0, 18.0, text);
-        weapons_y + 78.0
-    } else {
-        for (index, weapon) in weapons.iter().take(3).enumerate() {
-            let row_y = weapons_y + 28.0 + index as f32 * 44.0;
-            draw_text(
-                &fit_debug_text(&weapon.name, width, 17),
-                x,
-                row_y,
-                17.0,
-                accent,
-            );
-            let cooldown = if weapon.cooldown_remaining > 0.0 {
-                format!(" {:.1}s", weapon.cooldown_remaining)
-            } else {
-                String::new()
-            };
-            let status = format!(
-                "{}{}  {:.0}u  {:.0}e",
-                weapon.readiness_label(),
-                cooldown,
-                weapon.range,
-                weapon.energy_cost
-            );
-            draw_text(
-                &fit_debug_text(&status, width, 15),
-                x,
-                row_y + 19.0,
-                15.0,
-                if weapon.status == WeaponStatus::InsufficientEnergy {
-                    Color::from_rgba(226, 190, 150, 245)
-                } else {
-                    text
-                },
-            );
-        }
-        weapons_y + 28.0 + weapons.len().min(3) as f32 * 44.0 + 28.0
-    };
+    draw_text(
+        &fit_debug_text(&threat_label, width, 16),
+        x,
+        weapons_y + 52.0,
+        16.0,
+        accent,
+    );
 
-    draw_operation_feedback(operation_feedback, x, operation_y, width);
+    draw_operation_feedback(operation_feedback, x, weapons_y + 100.0, width);
 }
 
 fn draw_operation_feedback(entries: &[OperationFeedback], x: f32, y: f32, width: f32) {
@@ -15183,6 +15830,7 @@ struct ShipDetailView<'a> {
     power_modules: &'a [PowerModule],
     shields: &'a [ShieldSystem],
     weapons: &'a [WeaponSystem],
+    weapon_slot_capacity: usize,
     threats: &'a [DefenseThreat],
     cargo_mass: f32,
     cargo_capacity: f32,
@@ -15474,6 +16122,7 @@ struct HudView<'a> {
     stations: &'a [StationDestination],
     npc_ships: &'a [NpcShip],
     pressure_contacts: usize,
+    incoming_weapon_fire: usize,
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
     selected_npc_ship: Option<usize>,
@@ -15491,6 +16140,7 @@ fn draw_hud(view: HudView<'_>) {
         stations,
         npc_ships,
         pressure_contacts,
+        incoming_weapon_fire,
         selected_planet,
         selected_station,
         selected_npc_ship,
@@ -15550,6 +16200,17 @@ fn draw_hud(view: HudView<'_>) {
         18.0,
         Color::from_rgba(178, 197, 203, 255),
     );
+
+    if incoming_weapon_fire > 0 {
+        draw_text(
+            &format!("Incoming turret fire x{incoming_weapon_fire}"),
+            34.0,
+            184.0,
+            20.0,
+            Color::from_rgba(226, 104, 96, 255),
+        );
+        return;
+    }
 
     if pressure_contacts > 0 {
         draw_text(
@@ -15958,6 +16619,10 @@ mod tests {
         assert_eq!(weapons[0].install_item, "core:point_defense_turret");
         assert_eq!(weapons[0].range, 460.0);
         assert_eq!(weapons[0].energy_cost, 7.0);
+
+        let starter_inventory = Inventory::starter(&registry);
+        let reactor_pellet = required_item(&registry, "core:reactor_pellet");
+        assert_eq!(starter_inventory.count(&reactor_pellet), 3);
     }
 
     #[test]
@@ -16020,6 +16685,68 @@ mod tests {
         assert_eq!(game.inventory.count(&previous_item), 1);
         assert!(game.save_dirty);
         assert_eq!(game.to_save().weapon_slots, vec!["core:test_turret"]);
+    }
+
+    #[test]
+    fn configured_weapon_slots_can_install_multiple_crafted_turrets() {
+        let mut registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        registry
+            .ships
+            .get_mut(STARTER_SHIP_ID)
+            .expect("starter ship should exist")
+            .weapon_slots
+            .push("core:point_defense_turret".to_string());
+        let turret_item = required_item(&registry, "core:point_defense_turret");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+
+        assert_eq!(weapon_slot_capacity(&game), 2);
+        assert_eq!(
+            weapon_slot_swap_label(
+                &game.content_registry,
+                &game.inventory,
+                &game.equipped_weapons,
+                1
+            ),
+            "No crafted"
+        );
+
+        game.inventory.add_item(turret_item.clone(), 1);
+        assert_eq!(
+            next_available_weapon_id_for_slot(
+                &game.content_registry,
+                &game.inventory,
+                &game.equipped_weapons,
+                1
+            ),
+            Some("core:point_defense_turret".to_string())
+        );
+        assert_eq!(
+            weapon_slot_swap_label(
+                &game.content_registry,
+                &game.inventory,
+                &game.equipped_weapons,
+                1
+            ),
+            "Install Point Defense Turret"
+        );
+
+        install_weapon_in_slot(&mut game, 1, "core:point_defense_turret")
+            .expect("second configured slot should accept crafted turret");
+
+        assert_eq!(game.equipped_weapons.len(), 2);
+        assert_eq!(game.inventory.count(&turret_item), 0);
+        assert_eq!(
+            game.to_save().weapon_slots,
+            vec![
+                "core:point_defense_turret".to_string(),
+                "core:point_defense_turret".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -16222,6 +16949,338 @@ mod tests {
             .iter()
             .all(|threat| threat.hull.current == 24.0));
         assert!(game.weapon_fire_events.is_empty());
+    }
+
+    #[test]
+    fn defensive_turrets_fire_at_hostile_npc_ships() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile.role = "hostile".to_string();
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        hostile.shields = ShipResource::full(25.0);
+        hostile.hull = ShipResource::full(50.0);
+        game.npc_ships = vec![hostile];
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+        assert_eq!(game.ship.systems.energy.current, 93.0);
+        assert_eq!(game.npc_ships[0].shields.current, 7.0);
+        assert_eq!(game.npc_ships[0].hull.current, 50.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn destroyed_npc_ships_are_removed_after_turret_fire() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile.role = "hostile".to_string();
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        hostile.shields = ShipResource::full(0.1);
+        hostile.hull = ShipResource::full(10.0);
+        game.npc_ships = vec![hostile];
+        game.selected_npc_ship = Some(0);
+
+        update_weapon_systems(&mut game, 0.1);
+        remove_destroyed_npc_ships(&mut game);
+
+        assert!(game.npc_ships.is_empty());
+        assert_eq!(game.selected_npc_ship, None);
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+    }
+
+    #[test]
+    fn destroyed_npc_cargo_is_added_to_player_inventory_when_space_allows() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let circuit = required_item(&registry, "core:circuit");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        destroyed.hull.current = 0.0;
+        destroyed.cargo_defaults = vec![ItemStack {
+            item: circuit.clone(),
+            count: 2,
+        }];
+        game.npc_ships = vec![destroyed];
+
+        remove_destroyed_npc_ships(&mut game);
+
+        assert!(game.npc_ships.is_empty());
+        assert_eq!(game.inventory.count(&circuit), 2);
+    }
+
+    #[test]
+    fn destroyed_npc_cargo_is_skipped_when_cargo_capacity_is_full() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron_ore = required_item(&registry, "core:iron_ore");
+        let circuit = required_item(&registry, "core:circuit");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let existing_count =
+            (cargo_rating_kg(&game.ship_upgrades) / iron_ore.unit_mass).ceil() as u32 + 1;
+        game.inventory.add_item(iron_ore, existing_count);
+        let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        destroyed.hull.current = 0.0;
+        destroyed.cargo_defaults = vec![ItemStack {
+            item: circuit.clone(),
+            count: 1,
+        }];
+        game.npc_ships = vec![destroyed];
+
+        remove_destroyed_npc_ships(&mut game);
+
+        assert!(game.npc_ships.is_empty());
+        assert_eq!(game.inventory.count(&circuit), 0);
+    }
+
+    #[test]
+    fn removing_destroyed_npc_ships_remaps_surviving_selection() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        destroyed.id = "core:destroyed".to_string();
+        destroyed.hull.current = 0.0;
+        let mut selected = test_npc_ship(NpcBehaviorMode::Patrol, vec2(220.0, 0.0));
+        selected.id = "core:selected".to_string();
+        game.npc_ships = vec![destroyed, selected];
+        game.selected_npc_ship = Some(1);
+
+        remove_destroyed_npc_ships(&mut game);
+
+        assert_eq!(game.npc_ships.len(), 1);
+        assert_eq!(game.npc_ships[0].id, "core:selected");
+        assert_eq!(game.selected_npc_ship, Some(0));
+    }
+
+    #[test]
+    fn defensive_turrets_ignore_non_hostile_npc_ships() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        let mut patrol = test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0));
+        patrol.role = "patrol".to_string();
+        patrol.behavior_tags = vec!["patrol".to_string(), "non-hostile".to_string()];
+        game.npc_ships = vec![patrol];
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::NoThreat);
+        assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert_eq!(game.npc_ships[0].shields.current, 25.0);
+        assert_eq!(game.npc_ships[0].hull.current, 50.0);
+        assert!(game.weapon_fire_events.is_empty());
+    }
+
+    #[test]
+    fn friendly_npc_turrets_fire_at_hostile_threats() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut patrol = test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO);
+        patrol.role = "patrol".to_string();
+        patrol.weapon_slots = vec!["core:point_defense_turret".to_string()];
+        patrol.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        patrol.energy.current = 40.0;
+        game.npc_ships = vec![patrol];
+        game.defense_threats = vec![test_defense_threat(
+            "core:hostile",
+            ThreatDisposition::Hostile,
+            vec2(120.0, 0.0),
+            36.0,
+        )];
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(
+            game.npc_ships[0].equipped_weapons[0].status,
+            WeaponStatus::Fired
+        );
+        assert_eq!(game.npc_ships[0].energy.current, 33.0);
+        assert_eq!(game.defense_threats[0].hull.current, 18.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+    }
+
+    #[test]
+    fn hostile_npc_turrets_fire_at_player_ship() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string()];
+        probe.weapon_slots = vec!["core:point_defense_turret".to_string()];
+        probe.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        probe.energy.current = 40.0;
+        game.npc_ships = vec![probe];
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 100.0;
+        game.ship.systems.hull.current = 100.0;
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(
+            game.npc_ships[0].equipped_weapons[0].status,
+            WeaponStatus::Fired
+        );
+        assert_eq!(game.npc_ships[0].energy.current, 33.0);
+        assert_eq!(game.ship.systems.shields.current, 82.0);
+        assert_eq!(game.ship.systems.hull.current, 100.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn hostile_intercept_behavior_counts_as_hostile() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut npc_ship = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        npc_ship.role = "probe".to_string();
+        npc_ship.behavior_tags = Vec::new();
+
+        assert!(npc_ship_is_hostile(&registry, &npc_ship));
+    }
+
+    #[test]
+    fn hostile_intercept_turrets_fire_without_hostile_tag() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        probe.role = "probe".to_string();
+        probe.behavior_tags = Vec::new();
+        probe.weapon_slots = vec!["core:point_defense_turret".to_string()];
+        probe.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        probe.energy.current = 40.0;
+        game.npc_ships = vec![probe];
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 100.0;
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(
+            game.npc_ships[0].equipped_weapons[0].status,
+            WeaponStatus::Fired
+        );
+        assert!(game.ship.systems.shields.current < 100.0);
+    }
+
+    #[test]
+    fn incoming_weapon_fire_counts_events_targeting_player() {
+        let mut ship = Ship::starter();
+        ship.position = vec2(10.0, -4.0);
+        let events = vec![
+            WeaponFireEvent {
+                from: vec2(120.0, 0.0),
+                to: ship.position,
+                timer: WEAPON_FIRE_EVENT_SECONDS,
+                origin: WeaponFireOrigin::Npc,
+            },
+            WeaponFireEvent {
+                from: Vec2::ZERO,
+                to: vec2(400.0, 0.0),
+                timer: WEAPON_FIRE_EVENT_SECONDS,
+                origin: WeaponFireOrigin::Player,
+            },
+        ];
+
+        assert_eq!(incoming_weapon_fire_count(&ship, &events), 1);
+    }
+
+    #[test]
+    fn curved_weapon_fire_point_arcs_between_endpoints() {
+        let from = vec2(0.0, 0.0);
+        let to = vec2(100.0, 0.0);
+        let arc = vec2(0.0, 30.0);
+
+        assert_vec2_near(curved_weapon_fire_point(from, to, arc, 0.0), from);
+        assert_vec2_near(curved_weapon_fire_point(from, to, arc, 1.0), to);
+        assert_vec2_near(
+            curved_weapon_fire_point(from, to, arc, 0.5),
+            vec2(50.0, 30.0),
+        );
+    }
+
+    #[test]
+    fn starter_redwake_probe_auto_attacks_player() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let probe_def = registry
+            .npc_ships
+            .get("core:redwake_probe")
+            .expect("starter Redwake probe should load");
+        let probe_position = vec2(probe_def.position[0], probe_def.position[1]);
+        let probe_id = probe_def.id.clone();
+        let probe_name = probe_def.name.clone();
+        let probe_role = probe_def.role.clone();
+        let probe_faction = probe_def.faction.clone();
+        let probe_behavior_tags = probe_def.behavior_tags.clone();
+        let probe_weapon_slots = probe_def.weapon_slots.clone();
+        let probe_energy_capacity = probe_def.energy_capacity;
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, probe_position);
+        probe.id = probe_id;
+        probe.name = probe_name;
+        probe.role = probe_role;
+        probe.faction = probe_faction;
+        probe.behavior_tags = probe_behavior_tags;
+        probe.weapon_slots = probe_weapon_slots.clone();
+        probe.equipped_weapons =
+            equipped_weapons_from_ids(&game.content_registry, &probe_weapon_slots);
+        probe.energy.current = probe_energy_capacity;
+        game.npc_ships = vec![probe];
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.shields.current = 100.0;
+        game.ship.systems.hull.current = 100.0;
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+        assert_eq!(
+            game.npc_ships[0].equipped_weapons[0].status,
+            WeaponStatus::Fired
+        );
+        assert!(game.npc_ships[0].shields.current < game.npc_ships[0].shields.max);
+        assert_eq!(game.weapon_fire_events.len(), 2);
+        assert_eq!(
+            incoming_weapon_fire_count(&game.ship, &game.weapon_fire_events),
+            1
+        );
+        assert!(game.ship.systems.shields.current < 100.0);
     }
 
     #[test]
@@ -16532,6 +17591,26 @@ mod tests {
             ),
             NpcBehaviorMode::HostileIntercept
         );
+    }
+
+    #[test]
+    fn starter_redwake_probe_spawns_in_auto_attack_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let probe = registry
+            .npc_ships
+            .get("core:redwake_probe")
+            .expect("starter Redwake probe should load");
+        let turret = registry
+            .weapons
+            .get("core:point_defense_turret")
+            .expect("point defense turret should load");
+        let spawn = vec2(probe.position[0], probe.position[1]);
+
+        assert_eq!(probe.role, "hostile");
+        assert!(probe.behavior_tags.iter().any(|tag| tag == "hostile"));
+        assert!(probe.weapon_slots.iter().any(|slot| slot == &turret.id));
+        assert!(spawn.distance(Vec2::ZERO) <= turret.range + SHIP_RADIUS);
     }
 
     #[test]
@@ -18072,6 +19151,7 @@ mod tests {
             energy: ShipResource::full(20.0),
             shield_slots: Vec::new(),
             weapon_slots: Vec::new(),
+            equipped_weapons: Vec::new(),
             summary: "Test NPC ship.".to_string(),
         }
     }

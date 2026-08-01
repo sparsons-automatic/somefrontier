@@ -3341,6 +3341,10 @@ mod tests {
             .starter_inventory
             .iter()
             .any(|stack| stack.item == "core:survey_drone" && stack.count == 25));
+        assert!(registry
+            .starter_inventory
+            .iter()
+            .any(|stack| stack.item == "core:reactor_pellet" && stack.count == 3));
         assert!(!registry.warnings.iter().any(|warning| {
             warning.contains("station `core:processing`")
                 && warning.contains("output `core:reactor_pellet`")
