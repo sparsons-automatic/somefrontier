@@ -203,8 +203,11 @@ shows name, range, summary, ownership, culture, disposition, and service groups.
 
 Current service groups can include trade stock and research leads. Trade rows
 let you buy one unit with left click or sell one unit with right click when the
-ship is in range and the offer is available. Research leads point to progression
-tree nodes that can expose additional production recipes after completion.
+ship is in range and the offer is available. Limited stock is replenished using
+the game's elapsed time; the trade row shows the current stock and remaining
+time until its next restock. Selling cargo back to a station restores stock up
+to that offer's configured capacity. Research leads point to progression-tree
+nodes that can expose additional production recipes after completion.
 
 Core stations have distinct practical roles:
 

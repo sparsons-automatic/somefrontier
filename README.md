@@ -71,7 +71,8 @@ Game progress autosaves to `$XDG_CONFIG_HOME/some-frontier/save.toml`, or
 `~/.config/some-frontier/save.toml` when `XDG_CONFIG_HOME` is not set. The save
 stores the world seed, ship state, inventory, completed and active research,
 upgrades, active destination, equipped shield and weapon slots, production
-settings, scanned planets, and mining quotas.
+settings, scanned planets, mining quotas, elapsed world time, and finite station
+market stock and restock schedules.
 
 New games generate a world seed that lightly rotates and offsets content-defined
 planet positions. Loading a save reuses its seed so the same world layout comes
@@ -117,6 +118,15 @@ in the background while you keep flying, mining, trading, or producing.
 
 Completed research can unlock production recipes and grant passive effects such
 as faster mining, faster smelting, faster fabrication, and bonus output chance.
+
+## Station Markets
+
+Station trade offers can have finite stock. The station panel shows the current
+stock and the remaining time until the next restock. The game advances one day
+every 120 seconds of play, and finite offers refill to their configured stock
+capacity when their restock interval expires. Selling an item back to a station
+restores one unit of stock up to that capacity. Market stock and restock timing
+are preserved when the game saves and loads.
 
 ## Ship Upgrades
 
