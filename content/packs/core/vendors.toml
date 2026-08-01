@@ -1,0 +1,235 @@
+[[vendors]]
+id = "frontier_exchange_juno"
+name = "Juno Vale"
+station = "frontier_exchange"
+service = "market"
+faction = "cinder_cooperative"
+specialties = ["starter ore", "survey supplies", "general cargo"]
+rotation_days = 5.0
+slots = 4
+price_variance = 0.10
+
+[[vendors.offers]]
+item = "iron_ore"
+buy_price = 18
+sell_price = 7
+min_stock = 45
+max_stock = 90
+weight = 5.0
+
+[[vendors.offers]]
+item = "copper_ore"
+buy_price = 22
+sell_price = 9
+min_stock = 30
+max_stock = 70
+weight = 4.0
+
+[[vendors.offers]]
+item = "survey_drone"
+buy_price = 120
+sell_price = 42
+min_stock = 4
+max_stock = 10
+weight = 2.0
+
+[[vendors.offers]]
+item = "water_ice"
+buy_price = 20
+sell_price = 7
+min_stock = 20
+max_stock = 50
+weight = 2.0
+
+[[vendors.offers]]
+item = "coolant"
+buy_price = 72
+sell_price = 24
+min_stock = 6
+max_stock = 16
+weight = 1.0
+
+[[vendors]]
+id = "ore_lattice_toma"
+name = "Toma Rusk"
+station = "ore_lattice_depot"
+service = "ore_lattice_bulk_market"
+faction = "cinder_cooperative"
+specialties = ["bulk ore", "industrial metals", "freight cargo"]
+rotation_days = 6.0
+slots = 4
+price_variance = 0.12
+
+[[vendors.offers]]
+item = "iron_ore"
+buy_price = 16
+sell_price = 8
+min_stock = 80
+max_stock = 180
+weight = 5.0
+
+[[vendors.offers]]
+item = "nickel_ore"
+buy_price = 34
+sell_price = 13
+min_stock = 45
+max_stock = 110
+weight = 4.0
+
+[[vendors.offers]]
+item = "titanium_ore"
+buy_price = 62
+sell_price = 24
+min_stock = 12
+max_stock = 36
+weight = 2.0
+
+[[vendors.offers]]
+item = "cobalt_ore"
+buy_price = 74
+sell_price = 28
+min_stock = 8
+max_stock = 24
+weight = 2.0
+
+[[vendors.offers]]
+item = "aluminum_ore"
+buy_price = 28
+sell_price = 11
+min_stock = 15
+max_stock = 45
+weight = 1.0
+
+[[vendors]]
+id = "cinder_yard_mara"
+name = "Mara Quill"
+station = "cinder_repair_yard"
+service = "cinder_yard_parts"
+faction = "helioforge_yard_union"
+specialties = ["ship parts", "defense modules", "route fuel"]
+rotation_days = 8.0
+slots = 6
+price_variance = 0.08
+
+[[vendors.offers]]
+item = "circuit"
+buy_price = 95
+sell_price = 34
+min_stock = 8
+max_stock = 20
+weight = 4.0
+
+[[vendors.offers]]
+item = "gear"
+buy_price = 88
+sell_price = 31
+min_stock = 8
+max_stock = 22
+weight = 4.0
+
+[[vendors.offers]]
+item = "fuel_canister"
+buy_price = 210
+sell_price = 70
+min_stock = 3
+max_stock = 8
+weight = 3.0
+
+[[vendors.offers]]
+item = "structural_alloy"
+buy_price = 145
+sell_price = 52
+min_stock = 5
+max_stock = 14
+weight = 3.0
+
+[[vendors.offers]]
+item = "electronics"
+buy_price = 180
+sell_price = 64
+min_stock = 4
+max_stock = 12
+weight = 3.0
+
+[[vendors.offers]]
+item = "balanced_shield_matrix"
+buy_price = 680
+sell_price = 240
+min_stock = 1
+max_stock = 3
+weight = 1.5
+
+[[vendors.offers]]
+item = "hazard_shield_matrix"
+buy_price = 980
+sell_price = 340
+min_stock = 0
+max_stock = 2
+weight = 1.0
+
+[[vendors.offers]]
+item = "point_defense_turret"
+buy_price = 760
+sell_price = 270
+min_stock = 1
+max_stock = 2
+weight = 1.0
+
+[[vendors]]
+id = "freebelt_commissary_sela"
+name = "Sela Dorn"
+station = "freebelt_commissary"
+service = "freebelt_supply"
+faction = "freebelt_compact"
+specialties = ["survey gear", "fuel", "hauler supplies"]
+rotation_days = 7.0
+slots = 5
+price_variance = 0.15
+
+[[vendors.offers]]
+item = "survey_drone"
+buy_price = 110
+sell_price = 38
+min_stock = 6
+max_stock = 16
+weight = 4.0
+
+[[vendors.offers]]
+item = "improved_survey_drone"
+buy_price = 360
+sell_price = 125
+min_stock = 1
+max_stock = 4
+weight = 2.0
+
+[[vendors.offers]]
+item = "fuel_canister"
+buy_price = 190
+sell_price = 64
+min_stock = 4
+max_stock = 14
+weight = 4.0
+
+[[vendors.offers]]
+item = "water_ice"
+buy_price = 20
+sell_price = 7
+min_stock = 20
+max_stock = 60
+weight = 2.0
+
+[[vendors.offers]]
+item = "coolant"
+buy_price = 72
+sell_price = 24
+min_stock = 6
+max_stock = 18
+weight = 3.0
+
+[[vendors.offers]]
+item = "lithium_cell"
+buy_price = 150
+sell_price = 52
+min_stock = 2
+max_stock = 8
+weight = 1.0
