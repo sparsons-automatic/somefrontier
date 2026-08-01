@@ -16,7 +16,7 @@ cargo run
 The title screen displays the Some Frontier logo and lets you start a new game,
 load an existing save, review content packs, adjust settings, or quit. New games
 use a world seed; choose one manually or randomize it before starting. Loading a
-save restores the seed, ship state, inventory, skills, upgrades, selected
+save restores the seed, ship state, inventory, research, upgrades, selected
 destination, equipped modules, production settings, scanned planets, mining
 quotas, and content-pack options. The Load Game list can be scrolled when many
 saves exist, supports double-click loading, and includes a two-step delete
@@ -31,7 +31,7 @@ confirmation for removing the selected save without leaving the menu.
 | Turn | `A` / `D` or left / right arrows |
 | Open inventory and production | `Tab` or `E` |
 | Open map | `M` |
-| Open skills | `K` |
+| Open research | `K` |
 | Open content browser | `C` |
 | Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
 | Inspect nearby planet or station | `Space` |
@@ -109,8 +109,8 @@ it keeps producing until the target stock level is reached, as long as inputs
 are available. Production rows use the same `Item`, `Keep`, `Status`, `%`, and
 `Active` layout as mining; `%` shows progress for the active bill.
 
-Production actions award skill XP for the related mining, smelting, or
-fabrication skill.
+Completed research can improve mining, smelting, fabrication, and bonus output
+effects.
 
 ## Inventory And Cargo
 
@@ -126,25 +126,26 @@ be swapped through ship detail surfaces when a matching slot exists.
 
 The ship detail panel includes an `Operations` readout for recent meaningful
 changes. It records compact feedback for survey results, mined resources,
-produced materials, station trades, recipe unlocks, installed modules, upgrades,
+produced materials, station trades, research progress, installed modules, upgrades,
 warp preparation, and remote-system arrival. Repeated messages collapse into
 the newest row so routine mining or production stays readable. Planet, station,
 and contact panes also mirror the latest relevant operation while selected.
-Disabled trade and unlock actions use short reason labels such as approach
-requirements, missing cargo, missing credits, owned unlocks, and out-of-stock
+Disabled trade and research actions use short reason labels such as approach
+requirements, missing cargo, missing credits, completed research, and out-of-stock
 offers.
 
-## Skills
+## Research
 
-Open skills with `K`. Mining, smelting, crafting, and processing actions award
-XP. Click `+` to spend XP on levels when affordable.
+Open research with `K`. Research is arranged left to right by tier. Nodes show
+whether they are locked, available, affordable, researching, or completed with
+module colors, connection traces, tier lanes, and reward details. Click a node
+to inspect its cost, duration, requirements, rewards, and summary in the bottom
+console, then use the research button to spend credits and start it. Only one
+research project can run at a time. The active project completes in the
+background while you keep flying, mining, trading, or producing.
 
-Skill effects:
-
-- Levels 1-10: speed bonuses for the related activity.
-- Levels 11-20: chance for free extra output.
-
-Low-value actions grant less XP as a skill rises.
+Research can unlock production recipes and other progression hooks. Locked
+production rows become available once the required research node is completed.
 
 ## Ship Upgrades
 
@@ -195,17 +196,17 @@ Stations appear as local-space destinations. Fly within dock range and inspect
 or select them with `Space` or left click where supported. The station panel
 shows name, range, summary, ownership, culture, disposition, and service groups.
 
-Current service groups can include trade stock and recipe unlocks. Trade rows
+Current service groups can include trade stock and research leads. Trade rows
 let you buy one unit with left click or sell one unit with right click when the
-ship is in range and the offer is available. Recipe unlocks can expose
-additional production recipes after purchase.
+ship is in range and the offer is available. Research leads point to progression
+tree nodes that can expose additional production recipes after completion.
 
 Core stations have distinct practical roles:
 
 - Frontier Exchange: broad starter commerce and common early cargo.
 - Ore Lattice Depot: bulk ore stock, freight staging, and future contracts.
 - Cinder Repair Yard: repairs, refits, shield and turret parts, and upgrade support.
-- Pale Orbit Archive: scan data, route knowledge, and recipe unlocks.
+- Pale Orbit Archive: scan data, route knowledge, and research leads.
 - Freebelt Commissary: drones, fuel, coolant, and independent-hauler supplies.
 - Ember Watch Array: navigation, route intel, signal logs, and remote warnings.
 
@@ -276,6 +277,6 @@ Window size is saved in the same configuration area.
 - If a save behaves strangely after pack changes, restore the previous pack set
   or start a new game with the current pack configuration.
 - If production rows are unavailable, check that the required ingredients are in
-  inventory and that any needed recipe unlock has been purchased.
+  inventory and that any needed research has been completed.
 - If a planet cannot be mined, survey it until composition data is visible and
   keep the planet selected or stay in range.

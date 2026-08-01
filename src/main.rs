@@ -14,6 +14,18 @@ use std::{
 const DEFAULT_WINDOW_WIDTH: i32 = 1100;
 const DEFAULT_WINDOW_HEIGHT: i32 = 760;
 const BRANDING_LOGO_PATH: &str = "assets/branding/some-frontier-logo.png";
+const UI_PANEL_CORNER_PATH: &str = "assets/ui/research-panel-corner-top-left.png";
+const TITLE_PANEL_CONTENT_PAD_X: f32 = 56.0;
+const TITLE_PANEL_HEADER_BASELINE: f32 = 76.0;
+const TITLE_PANEL_SUBHEADER_BASELINE: f32 = 106.0;
+const TITLE_PANEL_BODY_TOP: f32 = 128.0;
+const GAME_PANEL_CONTENT_PAD_X: f32 = 56.0;
+const GAME_PANEL_HEADER_PAD_X: f32 = 92.0;
+const GAME_PANEL_HEADER_BASELINE: f32 = 62.0;
+const GAME_PANEL_BODY_TOP: f32 = 94.0;
+const RESEARCH_TIER_LABEL_HEIGHT: f32 = 28.0;
+const RESEARCH_DETAIL_HEIGHT: f32 = 150.0;
+const RESEARCH_TREE_INSET: f32 = 18.0;
 const STARFIELD_RADIUS: f32 = 9000.0;
 const SHIP_RADIUS: f32 = 22.0;
 const SHIP_SPRITE_SIZE: f32 = 72.0;
@@ -56,7 +68,6 @@ const STARMAP_ZOOM_STEP: f32 = 1.15;
 const STARMAP_PAN_PIXELS_TO_WORLD: f32 = 1.35;
 const ARC_SEGMENTS: usize = 72;
 const INVENTORY_SLOTS: usize = 200;
-const SKILL_COUNT: usize = 3;
 const SHIP_UPGRADE_COUNT: usize = 8;
 const OBJECT_ACTION_RAIL_MIN_WIDTH: f32 = 280.0;
 const OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION: f32 = 0.55;
@@ -174,11 +185,13 @@ struct GameState {
     planets: Vec<Planet>,
     stations: Vec<StationDestination>,
     recipe_vendor_locked_recipes: Vec<String>,
-    purchased_recipe_unlocks: Vec<String>,
+    active_research: Option<ActiveResearch>,
+    completed_research: Vec<String>,
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
     selected_npc_ship: Option<usize>,
     selected_station_service: Option<usize>,
+    selected_research: Option<String>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
     system_destinations: HashMap<String, String>,
@@ -197,11 +210,10 @@ struct GameState {
     processing_recipes: Vec<Recipe>,
     processing_settings: Vec<CraftSetting>,
     production_mode: ProductionMode,
-    skills: [Skill; SKILL_COUNT],
     ship_upgrades: [ShipUpgrade; SHIP_UPGRADE_COUNT],
     inventory_open: bool,
     map_open: bool,
-    skills_open: bool,
+    research_open: bool,
     upgrades_open: bool,
     content_open: bool,
     content_browser: ContentBrowserState,
@@ -528,6 +540,8 @@ struct NpcShip {
     identified: bool,
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
+    credit_reward_min: u32,
+    credit_reward_max: u32,
     hull: ShipResource,
     shields: ShipResource,
     energy: ShipResource,
@@ -611,7 +625,14 @@ struct StationService {
     kind: String,
     description: Option<String>,
     trade: Vec<TradeOffer>,
+    research: Vec<ResearchLead>,
     recipe_unlocks: Vec<RecipeUnlockOffer>,
+}
+
+#[derive(Clone)]
+struct ResearchLead {
+    research: String,
+    unavailable: bool,
 }
 
 #[derive(Clone)]
@@ -679,7 +700,6 @@ struct Mineable {
 struct ItemRef {
     id: String,
     name: String,
-    xp_value: f32,
     unit_mass: f32,
 }
 
@@ -707,7 +727,6 @@ struct SaveData {
     credits: u32,
     ship: SaveShip,
     inventory: Vec<SaveStack>,
-    skills: Vec<SaveSkill>,
     upgrades: Vec<SaveUpgrade>,
     destination_planet: Option<String>,
     #[serde(default)]
@@ -725,6 +744,10 @@ struct SaveData {
     #[serde(default)]
     content_pack_options: Vec<PackOptionSelection>,
     #[serde(default)]
+    completed_research: Vec<String>,
+    #[serde(default)]
+    active_research: Vec<SaveActiveResearch>,
+    #[serde(default, skip_serializing)]
     purchased_recipe_unlocks: Vec<String>,
     production_mode: String,
     smelt_settings: Vec<SaveWorkSetting>,
@@ -763,11 +786,10 @@ struct SaveStack {
     count: u32,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SaveSkill {
-    kind: String,
-    level: u32,
-    xp: f32,
+#[derive(Clone, Serialize, Deserialize)]
+struct SaveActiveResearch {
+    research: String,
+    remaining_seconds: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -813,11 +835,10 @@ struct Recipe {
     base_seconds: f32,
 }
 
-#[derive(Clone, Copy)]
-struct Skill {
-    kind: SkillKind,
-    level: u32,
-    xp: f32,
+#[derive(Clone)]
+struct ActiveResearch {
+    research: String,
+    remaining_seconds: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -900,8 +921,7 @@ enum StarmapFilter {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SkillKind {
-    Mining,
+enum WorkKind {
     Smelting,
     Fabrication,
 }
@@ -1016,11 +1036,7 @@ impl GameState {
             startup_preferred_transition_id,
         )
         .await;
-        let recipe_vendor_locked_recipes = recipe_vendor_locked_recipes(&stations);
-        let purchased_recipe_unlocks = save_data
-            .as_ref()
-            .map(|save| save.purchased_recipe_unlocks.clone())
-            .unwrap_or_default();
+        let recipe_vendor_locked_recipes = research_locked_recipes(&content_registry, &stations);
         let installed_power_modules = starter_ship_def
             .as_ref()
             .map(|ship| installed_power_modules_from_ids(&content_registry, &ship.power_modules))
@@ -1061,11 +1077,13 @@ impl GameState {
             planets,
             stations,
             recipe_vendor_locked_recipes,
-            purchased_recipe_unlocks,
+            active_research: None,
+            completed_research: Vec::new(),
             selected_planet: None,
             selected_station: None,
             selected_npc_ship: None,
             selected_station_service: None,
+            selected_research: None,
             destination_planet: Some(1),
             orbiting_planet: None,
             system_destinations: HashMap::new(),
@@ -1084,11 +1102,10 @@ impl GameState {
             processing_recipes,
             processing_settings,
             production_mode: ProductionMode::Smelting,
-            skills: make_skills(),
             ship_upgrades: make_ship_upgrades(),
             inventory_open: true,
             map_open: false,
-            skills_open: false,
+            research_open: false,
             upgrades_open: false,
             content_open: false,
             content_browser: ContentBrowserState::default(),
@@ -1127,11 +1144,16 @@ impl GameState {
         self.world_seed = save.world_seed;
         self.world_elapsed_days = finite_nonnegative_or(save.world_elapsed_days, 0.0);
         self.credits = save.credits;
-        self.purchased_recipe_unlocks = save
-            .purchased_recipe_unlocks
-            .into_iter()
-            .filter(|recipe| self.recipe_vendor_locked_recipes.contains(recipe))
-            .collect();
+        self.completed_research = completed_research_from_save(
+            &self.content_registry,
+            save.completed_research,
+            save.purchased_recipe_unlocks,
+        );
+        self.active_research = active_research_from_save(
+            &self.content_registry,
+            save.active_research,
+            &self.completed_research,
+        );
         update_planet_runtime_positions(&mut self.planets, self.world_elapsed_days);
         self.current_system_id = if self
             .content_registry
@@ -1176,7 +1198,6 @@ impl GameState {
         };
 
         self.inventory = Inventory::from_save(&self.content_registry, &save.inventory);
-        apply_skill_save(&mut self.skills, &save.skills);
         apply_upgrade_save(&mut self.ship_upgrades, &save.upgrades);
         self.rebuild_ship_from_upgrades();
 
@@ -1263,15 +1284,6 @@ impl GameState {
                 energy: self.ship.systems.energy.to_save(),
             },
             inventory: self.inventory.to_save(),
-            skills: self
-                .skills
-                .iter()
-                .map(|skill| SaveSkill {
-                    kind: skill.kind.id().to_string(),
-                    level: skill.level,
-                    xp: finite_nonnegative_or(skill.xp, 0.0),
-                })
-                .collect(),
             upgrades: self
                 .ship_upgrades
                 .iter()
@@ -1310,7 +1322,17 @@ impl GameState {
                 .collect(),
             system_destinations: save_system_destinations(self),
             content_pack_options: self.content_pack_options.clone(),
-            purchased_recipe_unlocks: self.purchased_recipe_unlocks.clone(),
+            completed_research: self.completed_research.clone(),
+            active_research: self
+                .active_research
+                .iter()
+                .map(|active| SaveActiveResearch {
+                    research: active.research.clone(),
+                    remaining_seconds: finite_nonnegative_or(active.remaining_seconds, 0.0),
+                })
+                .filter(|active| active.remaining_seconds > 0.0)
+                .collect(),
+            purchased_recipe_unlocks: Vec::new(),
             production_mode: self.production_mode.id().to_string(),
             smelt_settings: save_work_settings(
                 &self.smelt_recipes,
@@ -1583,6 +1605,14 @@ async fn make_station_destinations(
                             })
                         })
                         .collect(),
+                    research: service
+                        .research
+                        .iter()
+                        .map(|lead| ResearchLead {
+                            research: lead.research.clone(),
+                            unavailable: lead.unavailable,
+                        })
+                        .collect(),
                     recipe_unlocks: service
                         .recipe_unlocks
                         .iter()
@@ -1654,6 +1684,8 @@ async fn make_npc_ships(
             identified: false,
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
+            credit_reward_min: npc_ship_def.credit_reward_min,
+            credit_reward_max: npc_ship_def.credit_reward_max,
             hull: ShipResource::full(npc_ship_def.hull_capacity),
             shields: ShipResource::full(npc_ship_def.shield_capacity),
             energy: ShipResource::full(npc_ship_def.energy_capacity),
@@ -1717,8 +1749,22 @@ fn npc_initial_route_index(id: &str) -> usize {
     }) % NPC_ROUTE_POINTS.len()
 }
 
-fn recipe_vendor_locked_recipes(stations: &[StationDestination]) -> Vec<String> {
+fn research_locked_recipes(
+    registry: &content::ContentRegistry,
+    stations: &[StationDestination],
+) -> Vec<String> {
     let mut recipes = Vec::new();
+    for research in registry.research.values() {
+        for reward in &research.rewards {
+            if reward.kind == "recipe_unlock" {
+                if let Some(recipe) = reward.target.as_ref() {
+                    if !recipes.contains(recipe) {
+                        recipes.push(recipe.clone());
+                    }
+                }
+            }
+        }
+    }
     for station in stations {
         for service in &station.services {
             for unlock in &service.recipe_unlocks {
@@ -1731,15 +1777,201 @@ fn recipe_vendor_locked_recipes(stations: &[StationDestination]) -> Vec<String> 
     recipes
 }
 
+fn completed_research_from_save(
+    registry: &content::ContentRegistry,
+    completed_research: Vec<String>,
+    legacy_purchased_recipe_unlocks: Vec<String>,
+) -> Vec<String> {
+    let mut migrated = completed_research
+        .into_iter()
+        .filter(|research| registry.research.contains_key(research))
+        .collect::<Vec<_>>();
+    for recipe in legacy_purchased_recipe_unlocks {
+        if let Some(research_id) = research_id_that_unlocks_recipe(registry, &recipe) {
+            migrated.push(research_id.to_string());
+        }
+    }
+    migrated.sort();
+    migrated.dedup();
+    migrated
+}
+
+fn active_research_from_save(
+    registry: &content::ContentRegistry,
+    active_research: Vec<SaveActiveResearch>,
+    completed_research: &[String],
+) -> Option<ActiveResearch> {
+    active_research
+        .into_iter()
+        .filter(|research| {
+            registry.research.contains_key(&research.research)
+                && !completed_research
+                    .iter()
+                    .any(|completed| completed == &research.research)
+        })
+        .filter_map(|research| {
+            let remaining_seconds = finite_nonnegative_or(research.remaining_seconds, 0.0);
+            (remaining_seconds > 0.0).then_some(ActiveResearch {
+                research: research.research,
+                remaining_seconds,
+            })
+        })
+        .min_by(|left, right| left.research.cmp(&right.research))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResearchNodeState {
+    Completed,
+    Researching,
+    Affordable,
+    Available,
+    Locked,
+}
+
+impl ResearchNodeState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Completed => "Completed",
+            Self::Researching => "Researching",
+            Self::Affordable => "Affordable",
+            Self::Available => "Available",
+            Self::Locked => "Locked",
+        }
+    }
+}
+
+fn research_node_state(
+    research: &content::ResearchDef,
+    active_research: Option<&ActiveResearch>,
+    completed_research: &[String],
+    credits: u32,
+) -> ResearchNodeState {
+    if completed_research.iter().any(|done| done == &research.id) {
+        return ResearchNodeState::Completed;
+    }
+    if let Some(active) = active_research {
+        if active.research == research.id {
+            return ResearchNodeState::Researching;
+        }
+        return ResearchNodeState::Locked;
+    }
+    let prerequisites_met = research
+        .requires
+        .iter()
+        .chain(research.revealed_by.iter())
+        .all(|required| completed_research.iter().any(|done| done == required));
+    if !prerequisites_met {
+        return ResearchNodeState::Locked;
+    }
+    if credits >= research.price {
+        ResearchNodeState::Affordable
+    } else {
+        ResearchNodeState::Available
+    }
+}
+
+fn start_research(game: &mut GameState, research_id: &str) -> bool {
+    let Some(research) = game.content_registry.research.get(research_id) else {
+        return false;
+    };
+    if research_node_state(
+        research,
+        game.active_research.as_ref(),
+        &game.completed_research,
+        game.credits,
+    ) != ResearchNodeState::Affordable
+    {
+        return true;
+    }
+    let research_name = research.name.clone();
+    let price = research.price;
+    let duration_seconds = research.duration_seconds;
+    game.credits = game.credits.saturating_sub(price);
+    game.active_research = Some(ActiveResearch {
+        research: research_id.to_string(),
+        remaining_seconds: duration_seconds,
+    });
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Research",
+        format!(
+            "Started {research_name} for {price} cr ({})",
+            format_seconds(duration_seconds)
+        ),
+    );
+    true
+}
+
+fn update_active_research(game: &mut GameState, dt: f32) {
+    let Some(active) = game.active_research.as_mut() else {
+        return;
+    };
+
+    active.remaining_seconds = (active.remaining_seconds - dt).max(0.0);
+    if active.remaining_seconds > 0.0 {
+        return;
+    }
+
+    let research_id = active.research.clone();
+    game.active_research = None;
+    if game
+        .completed_research
+        .iter()
+        .any(|completed| completed == &research_id)
+    {
+        return;
+    }
+    let research_name = research_display_name(&game.content_registry, &research_id);
+    game.completed_research.push(research_id);
+    game.completed_research.sort();
+    game.completed_research.dedup();
+    game.save_dirty = true;
+    push_operation_feedback(game, "Research", format!("Completed {research_name}"));
+}
+
 fn recipe_is_unlocked(game: &GameState, recipe_id: &str) -> bool {
     !game
         .recipe_vendor_locked_recipes
         .iter()
         .any(|locked| locked == recipe_id)
-        || game
-            .purchased_recipe_unlocks
-            .iter()
-            .any(|unlocked| unlocked == recipe_id)
+        || completed_research_unlocks_recipe(
+            &game.content_registry,
+            &game.completed_research,
+            recipe_id,
+        )
+}
+
+fn completed_research_unlocks_recipe(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+    recipe_id: &str,
+) -> bool {
+    completed_research.iter().any(|research_id| {
+        registry
+            .research
+            .get(research_id)
+            .is_some_and(|research| research_unlocks_recipe(research, recipe_id))
+    })
+}
+
+fn research_id_that_unlocks_recipe<'a>(
+    registry: &'a content::ContentRegistry,
+    recipe_id: &str,
+) -> Option<&'a str> {
+    registry
+        .research_order
+        .iter()
+        .filter_map(|research_id| registry.research.get(research_id))
+        .find(|research| research_unlocks_recipe(research, recipe_id))
+        .map(|research| research.id.as_str())
+}
+
+fn research_unlocks_recipe(research: &content::ResearchDef, recipe_id: &str) -> bool {
+    research
+        .rewards
+        .iter()
+        .any(|reward| reward.kind == "recipe_unlock" && reward.target.as_deref() == Some(recipe_id))
 }
 
 async fn load_asset_texture(path: &str) -> Option<Texture2D> {
@@ -2111,7 +2343,6 @@ impl ItemRef {
         Self {
             id: item.id.clone(),
             name: item.name.clone(),
-            xp_value: item.xp_value,
             unit_mass: item.unit_mass,
         }
     }
@@ -2550,78 +2781,6 @@ fn ship_energy_recharge(ship: &Ship, installed_power_modules: &[PowerModule]) ->
             .sum::<f32>()
 }
 
-impl Skill {
-    fn new(kind: SkillKind) -> Self {
-        Self {
-            kind,
-            level: 0,
-            xp: 0.0,
-        }
-    }
-
-    fn cost_to_next_level(&self) -> f32 {
-        35.0 + self.level as f32 * 22.0
-    }
-
-    fn can_level_up(&self) -> bool {
-        self.xp >= self.cost_to_next_level()
-    }
-
-    fn speed_bonus_percent(&self) -> f32 {
-        self.level.min(10) as f32
-    }
-
-    fn bonus_output_chance_percent(&self) -> f32 {
-        self.level.saturating_sub(10).min(10) as f32 * 0.05
-    }
-
-    fn buy_level(&mut self) -> bool {
-        let cost = self.cost_to_next_level();
-        if self.xp < cost {
-            return false;
-        }
-
-        self.xp -= cost;
-        self.level += 1;
-        true
-    }
-}
-
-impl SkillKind {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Mining => "mining",
-            Self::Smelting => "smelting",
-            Self::Fabrication => "fabrication",
-        }
-    }
-
-    fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "mining" => Some(Self::Mining),
-            "smelting" => Some(Self::Smelting),
-            "fabrication" => Some(Self::Fabrication),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Mining => "Mining",
-            Self::Smelting => "Smelting",
-            Self::Fabrication => "Fabrication",
-        }
-    }
-
-    fn action_name(self) -> &'static str {
-        match self {
-            Self::Mining => "mining",
-            Self::Smelting => "smelting",
-            Self::Fabrication => "fabrication",
-        }
-    }
-}
-
 impl ShipUpgrade {
     fn new(kind: ShipUpgradeKind) -> Self {
         Self { kind, level: 0 }
@@ -2751,14 +2910,6 @@ impl StarmapFilter {
     }
 }
 
-fn make_skills() -> [Skill; SKILL_COUNT] {
-    [
-        Skill::new(SkillKind::Mining),
-        Skill::new(SkillKind::Smelting),
-        Skill::new(SkillKind::Fabrication),
-    ]
-}
-
 fn make_ship_upgrades() -> [ShipUpgrade; SHIP_UPGRADE_COUNT] {
     [
         ShipUpgrade::new(ShipUpgradeKind::Engine),
@@ -2772,21 +2923,14 @@ fn make_ship_upgrades() -> [ShipUpgrade; SHIP_UPGRADE_COUNT] {
     ]
 }
 
-fn award_skill_xp(skills: &mut [Skill; SKILL_COUNT], kind: SkillKind, item: &ItemRef, count: u32) {
-    let Some(skill) = skills.iter_mut().find(|skill| skill.kind == kind) else {
-        return;
-    };
-    let diminishing = 1.0 / (1.0 + skill.level as f32 * 0.32);
-    let minimum = 0.08;
-    let xp = item.xp_value * count as f32 * diminishing.max(minimum);
-    skill.xp += xp;
-}
-
-fn bonus_output_count(skills: &[Skill; SKILL_COUNT], kind: SkillKind, count: u32) -> u32 {
-    let Some(skill) = skills.iter().find(|skill| skill.kind == kind) else {
-        return 0;
-    };
-    let chance = skill.bonus_output_chance_percent() / 100.0;
+fn bonus_output_count(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+    count: u32,
+) -> u32 {
+    let chance =
+        completed_research_reward_amount(registry, completed_research, "bonus_output_chance")
+            / 100.0;
     if chance <= 0.0 {
         return 0;
     }
@@ -2924,6 +3068,14 @@ fn recipe_display_name(registry: &content::ContentRegistry, recipe_id: &str) -> 
         .unwrap_or_else(|| local_content_id(recipe_id).replace('_', " "))
 }
 
+fn research_display_name(registry: &content::ContentRegistry, research_id: &str) -> String {
+    registry
+        .research
+        .get(research_id)
+        .map(|research| research.name.clone())
+        .unwrap_or_else(|| local_content_id(research_id).replace('_', " "))
+}
+
 fn buy_ship_upgrade(game: &mut GameState, upgrade_index: usize) -> bool {
     let Some(upgrade) = game.ship_upgrades.get(upgrade_index).copied() else {
         return false;
@@ -2974,31 +3126,52 @@ fn apply_ship_upgrade(ship: &mut Ship, kind: ShipUpgradeKind) {
     }
 }
 
-fn skill_speed_bonus_percent(skills: &[Skill; SKILL_COUNT], kind: SkillKind) -> f32 {
-    skills
+fn completed_research_reward_amount(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+    reward_kind: &str,
+) -> f32 {
+    completed_research
         .iter()
-        .find(|skill| skill.kind == kind)
-        .map(|skill| skill.speed_bonus_percent())
-        .unwrap_or(0.0)
+        .filter_map(|research_id| registry.research.get(research_id))
+        .flat_map(|research| research.rewards.iter())
+        .filter(|reward| reward.kind == reward_kind)
+        .filter_map(|reward| reward.amount)
+        .sum()
 }
 
-fn mining_operation_seconds(skills: &[Skill; SKILL_COUNT]) -> f32 {
-    BASE_MINING_SECONDS / (1.0 + skill_speed_bonus_percent(skills, SkillKind::Mining) / 100.0)
+fn mining_operation_seconds(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+) -> f32 {
+    BASE_MINING_SECONDS
+        / (1.0
+            + completed_research_reward_amount(
+                registry,
+                completed_research,
+                "mining_speed_percent",
+            ) / 100.0)
 }
 
 fn recipe_operation_seconds(
-    skills: &[Skill; SKILL_COUNT],
-    skill_kind: SkillKind,
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+    work_kind: WorkKind,
     recipe: &Recipe,
 ) -> f32 {
-    let base_seconds = if skill_kind == SkillKind::Mining {
-        BASE_MINING_SECONDS
-    } else if skill_kind == SkillKind::Fabrication && recipe.output.item.is_id("core:circuit") {
-        recipe.base_seconds * 2.0
-    } else {
-        recipe.base_seconds
+    let base_seconds =
+        if work_kind == WorkKind::Fabrication && recipe.output.item.is_id("core:circuit") {
+            recipe.base_seconds * 2.0
+        } else {
+            recipe.base_seconds
+        };
+    let reward_kind = match work_kind {
+        WorkKind::Smelting => "smelting_speed_percent",
+        WorkKind::Fabrication => "fabrication_speed_percent",
     };
-    base_seconds / (1.0 + skill_speed_bonus_percent(skills, skill_kind) / 100.0)
+    base_seconds
+        / (1.0
+            + completed_research_reward_amount(registry, completed_research, reward_kind) / 100.0)
 }
 
 impl CraftSetting {
@@ -3212,18 +3385,6 @@ impl Inventory {
                 count: stack.count,
             })
             .collect()
-    }
-}
-
-fn apply_skill_save(skills: &mut [Skill; SKILL_COUNT], saved_skills: &[SaveSkill]) {
-    for saved_skill in saved_skills {
-        let Some(kind) = SkillKind::from_id(&saved_skill.kind) else {
-            continue;
-        };
-        if let Some(skill) = skills.iter_mut().find(|skill| skill.kind == kind) {
-            skill.level = saved_skill.level.min(20);
-            skill.xp = finite_nonnegative_or(saved_skill.xp, 0.0);
-        }
     }
 }
 
@@ -4103,6 +4264,7 @@ async fn run_startup_transition_out(assets: &[TransitionAsset], preferred_id: Op
 async fn main() {
     set_ui_font(load_ui_font().await);
     let branding_logo = load_asset_texture(BRANDING_LOGO_PATH).await;
+    let ui_panel_corner = load_asset_texture(UI_PANEL_CORNER_PATH).await;
     let background = make_background();
     let mut app = if fast_start_enabled() {
         let start_mode = latest_save_path()
@@ -4138,7 +4300,12 @@ async fn main() {
                         }
                     }
                 } else {
-                    draw_title_menu(menu, &background, branding_logo.as_ref());
+                    draw_title_menu(
+                        menu,
+                        &background,
+                        branding_logo.as_ref(),
+                        ui_panel_corner.as_ref(),
+                    );
                 }
             }
             AppState::Playing(game) => {
@@ -4146,7 +4313,12 @@ async fn main() {
                 if game.quit_to_title_requested {
                     app = AppState::Title(TitleMenu::default());
                 } else {
-                    draw_scene(game, &background, branding_logo.as_ref());
+                    draw_scene(
+                        game,
+                        &background,
+                        branding_logo.as_ref(),
+                        ui_panel_corner.as_ref(),
+                    );
                 }
             }
         }
@@ -4886,14 +5058,19 @@ fn mouse_vec2() -> Vec2 {
     vec2(mouse_position().0, mouse_position().1)
 }
 
-fn draw_title_menu(menu: &TitleMenu, background: &UniverseBackground, logo: Option<&Texture2D>) {
+fn draw_title_menu(
+    menu: &TitleMenu,
+    background: &UniverseBackground,
+    logo: Option<&Texture2D>,
+    panel_corner: Option<&Texture2D>,
+) {
     draw_title_background(background);
     match menu.view {
-        TitleView::Main => draw_title_main_menu(menu, logo),
-        TitleView::NewGame => draw_title_new_game(menu),
-        TitleView::LoadGame => draw_title_load_game(menu),
-        TitleView::ContentPacks => draw_title_content_packs(menu),
-        TitleView::Settings => draw_title_settings(menu),
+        TitleView::Main => draw_title_main_menu(menu, logo, panel_corner),
+        TitleView::NewGame => draw_title_new_game(menu, panel_corner),
+        TitleView::LoadGame => draw_title_load_game(menu, panel_corner),
+        TitleView::ContentPacks => draw_title_content_packs(menu, panel_corner),
+        TitleView::Settings => draw_title_settings(menu, panel_corner),
     }
 }
 
@@ -4972,22 +5149,42 @@ fn title_menu_button_rect(index: usize) -> Rect {
 
 fn title_back_button_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + 28.0, panel.y + panel.h - 64.0, 126.0, 38.0)
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + panel.h - 64.0,
+        126.0,
+        38.0,
+    )
 }
 
 fn title_load_back_button_rect() -> Rect {
     let panel = title_load_panel_rect();
-    Rect::new(panel.x + 28.0, panel.y + panel.h - 64.0, 126.0, 38.0)
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + panel.h - 64.0,
+        126.0,
+        38.0,
+    )
 }
 
 fn title_pack_list_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + 28.0, panel.y + 88.0, 176.0, panel.h - 170.0)
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_BODY_TOP,
+        176.0,
+        panel.h - 210.0,
+    )
 }
 
 fn title_settings_category_list_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + 28.0, panel.y + 88.0, 166.0, panel.h - 170.0)
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_BODY_TOP,
+        166.0,
+        panel.h - 210.0,
+    )
 }
 
 fn title_settings_category_row_rect(index: usize) -> Rect {
@@ -4997,12 +5194,12 @@ fn title_settings_category_row_rect(index: usize) -> Rect {
 
 fn title_settings_decrement_button_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + 230.0, panel.y + 180.0, 44.0, 38.0)
+    Rect::new(panel.x + 258.0, panel.y + 204.0, 44.0, 38.0)
 }
 
 fn title_settings_increment_button_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + panel.w - 72.0, panel.y + 180.0, 44.0, 38.0)
+    Rect::new(panel.x + panel.w - 72.0, panel.y + 204.0, 44.0, 38.0)
 }
 
 fn title_save_list_rect() -> Rect {
@@ -5011,10 +5208,10 @@ fn title_save_list_rect() -> Rect {
 
 fn title_save_list_rect_for_panel(panel: Rect) -> Rect {
     Rect::new(
-        panel.x + 28.0,
-        panel.y + 102.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_BODY_TOP,
         panel.w * 0.42,
-        panel.h - 186.0,
+        panel.h - 212.0,
     )
 }
 
@@ -5108,21 +5305,26 @@ fn title_pack_row_rect(index: usize) -> Rect {
 fn title_pack_option_row_rect(index: usize) -> Rect {
     let panel = title_panel_rect();
     Rect::new(
-        panel.x + 226.0,
-        panel.y + 218.0 + index as f32 * 52.0,
-        panel.w - 254.0,
+        panel.x + 254.0,
+        panel.y + 242.0 + index as f32 * 52.0,
+        panel.w - 282.0,
         44.0,
     )
 }
 
 fn title_seed_input_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + 28.0, panel.y + 126.0, panel.w - 196.0, 40.0)
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + 150.0,
+        panel.w - TITLE_PANEL_CONTENT_PAD_X - 168.0,
+        40.0,
+    )
 }
 
 fn title_seed_randomize_button_rect() -> Rect {
     let panel = title_panel_rect();
-    Rect::new(panel.x + panel.w - 154.0, panel.y + 126.0, 126.0, 40.0)
+    Rect::new(panel.x + panel.w - 154.0, panel.y + 150.0, 126.0, 40.0)
 }
 
 fn title_new_game_start_button_rect() -> Rect {
@@ -5135,9 +5337,13 @@ fn title_new_game_start_button_rect() -> Rect {
     )
 }
 
-fn draw_title_main_menu(menu: &TitleMenu, logo: Option<&Texture2D>) {
+fn draw_title_main_menu(
+    menu: &TitleMenu,
+    logo: Option<&Texture2D>,
+    panel_corner: Option<&Texture2D>,
+) {
     let panel = title_main_panel_rect();
-    draw_title_panel(panel);
+    draw_title_panel(panel, panel_corner);
     if let Some(logo) = logo {
         let logo_source = Rect::new(
             logo.width() * 0.20,
@@ -5187,7 +5393,7 @@ fn draw_title_main_menu(menu: &TitleMenu, logo: Option<&Texture2D>) {
     if fast_start_enabled() {
         draw_text(
             "Fast start enabled by SOME_FRONTIER_FAST_START",
-            panel.x + 28.0,
+            panel.x + TITLE_PANEL_CONTENT_PAD_X,
             panel.y + panel.h - 22.0,
             14.0,
             Color::from_rgba(226, 190, 150, 255),
@@ -5195,28 +5401,28 @@ fn draw_title_main_menu(menu: &TitleMenu, logo: Option<&Texture2D>) {
     }
 }
 
-fn draw_title_new_game(menu: &TitleMenu) {
+fn draw_title_new_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
     let panel = title_panel_rect();
-    draw_title_panel(panel);
+    draw_title_panel(panel, panel_corner);
     draw_text(
         "New Game",
-        panel.x + 28.0,
-        panel.y + 54.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_HEADER_BASELINE,
         30.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
         "Choose a world seed before launching a fresh run.",
-        panel.x + 28.0,
-        panel.y + 84.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
         17.0,
         Color::from_rgba(168, 204, 210, 255),
     );
 
     draw_text(
         "World seed",
-        panel.x + 28.0,
-        panel.y + 116.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + 140.0,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
@@ -5254,25 +5460,25 @@ fn draw_title_new_game(menu: &TitleMenu) {
     );
     draw_title_button(title_seed_randomize_button_rect(), "Randomize", true, "R");
 
-    let options_y = panel.y + 206.0;
+    let options_y = panel.y + 230.0;
     draw_text(
         "Initial options",
-        panel.x + 28.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
         options_y,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_title_option_row(
-        panel.x + 28.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
         options_y + 28.0,
-        panel.w - 56.0,
+        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
         "Start",
         "Frontier cargo ship",
     );
     draw_title_option_row(
-        panel.x + 28.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
         options_y + 72.0,
-        panel.w - 56.0,
+        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
         "Packs",
         &format!(
             "{} active, {} configured",
@@ -5281,16 +5487,16 @@ fn draw_title_new_game(menu: &TitleMenu) {
         ),
     );
     draw_title_option_row(
-        panel.x + 28.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
         options_y + 116.0,
-        panel.w - 56.0,
+        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
         "Difficulty",
         "Standard",
     );
 
     draw_text(
         "Pack selections are saved with the new run.",
-        panel.x + 28.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
         panel.y + panel.h - 88.0,
         15.0,
         Color::from_rgba(178, 197, 203, 255),
@@ -5304,20 +5510,20 @@ fn draw_title_new_game(menu: &TitleMenu) {
     );
 }
 
-fn draw_title_load_game(menu: &TitleMenu) {
+fn draw_title_load_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
     let panel = title_load_panel_rect();
-    draw_title_panel(panel);
+    draw_title_panel(panel, panel_corner);
     draw_text(
         "Load Game",
-        panel.x + 28.0,
-        panel.y + 54.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_HEADER_BASELINE,
         30.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
         "Last played saves appear first.",
-        panel.x + 28.0,
-        panel.y + 82.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
@@ -5394,7 +5600,7 @@ fn draw_title_load_game(menu: &TitleMenu) {
     );
 
     let detail_x = list.x + list.w + 28.0;
-    let detail_y = panel.y + 102.0;
+    let detail_y = panel.y + TITLE_PANEL_BODY_TOP;
     let detail_width = panel.x + panel.w - detail_x - 28.0;
     if let Some(slot) = menu.save_slots.get(menu.selected_save_index) {
         draw_text(
@@ -5526,20 +5732,20 @@ fn format_last_played(modified_unix_seconds: u64) -> String {
     }
 }
 
-fn draw_title_settings(menu: &TitleMenu) {
+fn draw_title_settings(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
     let panel = title_panel_rect();
-    draw_title_panel(panel);
+    draw_title_panel(panel, panel_corner);
     draw_text(
         "Settings",
-        panel.x + 28.0,
-        panel.y + 54.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_HEADER_BASELINE,
         30.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
         "Saved separately from game saves.",
-        panel.x + 28.0,
-        panel.y + 82.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
@@ -5583,11 +5789,11 @@ fn draw_title_settings(menu: &TitleMenu) {
         );
     }
 
-    let detail_x = panel.x + 226.0;
+    let detail_x = panel.x + 254.0;
     draw_text(
         menu.selected_settings_category.label(),
         detail_x,
-        panel.y + 116.0,
+        panel.y + 140.0,
         24.0,
         Color::from_rgba(235, 242, 226, 255),
     );
@@ -5596,7 +5802,7 @@ fn draw_title_settings(menu: &TitleMenu) {
     draw_text(
         setting_label,
         detail_x,
-        panel.y + 158.0,
+        panel.y + 182.0,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
@@ -5607,24 +5813,24 @@ fn draw_title_settings(menu: &TitleMenu) {
     draw_text(
         &setting_value,
         value_x,
-        panel.y + 205.0,
+        panel.y + 229.0,
         22.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_title_button(title_settings_increment_button_rect(), "+", true, "Right");
     draw_line(
         value_x,
-        panel.y + 214.0,
+        panel.y + 238.0,
         value_x + value_measure.width,
-        panel.y + 214.0,
+        panel.y + 238.0,
         1.0,
         Color::from_rgba(150, 221, 226, 160),
     );
     draw_wrapped_text(
         setting_note,
         detail_x,
-        panel.y + 250.0,
-        panel.w - 254.0,
+        panel.y + 274.0,
+        panel.w - 282.0,
         16,
         Color::from_rgba(178, 197, 203, 255),
     );
@@ -5686,27 +5892,27 @@ fn draw_title_option_row(x: f32, y: f32, width: f32, label: &str, value: &str) {
     );
 }
 
-fn draw_title_content_packs(menu: &TitleMenu) {
+fn draw_title_content_packs(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
     let panel = title_panel_rect();
-    draw_title_panel(panel);
+    draw_title_panel(panel, panel_corner);
     draw_text(
         "Content Packs",
-        panel.x + 28.0,
-        panel.y + 54.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_HEADER_BASELINE,
         30.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
         "Installed",
-        panel.x + 28.0,
-        panel.y + 82.0,
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_text(
         "Configuration",
-        panel.x + 226.0,
-        panel.y + 82.0,
+        panel.x + 254.0,
+        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
@@ -5754,9 +5960,9 @@ fn draw_title_content_packs(menu: &TitleMenu) {
         );
     }
 
-    let detail_x = panel.x + 226.0;
-    let detail_y = panel.y + 98.0;
-    let detail_width = panel.w - 254.0;
+    let detail_x = panel.x + 254.0;
+    let detail_y = panel.y + TITLE_PANEL_BODY_TOP;
+    let detail_width = panel.w - 282.0;
     if let Some(pack) = menu.content_packs.get(menu.selected_pack_index) {
         draw_text(
             &fit_debug_text(&pack.name, detail_width, 22),
@@ -5875,7 +6081,7 @@ fn draw_title_content_packs(menu: &TitleMenu) {
     draw_title_button(title_back_button_rect(), "Back", true, "Esc");
 }
 
-fn draw_title_panel(rect: Rect) {
+fn draw_title_panel(rect: Rect, panel_corner: Option<&Texture2D>) {
     draw_rectangle(
         rect.x,
         rect.y,
@@ -5890,6 +6096,24 @@ fn draw_title_panel(rect: Rect) {
         rect.h,
         1.0,
         Color::from_rgba(112, 151, 163, 220),
+    );
+    draw_panel_corner_art(rect, panel_corner);
+}
+
+fn draw_panel_corner_art(rect: Rect, texture: Option<&Texture2D>) {
+    let Some(texture) = texture else {
+        return;
+    };
+    let size = (rect.w.min(rect.h) * 0.42).clamp(112.0, 260.0);
+    draw_texture_ex(
+        texture,
+        rect.x - size * 0.14,
+        rect.y - size * 0.12,
+        Color::new(1.0, 1.0, 1.0, 0.9),
+        DrawTextureParams {
+            dest_size: Some(vec2(size, size)),
+            ..Default::default()
+        },
     );
 }
 
@@ -6031,6 +6255,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_scene_transition(game, dt);
     update_pending_warp(game, dt);
     advance_world_time_and_planets(game, dt);
+    update_active_research(game, dt);
     if game.orbiting_planet.is_some() {
         if orbit_break_input_down() {
             break_planet_orbit(game);
@@ -6060,7 +6285,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.starmap_pan = Vec2::ZERO;
             game.starmap_drag_previous_mouse = None;
             game.inventory_open = false;
-            game.skills_open = false;
+            game.research_open = false;
             game.upgrades_open = false;
             game.content_open = false;
             game.selected_planet = None;
@@ -6083,7 +6308,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
     if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::E) {
         game.map_open = false;
-        game.skills_open = false;
+        game.research_open = false;
         game.upgrades_open = false;
         game.content_open = false;
         game.selected_planet = None;
@@ -6093,8 +6318,8 @@ fn update_game(game: &mut GameState, dt: f32) {
         game.inventory_open = !game.inventory_open;
     }
     if is_key_pressed(KeyCode::K) {
-        game.skills_open = !game.skills_open;
-        if game.skills_open {
+        game.research_open = !game.research_open;
+        if game.research_open {
             game.map_open = false;
             game.inventory_open = false;
             game.upgrades_open = false;
@@ -6110,7 +6335,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         if game.content_open {
             game.map_open = false;
             game.inventory_open = false;
-            game.skills_open = false;
+            game.research_open = false;
             game.upgrades_open = false;
             game.selected_planet = None;
             game.selected_station = None;
@@ -6129,7 +6354,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
     if is_key_pressed(KeyCode::Space)
         && !game.map_open
-        && !game.skills_open
+        && !game.research_open
         && !game.upgrades_open
         && !game.content_open
     {
@@ -6159,7 +6384,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     if wheel != 0.0
         && !game.inventory_open
         && !game.map_open
-        && !game.skills_open
+        && !game.research_open
         && !game.upgrades_open
         && !game.content_open
     {
@@ -6167,9 +6392,9 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
 
     let mut click_handled = false;
-    if game.skills_open {
+    if game.research_open {
         let mouse = vec2(mouse_position().0, mouse_position().1);
-        click_handled = handle_skills_table_input(game, mouse);
+        click_handled = handle_research_tree_input(game, mouse);
     }
 
     if game.upgrades_open {
@@ -6190,7 +6415,7 @@ fn update_game(game: &mut GameState, dt: f32) {
 
     if game.inventory_open
         && !game.map_open
-        && !game.skills_open
+        && !game.research_open
         && !game.upgrades_open
         && !game.content_open
     {
@@ -6253,7 +6478,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     if is_mouse_button_pressed(MouseButton::Left)
         && !click_handled
         && !game.map_open
-        && !game.skills_open
+        && !game.research_open
         && !game.upgrades_open
         && !game.content_open
     {
@@ -6302,8 +6527,8 @@ fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
     } else if game.upgrades_open {
         game.upgrades_open = false;
         true
-    } else if game.skills_open {
-        game.skills_open = false;
+    } else if game.research_open {
+        game.research_open = false;
         true
     } else if game.map_open {
         game.map_open = false;
@@ -6600,10 +6825,11 @@ struct PlanetDetailRender<'a> {
 }
 
 struct RecipeTableInput<'a> {
+    content_registry: &'a content::ContentRegistry,
     recipes: &'a [Recipe],
     settings: &'a mut [CraftSetting],
     locked_recipes: &'a [String],
-    purchased_unlocks: &'a [String],
+    completed_research: &'a [String],
     mouse: Vec2,
     wheel: f32,
     scroll: f32,
@@ -6623,12 +6849,13 @@ struct PlanetActionRailRender<'a> {
 }
 
 struct StationActionRailRender<'a> {
+    content_registry: &'a content::ContentRegistry,
     station: &'a StationDestination,
     selected_service: Option<usize>,
     in_range: bool,
     credits: u32,
     inventory: &'a Inventory,
-    purchased_unlocks: &'a [String],
+    completed_research: &'a [String],
     action_rail_width: f32,
 }
 
@@ -6644,11 +6871,12 @@ struct StationTradeTableRender<'a> {
 }
 
 struct RecipeUnlockTableRender<'a> {
+    content_registry: &'a content::ContentRegistry,
     station: &'a StationDestination,
     service: &'a StationService,
     in_range: bool,
     credits: u32,
-    purchased_unlocks: &'a [String],
+    completed_research: &'a [String],
     action_rail_width: f32,
     x: f32,
     width: f32,
@@ -6660,10 +6888,10 @@ fn content_browser_layout() -> ContentBrowserLayout {
     let x = (screen_width() - width) * 0.5;
     let y = (screen_height() - height) * 0.5;
     let column_gap = 14.0;
-    let column_width = (width - 48.0 - column_gap * 4.0) / 5.0;
-    let column_y = y + 110.0;
+    let column_width = (width - GAME_PANEL_CONTENT_PAD_X - 24.0 - column_gap * 4.0) / 5.0;
+    let column_y = y + 132.0;
     let row_height = 23.0;
-    let viewport_height = (height - 150.0).max(row_height);
+    let viewport_height = (height - 172.0).max(row_height);
 
     ContentBrowserLayout {
         x,
@@ -6680,7 +6908,9 @@ fn content_browser_layout() -> ContentBrowserLayout {
 
 fn content_browser_column_rect(layout: &ContentBrowserLayout, column: usize) -> Rect {
     Rect::new(
-        layout.x + 24.0 + (layout.column_width + layout.column_gap) * column as f32,
+        layout.x
+            + GAME_PANEL_CONTENT_PAD_X
+            + (layout.column_width + layout.column_gap) * column as f32,
         layout.column_y + 18.0,
         layout.column_width,
         layout.viewport_height,
@@ -7139,7 +7369,6 @@ type GameSaveSnapshot = (
     u32,
     u32,
     u32,
-    u32,
     i32,
     i32,
     Option<usize>,
@@ -7156,7 +7385,6 @@ fn game_save_snapshot(game: &GameState) -> GameSaveSnapshot {
             .filter_map(|slot| slot.as_ref())
             .map(|stack| stack.count)
             .sum(),
-        game.skills.iter().map(|skill| skill.level).sum(),
         game.ship_upgrades.iter().map(|upgrade| upgrade.level).sum(),
         game.planets
             .iter()
@@ -7211,21 +7439,21 @@ fn update_window_size_memory(game: &mut GameState, dt: f32) {
     }
 }
 
-fn handle_skills_table_input(game: &mut GameState, mouse: Vec2) -> bool {
-    let Some(skill_index) = hovered_skill_plus(mouse, game.skills.len()) else {
-        return false;
-    };
-
+fn handle_research_tree_input(game: &mut GameState, mouse: Vec2) -> bool {
     if !is_mouse_button_pressed(MouseButton::Left) {
         return false;
     }
 
-    let levels_to_buy = work_setting_step() as u32;
-    for _ in 0..levels_to_buy {
-        if !game.skills[skill_index].buy_level() {
-            break;
+    if let Some(research_id) = game.selected_research.clone() {
+        if research_start_button_rect(research_detail_rect()).contains(mouse) {
+            return start_research(game, &research_id);
         }
     }
+
+    let Some(research_id) = hovered_research_node_id(game, mouse) else {
+        return false;
+    };
+    game.selected_research = Some(research_id);
     true
 }
 
@@ -7381,30 +7609,33 @@ fn handle_production_table_input(game: &mut GameState, mouse: Vec2, wheel: f32) 
 
     match game.production_mode {
         ProductionMode::Smelting => handle_recipe_table_input(RecipeTableInput {
+            content_registry: &game.content_registry,
             recipes: &game.smelt_recipes,
             settings: &mut game.smelt_settings,
             locked_recipes: &game.recipe_vendor_locked_recipes,
-            purchased_unlocks: &game.purchased_recipe_unlocks,
+            completed_research: &game.completed_research,
             mouse,
             wheel,
             scroll: game.work_scroll,
             action_rail_width,
         }),
         ProductionMode::Crafting => handle_recipe_table_input(RecipeTableInput {
+            content_registry: &game.content_registry,
             recipes: &game.craft_recipes,
             settings: &mut game.craft_settings,
             locked_recipes: &game.recipe_vendor_locked_recipes,
-            purchased_unlocks: &game.purchased_recipe_unlocks,
+            completed_research: &game.completed_research,
             mouse,
             wheel,
             scroll: game.work_scroll,
             action_rail_width,
         }),
         ProductionMode::Processing => handle_recipe_table_input(RecipeTableInput {
+            content_registry: &game.content_registry,
             recipes: &game.processing_recipes,
             settings: &mut game.processing_settings,
             locked_recipes: &game.recipe_vendor_locked_recipes,
-            purchased_unlocks: &game.purchased_recipe_unlocks,
+            completed_research: &game.completed_research,
             mouse,
             wheel,
             scroll: game.work_scroll,
@@ -7415,10 +7646,11 @@ fn handle_production_table_input(game: &mut GameState, mouse: Vec2, wheel: f32) 
 
 fn handle_recipe_table_input(input: RecipeTableInput<'_>) -> bool {
     let RecipeTableInput {
+        content_registry,
         recipes,
         settings,
         locked_recipes,
-        purchased_unlocks,
+        completed_research,
         mouse,
         wheel,
         scroll,
@@ -7429,7 +7661,12 @@ fn handle_recipe_table_input(input: RecipeTableInput<'_>) -> bool {
     else {
         return false;
     };
-    if !recipe_is_unlocked_from_sets(&recipes[recipe_index].id, locked_recipes, purchased_unlocks) {
+    if !recipe_is_unlocked_from_sets(
+        content_registry,
+        &recipes[recipe_index].id,
+        locked_recipes,
+        completed_research,
+    ) {
         return true;
     }
 
@@ -7461,14 +7698,13 @@ fn handle_recipe_table_input(input: RecipeTableInput<'_>) -> bool {
 }
 
 fn recipe_is_unlocked_from_sets(
+    content_registry: &content::ContentRegistry,
     recipe_id: &str,
     locked_recipes: &[String],
-    purchased_unlocks: &[String],
+    completed_research: &[String],
 ) -> bool {
     !locked_recipes.iter().any(|locked| locked == recipe_id)
-        || purchased_unlocks
-            .iter()
-            .any(|unlocked| unlocked == recipe_id)
+        || completed_research_unlocks_recipe(content_registry, completed_research, recipe_id)
 }
 
 fn handle_planet_scan_input(game: &mut GameState, planet_index: usize, mouse: Vec2) -> bool {
@@ -7718,15 +7954,24 @@ fn purchase_recipe_unlock(
     };
     if unlock.unavailable
         || game.credits < unlock.price
-        || game.purchased_recipe_unlocks.contains(&unlock.recipe)
+        || completed_research_unlocks_recipe(
+            &game.content_registry,
+            &game.completed_research,
+            &unlock.recipe,
+        )
     {
         return true;
     }
 
+    let Some(research_id) =
+        research_id_that_unlocks_recipe(&game.content_registry, &unlock.recipe).map(str::to_string)
+    else {
+        return true;
+    };
     game.credits -= unlock.price;
-    game.purchased_recipe_unlocks.push(unlock.recipe.clone());
-    game.purchased_recipe_unlocks.sort();
-    game.purchased_recipe_unlocks.dedup();
+    game.completed_research.push(research_id);
+    game.completed_research.sort();
+    game.completed_research.dedup();
     game.save_dirty = true;
     push_operation_feedback(
         game,
@@ -8195,13 +8440,13 @@ fn max_scroll_offset(row_count: usize, row_height: f32, viewport_height: f32) ->
 fn update_production(game: &mut GameState, dt: f32) {
     let smelted = update_recipes(
         RecipeUpdate {
+            content_registry: &game.content_registry,
             inventory: &mut game.inventory,
             recipes: &game.smelt_recipes,
             settings: &mut game.smelt_settings,
-            skills: &mut game.skills,
             locked_recipes: &game.recipe_vendor_locked_recipes,
-            purchased_unlocks: &game.purchased_recipe_unlocks,
-            skill_kind: SkillKind::Smelting,
+            completed_research: &game.completed_research,
+            work_kind: WorkKind::Smelting,
         },
         dt,
     );
@@ -8219,13 +8464,13 @@ fn update_production(game: &mut GameState, dt: f32) {
 
     let crafted = update_recipes(
         RecipeUpdate {
+            content_registry: &game.content_registry,
             inventory: &mut game.inventory,
             recipes: &game.craft_recipes,
             settings: &mut game.craft_settings,
-            skills: &mut game.skills,
             locked_recipes: &game.recipe_vendor_locked_recipes,
-            purchased_unlocks: &game.purchased_recipe_unlocks,
-            skill_kind: SkillKind::Fabrication,
+            completed_research: &game.completed_research,
+            work_kind: WorkKind::Fabrication,
         },
         dt,
     );
@@ -8243,13 +8488,13 @@ fn update_production(game: &mut GameState, dt: f32) {
 
     let processed = update_recipes(
         RecipeUpdate {
+            content_registry: &game.content_registry,
             inventory: &mut game.inventory,
             recipes: &game.processing_recipes,
             settings: &mut game.processing_settings,
-            skills: &mut game.skills,
             locked_recipes: &game.recipe_vendor_locked_recipes,
-            purchased_unlocks: &game.purchased_recipe_unlocks,
-            skill_kind: SkillKind::Fabrication,
+            completed_research: &game.completed_research,
+            work_kind: WorkKind::Fabrication,
         },
         dt,
     );
@@ -8267,44 +8512,47 @@ fn update_production(game: &mut GameState, dt: f32) {
 }
 
 struct RecipeUpdate<'a> {
+    content_registry: &'a content::ContentRegistry,
     inventory: &'a mut Inventory,
     recipes: &'a [Recipe],
     settings: &'a mut [CraftSetting],
-    skills: &'a mut [Skill; SKILL_COUNT],
     locked_recipes: &'a [String],
-    purchased_unlocks: &'a [String],
-    skill_kind: SkillKind,
+    completed_research: &'a [String],
+    work_kind: WorkKind,
 }
 
 fn update_recipes(update: RecipeUpdate<'_>, dt: f32) -> Vec<ItemStack> {
     let RecipeUpdate {
+        content_registry,
         inventory,
         recipes,
         settings,
-        skills,
         locked_recipes,
-        purchased_unlocks,
-        skill_kind,
+        completed_research,
+        work_kind,
     } = update;
 
     clear_blocked_recipe_progress(
         inventory,
+        content_registry,
         recipes,
         settings,
         locked_recipes,
-        purchased_unlocks,
+        completed_research,
     );
     let Some(recipe_index) = next_recipe_bill_index_for_sets(
         inventory,
+        content_registry,
         recipes,
         settings,
         locked_recipes,
-        purchased_unlocks,
+        completed_research,
     ) else {
         return Vec::new();
     };
     let recipe = &recipes[recipe_index];
-    let operation_seconds = recipe_operation_seconds(skills, skill_kind, recipe);
+    let operation_seconds =
+        recipe_operation_seconds(content_registry, completed_research, work_kind, recipe);
     let setting = &mut settings[recipe_index];
     setting.progress += dt / operation_seconds;
     if setting.progress < 1.0 {
@@ -8320,11 +8568,10 @@ fn update_recipes(update: RecipeUpdate<'_>, dt: f32) -> Vec<ItemStack> {
         setting.queued = setting.queued.saturating_sub(recipe.output.count);
     }
     if inventory.craft(recipe) {
-        let bonus = bonus_output_count(skills, skill_kind, recipe.output.count);
+        let bonus = bonus_output_count(content_registry, completed_research, recipe.output.count);
         if bonus > 0 {
             inventory.add_item(recipe.output.item.clone(), bonus);
         }
-        award_skill_xp(skills, skill_kind, &recipe.output.item, recipe.output.count);
         return vec![ItemStack {
             item: recipe.output.item.clone(),
             count: recipe.output.count.saturating_add(bonus),
@@ -8335,15 +8582,20 @@ fn update_recipes(update: RecipeUpdate<'_>, dt: f32) -> Vec<ItemStack> {
 
 fn clear_blocked_recipe_progress(
     inventory: &Inventory,
+    content_registry: &content::ContentRegistry,
     recipes: &[Recipe],
     settings: &mut [CraftSetting],
     locked_recipes: &[String],
-    purchased_unlocks: &[String],
+    completed_research: &[String],
 ) {
     for (recipe, setting) in recipes.iter().zip(settings.iter_mut()) {
         if recipe_has_bill(inventory, recipe, setting)
-            && (!recipe_is_unlocked_from_sets(&recipe.id, locked_recipes, purchased_unlocks)
-                || !inventory.can_craft(recipe))
+            && (!recipe_is_unlocked_from_sets(
+                content_registry,
+                &recipe.id,
+                locked_recipes,
+                completed_research,
+            ) || !inventory.can_craft(recipe))
         {
             setting.progress = 0.0;
         }
@@ -8357,27 +8609,33 @@ fn next_recipe_bill_index(
 ) -> Option<usize> {
     next_recipe_bill_index_for_sets(
         &game.inventory,
+        &game.content_registry,
         recipes,
         settings,
         &game.recipe_vendor_locked_recipes,
-        &game.purchased_recipe_unlocks,
+        &game.completed_research,
     )
 }
 
 fn next_recipe_bill_index_for_sets(
     inventory: &Inventory,
+    content_registry: &content::ContentRegistry,
     recipes: &[Recipe],
     settings: &[CraftSetting],
     locked_recipes: &[String],
-    purchased_unlocks: &[String],
+    completed_research: &[String],
 ) -> Option<usize> {
     recipes
         .iter()
         .zip(settings.iter())
         .enumerate()
         .find_map(|(index, (recipe, setting))| {
-            (recipe_is_unlocked_from_sets(&recipe.id, locked_recipes, purchased_unlocks)
-                && recipe_has_bill(inventory, recipe, setting)
+            (recipe_is_unlocked_from_sets(
+                content_registry,
+                &recipe.id,
+                locked_recipes,
+                completed_research,
+            ) && recipe_has_bill(inventory, recipe, setting)
                 && inventory.can_craft(recipe))
             .then_some(index)
         })
@@ -8388,7 +8646,8 @@ fn recipe_has_bill(inventory: &Inventory, recipe: &Recipe, setting: &CraftSettin
 }
 
 fn update_mining(game: &mut GameState, dt: f32) {
-    let base_operation_seconds = mining_operation_seconds(&game.skills);
+    let base_operation_seconds =
+        mining_operation_seconds(&game.content_registry, &game.completed_research);
 
     for planet_index in 0..game.planets.len() {
         let Some(planet) = game.planets.get(planet_index) else {
@@ -8434,7 +8693,7 @@ fn update_mining(game: &mut GameState, dt: f32) {
 
         game.inventory.add_item(mineable.item.clone(), mined);
         let mut total_mined = mined;
-        let bonus = bonus_output_count(&game.skills, SkillKind::Mining, mined);
+        let bonus = bonus_output_count(&game.content_registry, &game.completed_research, mined);
         if bonus > 0 {
             game.inventory.add_item(mineable.item.clone(), bonus);
             total_mined = total_mined.saturating_add(bonus);
@@ -8443,7 +8702,6 @@ fn update_mining(game: &mut GameState, dt: f32) {
             game.inventory.add_item(mineable.item.clone(), mined);
             total_mined = total_mined.saturating_add(mined);
         }
-        award_skill_xp(&mut game.skills, SkillKind::Mining, &mineable.item, mined);
         let item_name = mineable.item.name.clone();
         push_aggregate_operation_feedback(
             game,
@@ -8790,8 +9048,9 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
     let previous_selection = game.selected_npc_ship;
     let mut surviving_npc_ships = Vec::with_capacity(game.npc_ships.len());
     let mut next_selected_npc_ship = None;
+    let npc_ships = std::mem::take(&mut game.npc_ships);
 
-    for (old_index, npc_ship) in game.npc_ships.drain(..).enumerate() {
+    for (old_index, npc_ship) in npc_ships.into_iter().enumerate() {
         if npc_ship.hull.current > 0.0 {
             let new_index = surviving_npc_ships.len();
             if previous_selection == Some(old_index) {
@@ -8799,11 +9058,16 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
             }
             surviving_npc_ships.push(npc_ship);
         } else {
-            transfer_destroyed_npc_loot(
+            let cargo_items = transfer_destroyed_npc_loot(
                 &mut game.inventory,
                 &game.ship_upgrades,
                 &npc_ship.cargo_defaults,
             );
+            let credit_reward = destroyed_npc_credit_reward(&game.content_registry, &npc_ship);
+            if credit_reward > 0 {
+                game.credits = game.credits.saturating_add(credit_reward);
+            }
+            push_destroyed_npc_loot_feedback(game, &npc_ship.name, cargo_items, credit_reward);
         }
     }
 
@@ -8816,9 +9080,10 @@ fn transfer_destroyed_npc_loot(
     inventory: &mut Inventory,
     ship_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
     cargo_defaults: &[ItemStack],
-) {
+) -> u32 {
     let cargo_capacity = cargo_rating_kg(ship_upgrades);
     let mut cargo_mass = inventory.total_mass();
+    let mut transferred = 0;
     for stack in cargo_defaults {
         let stack_mass = stack.item.unit_mass * stack.count as f32;
         if cargo_mass + stack_mass > cargo_capacity {
@@ -8827,7 +9092,48 @@ fn transfer_destroyed_npc_loot(
 
         inventory.add_item(stack.item.clone(), stack.count);
         cargo_mass += stack_mass;
+        transferred += stack.count;
     }
+    transferred
+}
+
+fn destroyed_npc_credit_reward(
+    content_registry: &content::ContentRegistry,
+    npc_ship: &NpcShip,
+) -> u32 {
+    if !npc_ship_is_hostile(content_registry, npc_ship) || npc_ship.credit_reward_max == 0 {
+        return 0;
+    }
+    let min = npc_ship.credit_reward_min.min(npc_ship.credit_reward_max);
+    let max = npc_ship.credit_reward_max;
+    if min == max {
+        return min;
+    }
+    rand::gen_range(min as f32, max.saturating_add(1) as f32).floor() as u32
+}
+
+fn push_destroyed_npc_loot_feedback(
+    game: &mut GameState,
+    npc_name: &str,
+    cargo_items: u32,
+    credit_reward: u32,
+) {
+    if cargo_items == 0 && credit_reward == 0 {
+        return;
+    }
+
+    let cargo_label = match cargo_items {
+        0 => None,
+        1 => Some("1 cargo".to_string()),
+        count => Some(format!("{count} cargo")),
+    };
+    let credit_label = (credit_reward > 0).then(|| format!("{credit_reward} cr"));
+    let parts = [cargo_label, credit_label]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
+    push_operation_feedback(game, "Loot", format!("{npc_name}: {parts}"));
 }
 
 fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
@@ -9340,7 +9646,12 @@ fn update_ship(ship: &mut Ship, dt: f32, energy_recharge: f32) {
     }
 }
 
-fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&Texture2D>) {
+fn draw_scene(
+    game: &GameState,
+    background: &UniverseBackground,
+    logo: Option<&Texture2D>,
+    panel_corner: Option<&Texture2D>,
+) {
     clear_background(Color::from_rgba(5, 8, 18, 255));
 
     let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
@@ -9445,7 +9756,7 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&T
     draw_inventory_hint(
         game.inventory_open,
         game.map_open,
-        game.skills_open,
+        game.research_open,
         game.upgrades_open,
         game.content_open,
         game.save_status_timer > 0.0,
@@ -9453,22 +9764,22 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, logo: Option<&T
     draw_interaction_prompt(game);
 
     if game.inventory_open {
-        draw_inventory_overlay(game);
+        draw_inventory_overlay(game, panel_corner);
     }
     if game.map_open {
-        draw_starmap_overlay(game);
+        draw_starmap_overlay(game, panel_corner);
     }
-    if game.skills_open {
-        draw_skills_overlay(game);
+    if game.research_open {
+        draw_research_overlay(game, panel_corner);
     }
     if game.upgrades_open {
-        draw_ship_upgrades_overlay(game);
+        draw_ship_upgrades_overlay(game, panel_corner);
     }
     if game.content_open {
-        draw_content_debug_overlay(game);
+        draw_content_debug_overlay(game, panel_corner);
     }
     if game.escape_dialog_open {
-        draw_escape_dialog(game, logo);
+        draw_escape_dialog(game, logo, panel_corner);
     }
     if game.save_status_timer > 0.0 {
         draw_save_confirmation(game.save_status_timer, game.save_status_manual);
@@ -10940,7 +11251,7 @@ fn draw_dashed_ring(
 fn draw_inventory_hint(
     inventory_open: bool,
     map_open: bool,
-    skills_open: bool,
+    research_open: bool,
     upgrades_open: bool,
     content_open: bool,
     save_visible: bool,
@@ -10951,12 +11262,12 @@ fn draw_inventory_hint(
         "C close content"
     } else if upgrades_open {
         "Esc close upgrades"
-    } else if skills_open {
-        "K close skills"
+    } else if research_open {
+        "K close research"
     } else if inventory_open {
-        "E/Tab close inventory   M map   K skills   C content   Esc close"
+        "E/Tab close inventory   M map   K research   C content   Esc close"
     } else {
-        "E/Tab inventory   M map   K skills   C content   Esc menu"
+        "E/Tab inventory   M map   K research   C content   Esc menu"
     }
     .to_string();
     if save_visible {
@@ -11100,14 +11411,18 @@ fn escape_dialog_logo_rect(panel: Rect) -> Rect {
     let width = 476.0;
     let height = 232.0;
     Rect::new(
-        panel.x + 24.0,
+        panel.x + GAME_PANEL_CONTENT_PAD_X,
         panel.y + (panel.h - height) * 0.5,
         width,
         height,
     )
 }
 
-fn draw_escape_dialog(game: &GameState, logo: Option<&Texture2D>) {
+fn draw_escape_dialog(
+    game: &GameState,
+    logo: Option<&Texture2D>,
+    panel_corner: Option<&Texture2D>,
+) {
     draw_rectangle(
         0.0,
         0.0,
@@ -11137,6 +11452,7 @@ fn draw_escape_dialog(game: &GameState, logo: Option<&Texture2D>) {
         1.0,
         Color::from_rgba(112, 151, 163, 220),
     );
+    draw_panel_corner_art(panel, panel_corner);
     let content_x = escape_dialog_content_x(panel);
     draw_text("Game Paused", content_x, panel.y + 82.0, 25.0, text);
     if let Some(logo) = logo {
@@ -11246,7 +11562,7 @@ fn draw_ui_tooltip(title: &str, shortcut: &str, detail: &str, mouse: Vec2) {
     draw_wrapped_text(detail, x + 14.0, y + 80.0, width - 28.0, 16, text);
 }
 
-fn draw_starmap_overlay(game: &GameState) {
+fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     let (x, y, width, height) = starmap_panel_rect();
 
     draw_rectangle(
@@ -11297,11 +11613,12 @@ fn draw_starmap_overlay(game: &GameState) {
     set_default_camera();
 
     draw_rectangle(x, y, width, height, Color::from_rgba(4, 12, 18, 24));
+    draw_panel_corner_art(Rect::new(x, y, width, height), panel_corner);
     draw_starmap_planet_markers(game, &camera);
     draw_text(
         "3D Starmap",
-        x + 24.0,
-        y + 40.0,
+        x + GAME_PANEL_HEADER_PAD_X,
+        y + GAME_PANEL_HEADER_BASELINE,
         28.0,
         Color::from_rgba(235, 242, 226, 255),
     );
@@ -11312,9 +11629,13 @@ fn draw_starmap_overlay(game: &GameState) {
         18.0,
         Color::from_rgba(126, 156, 164, 220),
     );
-    draw_starmap_filter_readout(game, x + 24.0, y + 66.0);
+    draw_starmap_filter_readout(
+        game,
+        x + GAME_PANEL_HEADER_PAD_X,
+        y + GAME_PANEL_BODY_TOP - 24.0,
+    );
     draw_starmap_readout(
-        x + 24.0,
+        x + GAME_PANEL_CONTENT_PAD_X,
         y + height - 82.0,
         &game.ship,
         &game.planets,
@@ -11861,7 +12182,7 @@ struct StationActionLayout {
 
 fn inventory_overlay_layout(action_rail_width: Option<f32>) -> InventoryOverlayLayout {
     let (panel_x, panel_y, panel_width, panel_height) = inventory_panel_rect(action_rail_width);
-    let gap = 24.0;
+    let gap = GAME_PANEL_CONTENT_PAD_X;
     let inner_width = panel_width - gap * 2.0;
     let pane_width = (inner_width - gap * 2.0).max(0.0);
     let (detail_share, production_share, inventory_share) = if action_rail_width.is_some() {
@@ -11978,9 +12299,22 @@ fn station_action_rail_width(station: &StationDestination) -> f32 {
             measure_text("Recipe unlocks", None, 14, 1.0).width,
             f32::max,
         );
+    let research_width = station
+        .services
+        .iter()
+        .flat_map(|service| service.research.iter())
+        .map(|lead| measure_text(&lead.research, None, 15, 1.0).width)
+        .fold(
+            measure_text("Research leads", None, 14, 1.0).width,
+            f32::max,
+        );
     let trade_table_width = trade_width.max(116.0) + 54.0 + 58.0 + 8.0 * 2.0;
     let unlock_table_width = unlock_width.max(160.0) + 72.0 + 12.0;
-    let detail_width = trade_table_width.max(unlock_table_width).max(240.0);
+    let research_table_width = research_width.max(160.0) + 82.0 + 12.0;
+    let detail_width = trade_table_width
+        .max(unlock_table_width)
+        .max(research_table_width)
+        .max(240.0);
 
     clamp_action_rail_width(service_button_width + 16.0 + detail_width + 34.0)
 }
@@ -12039,7 +12373,7 @@ fn ship_defense_action_rail_width(game: &GameState) -> f32 {
     clamp_action_rail_width(slot_width.max(candidate_width).max(240.0) + 64.0)
 }
 
-fn draw_inventory_overlay(game: &GameState) {
+fn draw_inventory_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     let action_rail_width = selected_action_rail_width(game);
     let layout = inventory_overlay_layout(action_rail_width);
 
@@ -12058,6 +12392,15 @@ fn draw_inventory_overlay(game: &GameState) {
         1.0,
         Color::from_rgba(112, 151, 163, 150),
     );
+    draw_panel_corner_art(
+        Rect::new(
+            layout.panel_x,
+            layout.panel_y,
+            layout.panel_width,
+            layout.panel_height,
+        ),
+        panel_corner,
+    );
     draw_inventory_pane_separators(&layout);
 
     let detail_title = if game.selected_planet.is_some() {
@@ -12072,33 +12415,33 @@ fn draw_inventory_overlay(game: &GameState) {
     draw_text(
         detail_title,
         layout.detail_x,
-        layout.panel_y + 38.0,
+        layout.panel_y + GAME_PANEL_HEADER_BASELINE,
         26.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
         "Production",
         layout.production_x,
-        layout.panel_y + 38.0,
+        layout.panel_y + GAME_PANEL_HEADER_BASELINE,
         26.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_production_mode_tabs(
         game.production_mode,
         layout.production_x + layout.production_width - 204.0,
-        layout.panel_y + 19.0,
+        layout.panel_y + GAME_PANEL_HEADER_BASELINE - 19.0,
     );
     draw_text(
         "Inventory",
         layout.inventory_x,
-        layout.panel_y + 38.0,
+        layout.panel_y + GAME_PANEL_HEADER_BASELINE,
         26.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
         &format!("Credits {}", game.credits),
         layout.inventory_x + 128.0,
-        layout.panel_y + 36.0,
+        layout.panel_y + GAME_PANEL_HEADER_BASELINE - 2.0,
         17.0,
         Color::from_rgba(126, 156, 164, 220),
     );
@@ -12116,14 +12459,14 @@ fn draw_inventory_overlay(game: &GameState) {
     draw_inventory_text_list(
         &game.inventory,
         layout.inventory_x,
-        layout.panel_y + 66.0,
+        layout.panel_y + GAME_PANEL_BODY_TOP,
         layout.inventory_width,
         game.inventory_scroll,
     );
     draw_detail_panel(
         game,
         layout.detail_x,
-        layout.panel_y + 66.0,
+        layout.panel_y + GAME_PANEL_BODY_TOP,
         layout.detail_width,
     );
     if action_rail_width.is_some() {
@@ -12135,7 +12478,7 @@ fn draw_inventory_overlay(game: &GameState) {
 }
 
 fn draw_inventory_pane_separators(layout: &InventoryOverlayLayout) {
-    let top = layout.panel_y + 52.0;
+    let top = layout.panel_y + GAME_PANEL_BODY_TOP - 14.0;
     let bottom = layout.panel_y + layout.panel_height - 34.0;
     let first_x = layout.detail_x + layout.detail_width + 12.0;
     let second_x = layout.production_x + layout.production_width + 12.0;
@@ -12185,12 +12528,13 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
         if let Some(station) = game.stations.get(station_index) {
             draw_action_rail_frame(rail, "Actions");
             draw_station_service_list(StationActionRailRender {
+                content_registry: &game.content_registry,
                 station,
                 selected_service: game.selected_station_service,
                 in_range: station_in_interaction_range(&game.ship, station),
                 credits: game.credits,
                 inventory: &game.inventory,
-                purchased_unlocks: &game.purchased_recipe_unlocks,
+                completed_research: &game.completed_research,
                 action_rail_width: rail.w,
             });
         }
@@ -12432,7 +12776,7 @@ fn ship_detail_preview_rect(action_rail_width: Option<f32>) -> Rect {
     let layout = inventory_overlay_layout(action_rail_width);
     let detail_width = layout.detail_width;
     let detail_x = layout.detail_x;
-    let detail_y = layout.panel_y + 66.0;
+    let detail_y = layout.panel_y + GAME_PANEL_BODY_TOP;
     let image_size = 190.0;
     let center = vec2(detail_x + detail_width * 0.5, detail_y + 74.0);
 
@@ -12448,7 +12792,7 @@ fn ship_shield_slot_rect(slot_index: usize, action_rail_width: Option<f32>) -> R
     let layout = inventory_overlay_layout(action_rail_width);
     let detail_width = layout.detail_width;
     let detail_x = layout.detail_x;
-    let detail_y = layout.panel_y + 66.0;
+    let detail_y = layout.panel_y + GAME_PANEL_BODY_TOP;
     let stats_y = detail_y + 190.0 + 28.0;
     let row_y = stats_y + 28.0 + slot_index as f32 * 66.0;
 
@@ -12515,8 +12859,8 @@ fn station_service_button_rect(
     )
 }
 
-fn draw_skills_overlay(game: &GameState) {
-    let (panel_x, panel_y, panel_width, panel_height) = skills_panel_rect();
+fn draw_research_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
+    let (panel_x, panel_y, panel_width, panel_height) = research_panel_rect();
     let mouse = vec2(mouse_position().0, mouse_position().1);
 
     draw_rectangle(
@@ -12534,32 +12878,30 @@ fn draw_skills_overlay(game: &GameState) {
         1.0,
         Color::from_rgba(112, 151, 163, 150),
     );
+    draw_panel_corner_art(
+        Rect::new(panel_x, panel_y, panel_width, panel_height),
+        panel_corner,
+    );
 
     draw_text(
-        "Skills",
-        panel_x + 24.0,
-        panel_y + 40.0,
+        "Research",
+        panel_x + GAME_PANEL_HEADER_PAD_X,
+        panel_y + GAME_PANEL_HEADER_BASELINE,
         28.0,
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
-        "K toggle   Esc close",
-        panel_x + panel_width - 170.0,
+        &format!("Credits {}", game.credits),
+        panel_x + panel_width - 180.0,
         panel_y + 36.0,
         18.0,
         Color::from_rgba(126, 156, 164, 220),
     );
 
-    draw_skills_table(
-        &game.skills,
-        panel_x + 30.0,
-        panel_y + 82.0,
-        panel_width - 60.0,
-        mouse,
-    );
+    draw_research_tree(game, research_tree_rect(), mouse);
 }
 
-fn draw_ship_upgrades_overlay(game: &GameState) {
+fn draw_ship_upgrades_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     let (panel_x, panel_y, panel_width, panel_height) = ship_upgrades_panel_rect();
     let mouse = vec2(mouse_position().0, mouse_position().1);
 
@@ -12578,11 +12920,15 @@ fn draw_ship_upgrades_overlay(game: &GameState) {
         1.0,
         Color::from_rgba(112, 151, 163, 150),
     );
+    draw_panel_corner_art(
+        Rect::new(panel_x, panel_y, panel_width, panel_height),
+        panel_corner,
+    );
 
     draw_text(
         "Ship Upgrades",
-        panel_x + 24.0,
-        panel_y + 40.0,
+        panel_x + GAME_PANEL_HEADER_PAD_X,
+        panel_y + GAME_PANEL_HEADER_BASELINE,
         28.0,
         Color::from_rgba(235, 242, 226, 255),
     );
@@ -12598,16 +12944,16 @@ fn draw_ship_upgrades_overlay(game: &GameState) {
         content_registry: &game.content_registry,
         upgrades: &game.ship_upgrades,
         inventory: &game.inventory,
-        x: panel_x + 28.0,
-        y: panel_y + 84.0,
-        width: panel_width - 56.0,
+        x: panel_x + GAME_PANEL_CONTENT_PAD_X,
+        y: panel_y + GAME_PANEL_BODY_TOP,
+        width: panel_width - GAME_PANEL_CONTENT_PAD_X - 28.0,
         scroll: game.upgrades_scroll,
         viewport_height: ship_upgrades_table_viewport_height(),
         mouse,
     });
 }
 
-fn draw_content_debug_overlay(game: &GameState) {
+fn draw_content_debug_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     let layout = content_browser_layout();
     let width = layout.width;
     let height = layout.height;
@@ -12624,10 +12970,11 @@ fn draw_content_debug_overlay(game: &GameState) {
         1.0,
         Color::from_rgba(112, 151, 163, 150),
     );
+    draw_panel_corner_art(Rect::new(x, y, width, height), panel_corner);
     draw_text(
         "Content Browser",
-        x + 24.0,
-        y + 40.0,
+        x + GAME_PANEL_HEADER_PAD_X,
+        y + GAME_PANEL_HEADER_BASELINE,
         28.0,
         Color::from_rgba(235, 242, 226, 255),
     );
@@ -12662,8 +13009,8 @@ fn draw_content_debug_overlay(game: &GameState) {
     );
     draw_text(
         &fit_debug_text(&summary, width - 48.0, 17),
-        x + 24.0,
-        y + 66.0,
+        x + GAME_PANEL_HEADER_PAD_X,
+        y + GAME_PANEL_BODY_TOP - 28.0,
         17.0,
         Color::from_rgba(150, 221, 226, 235),
     );
@@ -12685,8 +13032,8 @@ fn draw_content_debug_overlay(game: &GameState) {
         };
         draw_text(
             &fit_debug_text(&transition_summary, width - 48.0, 15),
-            x + 24.0,
-            y + 88.0,
+            x + GAME_PANEL_HEADER_PAD_X,
+            y + GAME_PANEL_BODY_TOP - 6.0,
             15.0,
             Color::from_rgba(126, 156, 164, 220),
         );
@@ -12698,8 +13045,8 @@ fn draw_content_debug_overlay(game: &GameState) {
         .unwrap_or_else(|| "Showing all packs".to_string());
     draw_text(
         &fit_debug_text(&filter_label, width - 48.0, 15),
-        x + 24.0,
-        y + 108.0,
+        x + GAME_PANEL_HEADER_PAD_X,
+        y + GAME_PANEL_BODY_TOP + 14.0,
         15.0,
         Color::from_rgba(226, 190, 150, 235),
     );
@@ -12707,7 +13054,7 @@ fn draw_content_debug_overlay(game: &GameState) {
     draw_content_pack_column(
         game,
         &layout,
-        x + 24.0,
+        x + GAME_PANEL_CONTENT_PAD_X,
         layout.column_y,
         layout.column_width,
     );
@@ -12715,7 +13062,7 @@ fn draw_content_debug_overlay(game: &GameState) {
     let item_rows = filtered_content_item_rows(game, selected_pack_id);
     draw_content_debug_column(ContentColumnRender {
         title: "Items",
-        x: x + 24.0 + (layout.column_width + layout.column_gap),
+        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap),
         y: layout.column_y,
         width: layout.column_width,
         row_height: layout.row_height,
@@ -12728,7 +13075,7 @@ fn draw_content_debug_overlay(game: &GameState) {
     let recipe_rows = filtered_content_recipe_rows(game, selected_pack_id);
     draw_content_debug_column(ContentColumnRender {
         title: "Recipes",
-        x: x + 24.0 + (layout.column_width + layout.column_gap) * 2.0,
+        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap) * 2.0,
         y: layout.column_y,
         width: layout.column_width,
         row_height: layout.row_height,
@@ -12742,7 +13089,7 @@ fn draw_content_debug_overlay(game: &GameState) {
     let planet_rows = filtered_content_planet_rows(game, selected_pack_id);
     draw_content_debug_column(ContentColumnRender {
         title: "NPC Ships",
-        x: x + 24.0 + (layout.column_width + layout.column_gap) * 3.0,
+        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap) * 3.0,
         y: layout.column_y,
         width: layout.column_width,
         row_height: layout.row_height,
@@ -12754,7 +13101,7 @@ fn draw_content_debug_overlay(game: &GameState) {
 
     draw_content_debug_column(ContentColumnRender {
         title: "Planets",
-        x: x + 24.0 + (layout.column_width + layout.column_gap) * 4.0,
+        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap) * 4.0,
         y: layout.column_y,
         width: layout.column_width,
         row_height: layout.row_height,
@@ -12976,7 +13323,10 @@ fn ship_upgrades_panel_rect() -> (f32, f32, f32, f32) {
 
 fn ship_upgrade_table_origin() -> Vec2 {
     let (panel_x, panel_y, _, _) = ship_upgrades_panel_rect();
-    vec2(panel_x + 28.0, panel_y + 84.0)
+    vec2(
+        panel_x + GAME_PANEL_CONTENT_PAD_X,
+        panel_y + GAME_PANEL_BODY_TOP,
+    )
 }
 
 fn ship_upgrades_table_viewport_top() -> f32 {
@@ -12985,7 +13335,7 @@ fn ship_upgrades_table_viewport_top() -> f32 {
 
 fn ship_upgrades_table_viewport_height() -> f32 {
     let (_, _, _, panel_height) = ship_upgrades_panel_rect();
-    (panel_height - 126.0).max(0.0)
+    (panel_height - GAME_PANEL_BODY_TOP - 42.0).max(0.0)
 }
 
 fn hovered_ship_upgrade_plus(mouse: Vec2, row_count: usize, scroll: f32) -> Option<usize> {
@@ -13148,160 +13498,1109 @@ fn draw_plus_button(x: f32, y: f32, enabled: bool, enabled_color: Color, disable
     );
 }
 
-fn skills_panel_rect() -> (f32, f32, f32, f32) {
-    let width = (screen_width() - 48.0).min(760.0);
-    let height = 320.0_f32.min(screen_height() - 72.0);
+fn research_panel_rect() -> (f32, f32, f32, f32) {
+    let width = (screen_width() * 0.8).clamp(640.0, screen_width() - 32.0);
+    let height = (screen_height() * 0.8).clamp(420.0, screen_height() - 32.0);
     let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5 + 10.0;
+    let y = (screen_height() - height) * 0.5;
     (x, y, width, height)
 }
 
-fn skill_table_origin() -> Vec2 {
-    let (panel_x, panel_y, _, _) = skills_panel_rect();
-    vec2(panel_x + 30.0, panel_y + 82.0)
+fn research_tree_rect() -> Rect {
+    let (panel_x, panel_y, panel_width, panel_height) = research_panel_rect();
+    Rect::new(
+        panel_x + GAME_PANEL_CONTENT_PAD_X + RESEARCH_TREE_INSET,
+        panel_y + GAME_PANEL_BODY_TOP + RESEARCH_TREE_INSET,
+        panel_width - GAME_PANEL_CONTENT_PAD_X - 30.0 - RESEARCH_TREE_INSET * 2.0,
+        panel_height - 128.0 - RESEARCH_TREE_INSET * 2.0,
+    )
 }
 
-fn hovered_skill_plus(mouse: Vec2, row_count: usize) -> Option<usize> {
-    let origin = skill_table_origin();
-    let (_, _, panel_width, _) = skills_panel_rect();
-    let layout = skills_table_layout(origin.x, origin.y, panel_width - 60.0);
-    ui_hovered_table_cell(mouse, &layout, row_count, 0.0)
-        .filter(|cell| cell.column == 3)
-        .map(|cell| cell.row)
+fn research_detail_rect() -> Rect {
+    let bounds = research_tree_rect();
+    Rect::new(
+        bounds.x,
+        bounds.y + bounds.h - RESEARCH_DETAIL_HEIGHT,
+        bounds.w,
+        RESEARCH_DETAIL_HEIGHT,
+    )
 }
 
-fn hovered_skill_row(mouse: Vec2, row_count: usize) -> Option<usize> {
-    let origin = skill_table_origin();
-    let (_, _, panel_width, _) = skills_panel_rect();
-    let layout = skills_table_layout(origin.x, origin.y, panel_width - 60.0);
-    ui_hovered_table_cell(mouse, &layout, row_count, 0.0).map(|cell| cell.row)
+fn research_start_button_rect(detail_rect: Rect) -> Rect {
+    Rect::new(
+        detail_rect.x + detail_rect.w - 166.0,
+        detail_rect.y + detail_rect.h - 46.0,
+        148.0,
+        34.0,
+    )
 }
 
-fn draw_skills_table(skills: &[Skill; SKILL_COUNT], x: f32, y: f32, width: f32, mouse: Vec2) {
-    let layout = skills_table_layout(x, y, width);
-    let skill_column = layout.columns[0];
-    let level_column = layout.columns[1];
-    let xp_column = layout.columns[2];
-    let plus_column = layout.columns[3];
-    let header = Color::from_rgba(168, 204, 210, 255);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let active = Color::from_rgba(150, 221, 226, 255);
-    let unavailable = Color::from_rgba(126, 143, 148, 255);
+struct ResearchGridLayout {
+    min_column: i32,
+    max_column: i32,
+    min_row: i32,
+    max_row: i32,
+    node_width: f32,
+    node_height: f32,
+    tree_height: f32,
+    step_x: f32,
+    step_y: f32,
+}
 
-    draw_text("Skill", skill_column.x, y, 16.0, header);
-    draw_text("Level", level_column.x, y, 16.0, header);
-    draw_text("XP / Cost", xp_column.x, y, 16.0, header);
-    draw_text("+", plus_column.x + 10.0, y, 16.0, header);
+fn research_grid_layout(registry: &content::ContentRegistry, bounds: Rect) -> ResearchGridLayout {
+    let (min_column, max_column, min_row, max_row) = research_grid_extents(registry);
+    let column_count = (max_column - min_column + 1).max(1) as f32;
+    let row_count = (max_row - min_row + 1).max(1) as f32;
+    let detail_height = RESEARCH_DETAIL_HEIGHT + 12.0;
+    let tree_height = (bounds.h - detail_height - 22.0 - RESEARCH_TIER_LABEL_HEIGHT).max(180.0);
+    let node_width = ((bounds.w - (column_count - 1.0) * 34.0) / column_count).clamp(150.0, 210.0);
+    let node_height = 54.0;
+    let step_x = if column_count <= 1.0 {
+        0.0
+    } else {
+        (bounds.w - node_width) / (column_count - 1.0)
+    };
+    let step_y = if row_count <= 1.0 {
+        0.0
+    } else {
+        (tree_height - node_height) / (row_count - 1.0)
+    };
 
-    let hovered = hovered_skill_plus(mouse, skills.len());
-    let hovered_row = hovered_skill_row(mouse, skills.len());
-    for (row, skill) in skills.iter().enumerate() {
-        let row_rect = ui_table_row_rect(&layout, row, 0.0);
-        if !ui_table_row_visible(&layout, row_rect) {
+    ResearchGridLayout {
+        min_column,
+        max_column,
+        min_row,
+        max_row,
+        node_width,
+        node_height,
+        tree_height,
+        step_x,
+        step_y,
+    }
+}
+
+fn research_node_rect(game: &GameState, research: &content::ResearchDef, bounds: Rect) -> Rect {
+    let layout = research_grid_layout(&game.content_registry, bounds);
+    Rect::new(
+        bounds.x + (research.column - layout.min_column) as f32 * layout.step_x,
+        bounds.y
+            + RESEARCH_TIER_LABEL_HEIGHT
+            + (research.row - layout.min_row) as f32 * layout.step_y,
+        layout.node_width,
+        layout.node_height,
+    )
+}
+
+fn research_grid_extents(registry: &content::ContentRegistry) -> (i32, i32, i32, i32) {
+    let mut min_column = 0;
+    let mut max_column = 0;
+    let mut min_row = 0;
+    let mut max_row = 0;
+    let mut initialized = false;
+    for research_id in &registry.research_order {
+        let Some(research) = registry.research.get(research_id) else {
             continue;
+        };
+        if !initialized {
+            min_column = research.column;
+            max_column = research.column;
+            min_row = research.row;
+            max_row = research.row;
+            initialized = true;
+        } else {
+            min_column = min_column.min(research.column);
+            max_column = max_column.max(research.column);
+            min_row = min_row.min(research.row);
+            max_row = max_row.max(research.row);
         }
-        let row_y = row_rect.y + 25.0;
-        let affordable = skill.can_level_up();
-        let is_hovered = hovered == Some(row) || hovered_row == Some(row);
+    }
+    (min_column, max_column, min_row, max_row)
+}
 
-        if row % 2 == 0 || is_hovered {
-            draw_rectangle(
-                row_rect.x,
-                row_rect.y,
-                row_rect.w,
-                row_rect.h,
-                Color::from_rgba(10, 18, 24, if is_hovered { 170 } else { 100 }),
+fn hovered_research_node_id(game: &GameState, mouse: Vec2) -> Option<String> {
+    let bounds = research_tree_rect();
+    game.content_registry
+        .research_order
+        .iter()
+        .filter_map(|research_id| game.content_registry.research.get(research_id))
+        .find(|research| research_node_rect(game, research, bounds).contains(mouse))
+        .map(|research| research.id.clone())
+}
+
+fn draw_research_tree(game: &GameState, bounds: Rect, mouse: Vec2) {
+    let registry = &game.content_registry;
+    if registry.research_order.is_empty() {
+        draw_text(
+            "No research loaded",
+            bounds.x,
+            bounds.y + 28.0,
+            22.0,
+            Color::from_rgba(226, 190, 150, 255),
+        );
+        return;
+    }
+
+    draw_research_tier_background(game, bounds);
+
+    for research_id in &registry.research_order {
+        let Some(research) = registry.research.get(research_id) else {
+            continue;
+        };
+        let from = research_node_rect(game, research, bounds);
+        for required in research.requires.iter().chain(research.revealed_by.iter()) {
+            let Some(required_research) = registry.research.get(required) else {
+                continue;
+            };
+            let to = research_node_rect(game, required_research, bounds);
+            draw_research_connection(game, required_research, research, to, from);
+        }
+    }
+
+    let mut hovered: Option<&content::ResearchDef> = None;
+    for research_id in &registry.research_order {
+        let Some(research) = registry.research.get(research_id) else {
+            continue;
+        };
+        let rect = research_node_rect(game, research, bounds);
+        let is_hovered = rect.contains(mouse);
+        let is_selected = game
+            .selected_research
+            .as_ref()
+            .is_some_and(|selected| selected == &research.id);
+        if is_hovered {
+            hovered = Some(research);
+        }
+        draw_research_node(game, research, rect, is_hovered, is_selected);
+    }
+
+    let selected = game
+        .selected_research
+        .as_ref()
+        .and_then(|research_id| registry.research.get(research_id));
+    draw_research_detail(
+        game,
+        selected.or(hovered),
+        selected.is_some(),
+        research_detail_rect(),
+    );
+}
+
+fn draw_research_node(
+    game: &GameState,
+    research: &content::ResearchDef,
+    rect: Rect,
+    hovered: bool,
+    selected: bool,
+) {
+    let state = research_node_state(
+        research,
+        game.active_research.as_ref(),
+        &game.completed_research,
+        game.credits,
+    );
+    let palette = research_node_palette(state);
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, palette.shadow);
+    draw_rectangle(
+        rect.x + 2.0,
+        rect.y + 2.0,
+        rect.w - 4.0,
+        rect.h - 4.0,
+        palette.fill,
+    );
+    draw_rectangle(
+        rect.x + 5.0,
+        rect.y + 5.0,
+        rect.w - 10.0,
+        1.0,
+        palette.highlight,
+    );
+    draw_rectangle(
+        rect.x + 5.0,
+        rect.y + rect.h - 6.0,
+        rect.w - 10.0,
+        1.0,
+        palette.lowlight,
+    );
+    draw_rectangle(rect.x + 2.0, rect.y + 2.0, 5.0, rect.h - 4.0, palette.rail);
+    draw_research_node_socket(rect, palette, state);
+    draw_research_node_tier_badge(rect, research.tier, palette);
+    if state == ResearchNodeState::Locked {
+        draw_research_node_hatch(rect);
+    }
+    if state == ResearchNodeState::Researching {
+        draw_research_node_progress(game, research, rect, palette.rail);
+    }
+    draw_text(
+        &fit_debug_text(&research.name, rect.w - 18.0, 17),
+        rect.x + 28.0,
+        rect.y + 31.0,
+        17.0,
+        palette.text,
+    );
+    if state == ResearchNodeState::Completed {
+        draw_research_node_check(rect, palette.rail);
+    }
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        if selected || hovered { 2.0 } else { 1.0 },
+        if selected {
+            palette.selected
+        } else {
+            palette.stroke
+        },
+    );
+}
+
+fn draw_research_tier_background(game: &GameState, bounds: Rect) {
+    let registry = &game.content_registry;
+    let layout = research_grid_layout(registry, bounds);
+    let band_top = bounds.y;
+    let band_height = layout.tree_height + RESEARCH_TIER_LABEL_HEIGHT;
+    let band_y = band_top;
+    let band_bottom = band_y + band_height;
+
+    draw_research_blueprint_background(bounds, &layout, band_y, band_bottom);
+
+    for column in layout.min_column..=layout.max_column {
+        let column_index = (column - layout.min_column) as f32;
+        let node_x = bounds.x + column_index * layout.step_x;
+        let band_x = if column == layout.min_column {
+            bounds.x
+        } else {
+            node_x - layout.step_x * 0.5
+        };
+        let next_x = if column == layout.max_column {
+            bounds.x + bounds.w
+        } else {
+            node_x + layout.node_width + layout.step_x * 0.5
+        };
+        let band_width = (next_x - band_x).max(layout.node_width);
+        let fill_alpha = if column % 2 == 0 { 22 } else { 12 };
+        draw_rectangle(
+            band_x,
+            band_y,
+            band_width,
+            band_height,
+            Color::from_rgba(28, 58, 66, fill_alpha),
+        );
+        draw_line(
+            band_x,
+            band_y + RESEARCH_TIER_LABEL_HEIGHT,
+            band_x,
+            band_bottom,
+            1.0,
+            Color::from_rgba(82, 114, 124, 46),
+        );
+        draw_research_column_ticks(node_x, band_y + RESEARCH_TIER_LABEL_HEIGHT, band_bottom);
+
+        if let Some(tier) = research_tier_for_column(registry, column) {
+            let label = research_tier_label(tier);
+            draw_text(
+                label,
+                node_x,
+                band_y + 17.0,
+                14.0,
+                Color::from_rgba(126, 156, 164, 190),
+            );
+            draw_text(
+                &format!("T{}", tier),
+                node_x + layout.node_width - 28.0,
+                band_y + 17.0,
+                13.0,
+                Color::from_rgba(226, 190, 150, 150),
+            );
+            draw_line(
+                node_x,
+                band_y + 23.0,
+                node_x + layout.node_width,
+                band_y + 23.0,
+                1.0,
+                Color::from_rgba(96, 137, 150, 92),
             );
         }
-
-        draw_text(
-            &fit_debug_text(skill.kind.name(), skill_column.w, 22),
-            skill_column.x,
-            row_y,
-            22.0,
-            text,
-        );
-        draw_text(
-            &skill.level.to_string(),
-            level_column.x,
-            row_y,
-            22.0,
-            active,
-        );
-        draw_text(
-            &fit_debug_text(
-                &format!("{:.0} / {:.0}", skill.xp, skill.cost_to_next_level()),
-                xp_column.w,
-                22,
-            ),
-            xp_column.x,
-            row_y,
-            22.0,
-            if affordable { active } else { unavailable },
-        );
-
-        draw_plus_button(
-            plus_column.x,
-            row_rect.y + 1.0,
-            affordable,
-            active,
-            unavailable,
-        );
     }
 
-    if let Some(row) = hovered_row {
-        draw_skill_tooltip(skills[row], mouse);
+    draw_line(
+        bounds.x,
+        band_y + RESEARCH_TIER_LABEL_HEIGHT,
+        bounds.x + bounds.w,
+        band_y + RESEARCH_TIER_LABEL_HEIGHT,
+        1.0,
+        Color::from_rgba(96, 137, 150, 78),
+    );
+}
+
+fn draw_research_blueprint_background(
+    bounds: Rect,
+    layout: &ResearchGridLayout,
+    top: f32,
+    bottom: f32,
+) {
+    draw_research_blueprint_grid(bounds, top, bottom);
+    draw_research_orbital_arcs(bounds, top, bottom);
+    draw_research_horizontal_lanes(bounds, layout, top, bottom);
+    draw_research_coordinate_marks(bounds, layout, top, bottom);
+}
+
+fn draw_research_blueprint_grid(bounds: Rect, top: f32, bottom: f32) {
+    let grid = Color::from_rgba(96, 137, 150, 16);
+    let major = Color::from_rgba(96, 137, 150, 28);
+    let mut x = bounds.x;
+    let mut index = 0;
+    while x <= bounds.x + bounds.w {
+        draw_line(
+            x,
+            top,
+            x,
+            bottom,
+            1.0,
+            if index % 4 == 0 { major } else { grid },
+        );
+        x += 24.0;
+        index += 1;
+    }
+
+    let mut y = top;
+    index = 0;
+    while y <= bottom {
+        draw_line(
+            bounds.x,
+            y,
+            bounds.x + bounds.w,
+            y,
+            1.0,
+            if index % 4 == 0 { major } else { grid },
+        );
+        y += 24.0;
+        index += 1;
     }
 }
 
-fn draw_skill_tooltip(skill: Skill, mouse: Vec2) {
-    let width = 350.0;
-    let height = 130.0;
-    let x = (mouse.x + 18.0)
-        .min(screen_width() - width - 18.0)
-        .max(18.0);
-    let y = (mouse.y + 18.0)
-        .min(screen_height() - height - 18.0)
-        .max(18.0);
-    let panel = Color::from_rgba(2, 6, 10, 255);
-    let border = Color::from_rgba(112, 151, 163, 170);
-    let label = Color::from_rgba(126, 156, 164, 220);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let active = Color::from_rgba(150, 221, 226, 255);
+fn draw_research_orbital_arcs(bounds: Rect, top: f32, bottom: f32) {
+    let left_center = vec2(bounds.x + bounds.w * 0.10, top + 36.0);
+    let right_center = vec2(bounds.x + bounds.w * 0.96, top + (bottom - top) * 0.58);
+    for (radius, alpha) in [(88.0, 24), (126.0, 16), (168.0, 10)] {
+        draw_circle_lines(
+            left_center.x,
+            left_center.y,
+            radius,
+            1.0,
+            Color::from_rgba(96, 137, 150, alpha),
+        );
+    }
+    for (radius, alpha) in [(70.0, 26), (92.0, 18), (118.0, 12)] {
+        draw_circle_lines(
+            right_center.x,
+            right_center.y,
+            radius,
+            1.0,
+            Color::from_rgba(226, 190, 150, alpha),
+        );
+    }
+}
 
-    draw_rectangle(x, y, width, height, panel);
-    draw_rectangle_lines(x, y, width, height, 1.0, border);
-    draw_text(skill.kind.name(), x + 14.0, y + 28.0, 22.0, text);
-    draw_text("Levels 1-10", x + 14.0, y + 56.0, 15.0, label);
-    draw_text(
-        &format!(
-            "+{:.0}% {} speed",
-            skill.speed_bonus_percent(),
-            skill.kind.action_name()
-        ),
-        x + 118.0,
-        y + 56.0,
-        17.0,
-        active,
+fn draw_research_horizontal_lanes(
+    bounds: Rect,
+    layout: &ResearchGridLayout,
+    top: f32,
+    bottom: f32,
+) {
+    let lane_top = top + RESEARCH_TIER_LABEL_HEIGHT;
+    for row in layout.min_row..=layout.max_row {
+        let row_index = (row - layout.min_row) as f32;
+        let y = lane_top + row_index * layout.step_y + layout.node_height * 0.5;
+        if y >= bottom {
+            break;
+        }
+        draw_line(
+            bounds.x,
+            y,
+            bounds.x + bounds.w,
+            y,
+            1.0,
+            Color::from_rgba(82, 114, 124, 28),
+        );
+        draw_line(
+            bounds.x,
+            y + 6.0,
+            bounds.x + bounds.w,
+            y + 6.0,
+            1.0,
+            Color::from_rgba(28, 58, 66, 16),
+        );
+    }
+}
+
+fn draw_research_coordinate_marks(
+    bounds: Rect,
+    layout: &ResearchGridLayout,
+    top: f32,
+    bottom: f32,
+) {
+    let lane_top = top + RESEARCH_TIER_LABEL_HEIGHT;
+    let mark = Color::from_rgba(150, 221, 226, 42);
+    for column in layout.min_column..=layout.max_column {
+        let x = bounds.x + (column - layout.min_column) as f32 * layout.step_x;
+        for row in layout.min_row..=layout.max_row {
+            let y = lane_top + (row - layout.min_row) as f32 * layout.step_y;
+            if y >= bottom {
+                break;
+            }
+            let center = vec2(x + layout.node_width * 0.5, y + layout.node_height * 0.5);
+            draw_line(
+                center.x - 5.0,
+                center.y,
+                center.x - 2.0,
+                center.y,
+                1.0,
+                mark,
+            );
+            draw_line(
+                center.x + 2.0,
+                center.y,
+                center.x + 5.0,
+                center.y,
+                1.0,
+                mark,
+            );
+            draw_line(
+                center.x,
+                center.y - 5.0,
+                center.x,
+                center.y - 2.0,
+                1.0,
+                mark,
+            );
+            draw_line(
+                center.x,
+                center.y + 2.0,
+                center.x,
+                center.y + 5.0,
+                1.0,
+                mark,
+            );
+        }
+    }
+}
+
+fn draw_research_column_ticks(x: f32, top: f32, bottom: f32) {
+    let mut y = top + 18.0;
+    while y < bottom - 6.0 {
+        draw_line(x, y, x + 12.0, y, 1.0, Color::from_rgba(96, 137, 150, 42));
+        y += 34.0;
+    }
+}
+
+fn research_tier_for_column(registry: &content::ContentRegistry, column: i32) -> Option<u32> {
+    registry
+        .research_order
+        .iter()
+        .filter_map(|research_id| registry.research.get(research_id))
+        .filter(|research| research.column == column)
+        .map(|research| research.tier)
+        .min()
+}
+
+fn research_tier_label(tier: u32) -> &'static str {
+    match tier {
+        0 => "Survey",
+        1 => "Extraction",
+        2 => "Refinement",
+        3 => "Advanced Systems",
+        4 => "Remote Systems",
+        _ => "Frontier Systems",
+    }
+}
+
+fn draw_research_connection(
+    game: &GameState,
+    from_research: &content::ResearchDef,
+    to_research: &content::ResearchDef,
+    from: Rect,
+    to: Rect,
+) {
+    let from_state = research_node_state(
+        from_research,
+        game.active_research.as_ref(),
+        &game.completed_research,
+        game.credits,
     );
-    draw_text("Levels 11-20", x + 14.0, y + 86.0, 15.0, label);
-    draw_text(
-        &format!(
-            "{:.2}% free extra output",
-            skill.bonus_output_chance_percent()
-        ),
-        x + 118.0,
-        y + 86.0,
-        17.0,
-        active,
+    let to_state = research_node_state(
+        to_research,
+        game.active_research.as_ref(),
+        &game.completed_research,
+        game.credits,
     );
+    let active = to_state == ResearchNodeState::Researching;
+    let completed =
+        from_state == ResearchNodeState::Completed && to_state == ResearchNodeState::Completed;
+    let available = matches!(
+        to_state,
+        ResearchNodeState::Affordable
+            | ResearchNodeState::Available
+            | ResearchNodeState::Researching
+    ) && from_state == ResearchNodeState::Completed;
+    let color = if active {
+        let pulse = (get_time() as f32 * 5.5).sin() * 0.5 + 0.5;
+        Color::new(0.88, 0.74, 0.45, 0.55 + pulse * 0.34)
+    } else if completed {
+        Color::from_rgba(142, 218, 166, 190)
+    } else if available {
+        Color::from_rgba(150, 221, 226, 150)
+    } else {
+        Color::from_rgba(67, 87, 94, 95)
+    };
+    let glow = if active {
+        Color::from_rgba(226, 190, 150, 48)
+    } else if completed || available {
+        Color::from_rgba(150, 221, 226, 34)
+    } else {
+        Color::from_rgba(31, 42, 48, 50)
+    };
+    let start = vec2(from.x + from.w, from.y + from.h * 0.5);
+    let end = vec2(to.x, to.y + to.h * 0.5);
+    let elbow_x = (start.x + end.x) * 0.5;
+
+    draw_research_trace_segment(start, vec2(elbow_x, start.y), glow, 5.0);
+    draw_research_trace_segment(vec2(elbow_x, start.y), vec2(elbow_x, end.y), glow, 5.0);
+    draw_research_trace_segment(vec2(elbow_x, end.y), end, glow, 5.0);
+    draw_research_trace_segment(start, vec2(elbow_x, start.y), color, 2.0);
+    draw_research_trace_segment(vec2(elbow_x, start.y), vec2(elbow_x, end.y), color, 2.0);
+    draw_research_trace_segment(vec2(elbow_x, end.y), end, color, 2.0);
+
+    let node_color = if active || completed || available {
+        color
+    } else {
+        Color::from_rgba(67, 87, 94, 115)
+    };
+    draw_circle(start.x, start.y, 3.0, node_color);
+    draw_circle(end.x, end.y, 3.0, node_color);
+    draw_circle(elbow_x, start.y, 2.5, node_color);
+    draw_circle(elbow_x, end.y, 2.5, node_color);
+}
+
+fn draw_research_trace_segment(start: Vec2, end: Vec2, color: Color, thickness: f32) {
+    draw_line(start.x, start.y, end.x, end.y, thickness, color);
+}
+
+#[derive(Clone, Copy)]
+struct ResearchNodePalette {
+    fill: Color,
+    shadow: Color,
+    stroke: Color,
+    selected: Color,
+    rail: Color,
+    highlight: Color,
+    lowlight: Color,
+    text: Color,
+}
+
+fn research_node_palette(state: ResearchNodeState) -> ResearchNodePalette {
+    match state {
+        ResearchNodeState::Completed => ResearchNodePalette {
+            fill: Color::from_rgba(13, 45, 37, 235),
+            shadow: Color::from_rgba(2, 7, 10, 220),
+            stroke: Color::from_rgba(98, 172, 132, 210),
+            selected: Color::from_rgba(160, 238, 182, 245),
+            rail: Color::from_rgba(142, 218, 166, 235),
+            highlight: Color::from_rgba(174, 246, 194, 70),
+            lowlight: Color::from_rgba(5, 16, 14, 190),
+            text: Color::from_rgba(230, 244, 222, 255),
+        },
+        ResearchNodeState::Researching => ResearchNodePalette {
+            fill: Color::from_rgba(44, 36, 17, 238),
+            shadow: Color::from_rgba(2, 7, 10, 220),
+            stroke: Color::from_rgba(204, 164, 92, 225),
+            selected: Color::from_rgba(255, 212, 128, 245),
+            rail: Color::from_rgba(226, 190, 150, 245),
+            highlight: Color::from_rgba(255, 218, 148, 76),
+            lowlight: Color::from_rgba(19, 13, 5, 200),
+            text: Color::from_rgba(248, 233, 204, 255),
+        },
+        ResearchNodeState::Affordable => ResearchNodePalette {
+            fill: Color::from_rgba(12, 44, 54, 238),
+            shadow: Color::from_rgba(2, 7, 10, 220),
+            stroke: Color::from_rgba(112, 197, 205, 225),
+            selected: Color::from_rgba(172, 240, 246, 250),
+            rail: Color::from_rgba(150, 221, 226, 245),
+            highlight: Color::from_rgba(182, 245, 248, 78),
+            lowlight: Color::from_rgba(4, 14, 18, 200),
+            text: Color::from_rgba(235, 242, 226, 255),
+        },
+        ResearchNodeState::Available => ResearchNodePalette {
+            fill: Color::from_rgba(24, 34, 40, 232),
+            shadow: Color::from_rgba(2, 7, 10, 215),
+            stroke: Color::from_rgba(135, 147, 124, 185),
+            selected: Color::from_rgba(226, 190, 150, 230),
+            rail: Color::from_rgba(226, 190, 150, 205),
+            highlight: Color::from_rgba(226, 190, 150, 48),
+            lowlight: Color::from_rgba(6, 10, 13, 195),
+            text: Color::from_rgba(214, 224, 211, 235),
+        },
+        ResearchNodeState::Locked => ResearchNodePalette {
+            fill: Color::from_rgba(15, 22, 27, 190),
+            shadow: Color::from_rgba(2, 6, 9, 210),
+            stroke: Color::from_rgba(78, 98, 104, 130),
+            selected: Color::from_rgba(104, 130, 136, 180),
+            rail: Color::from_rgba(82, 114, 124, 135),
+            highlight: Color::from_rgba(112, 151, 163, 28),
+            lowlight: Color::from_rgba(3, 6, 8, 190),
+            text: Color::from_rgba(126, 143, 148, 215),
+        },
+    }
+}
+
+fn draw_research_node_socket(rect: Rect, palette: ResearchNodePalette, state: ResearchNodeState) {
+    let center = vec2(rect.x + 16.0, rect.y + rect.h * 0.5);
+    let radius = 6.0;
+    draw_circle(
+        center.x,
+        center.y,
+        radius + 3.0,
+        Color::from_rgba(2, 7, 10, 230),
+    );
+    draw_circle_lines(center.x, center.y, radius + 2.0, 1.0, palette.stroke);
+    draw_circle(
+        center.x,
+        center.y,
+        radius,
+        if state == ResearchNodeState::Locked {
+            Color::from_rgba(14, 20, 24, 225)
+        } else {
+            palette.rail
+        },
+    );
+}
+
+fn draw_research_node_tier_badge(rect: Rect, tier: u32, palette: ResearchNodePalette) {
+    let badge = Rect::new(rect.x + rect.w - 28.0, rect.y + 7.0, 20.0, 16.0);
+    draw_rectangle(
+        badge.x,
+        badge.y,
+        badge.w,
+        badge.h,
+        Color::from_rgba(4, 12, 18, 210),
+    );
+    draw_rectangle_lines(badge.x, badge.y, badge.w, badge.h, 1.0, palette.stroke);
+    let label = tier.to_string();
+    let measure = measure_text(&label, None, 12, 1.0);
     draw_text(
-        &format!("Next level cost {:.0} XP", skill.cost_to_next_level()),
-        x + 14.0,
-        y + 116.0,
-        16.0,
+        &label,
+        badge.x + (badge.w - measure.width) * 0.5,
+        badge.y + 12.0,
+        12.0,
+        palette.text,
+    );
+}
+
+fn draw_research_node_hatch(rect: Rect) {
+    let color = Color::from_rgba(82, 114, 124, 42);
+    let mut x = rect.x - rect.h;
+    while x < rect.x + rect.w {
+        draw_line(
+            x,
+            rect.y + rect.h - 4.0,
+            x + rect.h,
+            rect.y + 4.0,
+            1.0,
+            color,
+        );
+        x += 14.0;
+    }
+}
+
+fn draw_research_node_progress(
+    game: &GameState,
+    research: &content::ResearchDef,
+    rect: Rect,
+    color: Color,
+) {
+    let Some(active) = game.active_research.as_ref() else {
+        return;
+    };
+    if active.research != research.id || research.duration_seconds <= 0.0 {
+        return;
+    }
+    let progress = 1.0 - (active.remaining_seconds / research.duration_seconds).clamp(0.0, 1.0);
+    let track = Rect::new(rect.x + 9.0, rect.y + rect.h - 10.0, rect.w - 18.0, 3.0);
+    draw_rectangle(
+        track.x,
+        track.y,
+        track.w,
+        track.h,
+        Color::from_rgba(3, 8, 12, 230),
+    );
+    draw_rectangle(track.x, track.y, track.w * progress, track.h, color);
+}
+
+fn draw_research_node_check(rect: Rect, color: Color) {
+    let x = rect.x + rect.w - 20.0;
+    let y = rect.y + rect.h - 14.0;
+    draw_line(x - 5.0, y - 1.0, x - 1.0, y + 4.0, 2.0, color);
+    draw_line(x - 1.0, y + 4.0, x + 7.0, y - 6.0, 2.0, color);
+}
+
+fn draw_research_detail(
+    game: &GameState,
+    research: Option<&content::ResearchDef>,
+    selected: bool,
+    rect: Rect,
+) {
+    let panel = Color::from_rgba(5, 12, 17, 218);
+    let border = Color::from_rgba(82, 114, 124, 132);
+    let label = Color::from_rgba(126, 156, 164, 210);
+    let text = Color::from_rgba(235, 242, 226, 255);
+    let detail = Color::from_rgba(178, 197, 203, 235);
+
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, panel);
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        5.0,
+        rect.h,
+        Color::from_rgba(150, 221, 226, 90),
+    );
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, border);
+    draw_line(
+        rect.x + 14.0,
+        rect.y + 38.0,
+        rect.x + rect.w - 14.0,
+        rect.y + 38.0,
+        1.0,
+        Color::from_rgba(96, 137, 150, 90),
+    );
+    let button = research_start_button_rect(rect);
+    let Some(research) = research else {
+        draw_text("Research Console", rect.x + 18.0, rect.y + 27.0, 20.0, text);
+        draw_text(
+            "Click a module to inspect its requirements, rewards, cost, and research time.",
+            rect.x + 18.0,
+            rect.y + 72.0,
+            18.0,
+            label,
+        );
+        return;
+    };
+    let state = research_node_state(
+        research,
+        game.active_research.as_ref(),
+        &game.completed_research,
+        game.credits,
+    );
+    let palette = research_node_palette(state);
+    let left_x = rect.x + 18.0;
+    let right_x = rect.x + rect.w * 0.48;
+    let right_width = button.x - right_x - 18.0;
+
+    draw_text(
+        &fit_debug_text(&research.name, rect.w * 0.42, 24),
+        left_x,
+        rect.y + 28.0,
+        24.0,
+        text,
+    );
+    draw_research_chip(
+        rect.x + rect.w - 378.0,
+        rect.y + 12.0,
+        112.0,
+        state.label(),
+        palette.rail,
+    );
+    draw_research_chip(
+        rect.x + rect.w - 254.0,
+        rect.y + 12.0,
+        94.0,
+        &format!("{} cr", research.price),
+        Color::from_rgba(150, 221, 226, 225),
+    );
+    draw_research_chip(
+        rect.x + rect.w - 148.0,
+        rect.y + 12.0,
+        130.0,
+        &format!("{} time", format_seconds(research.duration_seconds)),
+        Color::from_rgba(226, 190, 150, 225),
+    );
+
+    if let Some(summary) = research.summary.as_deref() {
+        draw_wrapped_text(summary, left_x, rect.y + 62.0, rect.w * 0.40, 15, detail);
+    }
+
+    draw_text("Requirements", right_x, rect.y + 62.0, 15.0, label);
+    draw_research_detail_list(
+        &research_requirement_labels(&game.content_registry, research),
+        right_x,
+        rect.y + 84.0,
+        right_width * 0.48,
+        Color::from_rgba(205, 226, 230, 245),
+    );
+
+    let rewards_x = right_x + right_width * 0.52;
+    draw_text("Rewards", rewards_x, rect.y + 62.0, 15.0, label);
+    draw_research_reward_list(
+        &game.content_registry,
+        research,
+        rewards_x,
+        rect.y + 84.0,
+        right_width * 0.48,
         Color::from_rgba(226, 190, 150, 245),
     );
+
+    draw_research_detail_progress(game, research, rect, state, palette.rail);
+    draw_research_start_button(button, state, selected);
+}
+
+fn draw_research_chip(x: f32, y: f32, width: f32, value: &str, color: Color) {
+    draw_rectangle(x, y, width, 24.0, Color::from_rgba(8, 18, 24, 224));
+    draw_rectangle(x, y, 4.0, 24.0, color);
+    draw_rectangle_lines(x, y, width, 24.0, 1.0, Color { a: 0.7, ..color });
+    draw_text(
+        &fit_debug_text(value, width - 14.0, 14),
+        x + 9.0,
+        y + 17.0,
+        14.0,
+        Color::from_rgba(235, 242, 226, 245),
+    );
+}
+
+fn draw_research_detail_list(items: &[String], x: f32, y: f32, width: f32, color: Color) {
+    if items.is_empty() {
+        draw_text("None", x, y, 14.0, Color::from_rgba(126, 156, 164, 185));
+        return;
+    }
+    for (index, item) in items.iter().take(3).enumerate() {
+        let row_y = y + index as f32 * 18.0;
+        draw_rectangle(x, row_y - 12.0, 5.0, 5.0, color);
+        draw_text(
+            &fit_debug_text(item, width - 16.0, 14),
+            x + 13.0,
+            row_y,
+            14.0,
+            color,
+        );
+    }
+}
+
+fn draw_research_reward_list(
+    registry: &content::ContentRegistry,
+    research: &content::ResearchDef,
+    x: f32,
+    y: f32,
+    width: f32,
+    color: Color,
+) {
+    if research.rewards.is_empty() {
+        draw_text("None", x, y, 14.0, Color::from_rgba(126, 156, 164, 185));
+        return;
+    }
+    for (index, reward) in research.rewards.iter().take(3).enumerate() {
+        let row_y = y + index as f32 * 18.0;
+        draw_research_reward_icon(&reward.kind, x + 7.0, row_y - 6.0, color);
+        draw_text(
+            &fit_debug_text(&research_reward_label(registry, reward), width - 24.0, 14),
+            x + 24.0,
+            row_y,
+            14.0,
+            color,
+        );
+    }
+}
+
+fn draw_research_reward_icon(kind: &str, x: f32, y: f32, color: Color) {
+    match kind {
+        "mining_speed_percent" => draw_research_pickaxe_icon(x, y, color),
+        "smelting_speed_percent" => draw_research_furnace_icon(x, y, color),
+        "fabrication_speed_percent" => draw_research_wrench_icon(x, y, color),
+        "bonus_output_chance" => draw_research_spark_icon(x, y, color),
+        "recipe_unlock" => draw_research_schematic_icon(x, y, color),
+        _ => draw_research_generic_reward_icon(x, y, color),
+    }
+}
+
+fn draw_research_pickaxe_icon(x: f32, y: f32, color: Color) {
+    draw_line(x - 4.0, y - 4.0, x + 5.0, y + 5.0, 1.5, color);
+    draw_line(x - 6.0, y - 3.0, x + 3.0, y - 6.0, 1.5, color);
+    draw_line(x + 3.0, y - 6.0, x + 7.0, y - 2.0, 1.5, color);
+}
+
+fn draw_research_furnace_icon(x: f32, y: f32, color: Color) {
+    draw_rectangle_lines(x - 6.0, y - 6.0, 12.0, 12.0, 1.2, color);
+    draw_line(x - 3.0, y + 2.0, x, y - 3.0, 1.2, color);
+    draw_line(x, y - 3.0, x + 3.0, y + 2.0, 1.2, color);
+    draw_line(x - 4.0, y + 5.0, x + 4.0, y + 5.0, 1.2, color);
+}
+
+fn draw_research_wrench_icon(x: f32, y: f32, color: Color) {
+    draw_circle_lines(x - 3.0, y - 4.0, 3.0, 1.2, color);
+    draw_line(x - 1.0, y - 2.0, x + 6.0, y + 5.0, 1.5, color);
+    draw_circle(x + 6.0, y + 5.0, 1.8, color);
+    draw_rectangle(x - 4.0, y - 7.0, 3.0, 4.0, Color::from_rgba(5, 12, 17, 255));
+}
+
+fn draw_research_spark_icon(x: f32, y: f32, color: Color) {
+    draw_line(x, y - 7.0, x, y + 7.0, 1.3, color);
+    draw_line(x - 7.0, y, x + 7.0, y, 1.3, color);
+    draw_line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.1, color);
+    draw_line(x + 4.5, y - 4.5, x - 4.5, y + 4.5, 1.1, color);
+}
+
+fn draw_research_schematic_icon(x: f32, y: f32, color: Color) {
+    draw_rectangle_lines(x - 6.0, y - 6.0, 12.0, 12.0, 1.2, color);
+    draw_line(x - 3.0, y - 2.0, x + 3.0, y - 2.0, 1.0, color);
+    draw_line(x - 3.0, y + 1.0, x + 3.0, y + 1.0, 1.0, color);
+    draw_line(x - 3.0, y + 4.0, x + 1.0, y + 4.0, 1.0, color);
+}
+
+fn draw_research_generic_reward_icon(x: f32, y: f32, color: Color) {
+    draw_circle_lines(x, y, 5.5, 1.2, color);
+    draw_line(x - 3.0, y, x + 3.0, y, 1.2, color);
+    draw_line(x, y - 3.0, x, y + 3.0, 1.2, color);
+}
+
+fn draw_research_detail_progress(
+    game: &GameState,
+    research: &content::ResearchDef,
+    rect: Rect,
+    state: ResearchNodeState,
+    color: Color,
+) {
+    let Some(active) = game.active_research.as_ref() else {
+        return;
+    };
+    if active.research != research.id || state != ResearchNodeState::Researching {
+        return;
+    }
+    let progress = if research.duration_seconds <= 0.0 {
+        1.0
+    } else {
+        1.0 - (active.remaining_seconds / research.duration_seconds).clamp(0.0, 1.0)
+    };
+    let track = Rect::new(rect.x + 18.0, rect.y + rect.h - 20.0, rect.w - 206.0, 5.0);
+    draw_rectangle(
+        track.x,
+        track.y,
+        track.w,
+        track.h,
+        Color::from_rgba(3, 8, 12, 230),
+    );
+    draw_rectangle(track.x, track.y, track.w * progress, track.h, color);
+    draw_text(
+        &format!("{} remaining", format_seconds(active.remaining_seconds)),
+        track.x + track.w - 116.0,
+        track.y - 6.0,
+        13.0,
+        Color::from_rgba(226, 190, 150, 225),
+    );
+}
+
+fn draw_research_start_button(rect: Rect, state: ResearchNodeState, selected: bool) {
+    let enabled = selected && state == ResearchNodeState::Affordable;
+    let fill = if enabled {
+        Color::from_rgba(16, 48, 58, 236)
+    } else {
+        Color::from_rgba(26, 30, 36, 180)
+    };
+    let stroke = if enabled {
+        Color::from_rgba(150, 221, 226, 230)
+    } else {
+        Color::from_rgba(82, 114, 124, 130)
+    };
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, stroke);
+    let label = match state {
+        ResearchNodeState::Affordable if selected => "Research",
+        ResearchNodeState::Affordable => "Select",
+        ResearchNodeState::Available => "Need credits",
+        ResearchNodeState::Researching => "Researching",
+        ResearchNodeState::Completed => "Completed",
+        ResearchNodeState::Locked => "Locked",
+    };
+    let text = measure_text(label, None, 15, 1.0);
+    draw_text(
+        label,
+        rect.x + (rect.w - text.width) * 0.5,
+        rect.y + 20.0,
+        15.0,
+        if enabled {
+            Color::from_rgba(235, 242, 226, 255)
+        } else {
+            Color::from_rgba(126, 156, 164, 220)
+        },
+    );
+}
+
+fn format_seconds(seconds: f32) -> String {
+    let seconds = finite_nonnegative_or(seconds, 0.0).ceil() as u32;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    }
+}
+
+fn research_requirement_labels(
+    registry: &content::ContentRegistry,
+    research: &content::ResearchDef,
+) -> Vec<String> {
+    let mut labels = research
+        .requires
+        .iter()
+        .chain(research.revealed_by.iter())
+        .map(|research_id| research_display_name(registry, research_id))
+        .collect::<Vec<_>>();
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+fn research_reward_label(
+    registry: &content::ContentRegistry,
+    reward: &content::ResearchRewardDef,
+) -> String {
+    match reward.kind.as_str() {
+        "recipe_unlock" => reward
+            .target
+            .as_deref()
+            .map(|recipe| format!("Unlock recipe: {}", recipe_display_name(registry, recipe)))
+            .unwrap_or_else(|| "Unlock recipe".to_string()),
+        "item_visibility" => reward
+            .target
+            .as_deref()
+            .map(|item_id| {
+                let name = registry
+                    .items
+                    .get(item_id)
+                    .map(|item| item.name.as_str())
+                    .unwrap_or(item_id);
+                format!("Reveal item: {name}")
+            })
+            .unwrap_or_else(|| "Reveal item".to_string()),
+        "station_visibility" => reward
+            .target
+            .as_deref()
+            .map(|station_id| {
+                let name = registry
+                    .stations
+                    .get(station_id)
+                    .map(|station| station.name.as_str())
+                    .unwrap_or(station_id);
+                format!("Reveal station: {name}")
+            })
+            .unwrap_or_else(|| "Reveal station".to_string()),
+        "mining_speed_percent" => format!("Mining speed +{:.0}%", reward.amount.unwrap_or(0.0)),
+        "smelting_speed_percent" => {
+            format!("Smelting speed +{:.0}%", reward.amount.unwrap_or(0.0))
+        }
+        "fabrication_speed_percent" => {
+            format!("Fabrication speed +{:.0}%", reward.amount.unwrap_or(0.0))
+        }
+        "bonus_output_chance" => {
+            format!("Bonus output chance +{:.0}%", reward.amount.unwrap_or(0.0))
+        }
+        _ => reward.kind.clone(),
+    }
 }
 
 fn ui_column_spec_fixed(width: f32) -> UiColumnSpec {
@@ -13551,23 +14850,6 @@ fn ship_upgrade_table_layout(x: f32, y: f32, width: f32, viewport_height: f32) -
     )
 }
 
-fn skills_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    let row_height = 38.0;
-    ui_table_layout(
-        Rect::new(x, y, width, SKILL_COUNT as f32 * row_height),
-        y + 15.0,
-        SKILL_COUNT as f32 * row_height,
-        row_height,
-        12.0,
-        &[
-            ui_column_spec_flex(190.0, 1.0),
-            ui_column_spec_content(48.0, 44.0, 60.0),
-            ui_column_spec_content(100.0, 92.0, 128.0),
-            ui_column_spec_fixed(34.0),
-        ],
-    )
-}
-
 fn hovered_work_cell(
     mouse: Vec2,
     row_count: usize,
@@ -13619,18 +14901,18 @@ fn hovered_work_cell_in_layout(
 fn work_table_y() -> f32 {
     let panel_height = inventory_panel_height();
     let panel_y = (screen_height() - panel_height) * 0.5 + 18.0;
-    panel_y + 66.0
+    panel_y + GAME_PANEL_BODY_TOP
 }
 
 fn work_table_height() -> f32 {
     let panel_height = inventory_panel_height();
-    panel_height - 104.0
+    panel_height - 132.0
 }
 
 fn clicked_production_mode(mouse: Vec2, action_rail_width: Option<f32>) -> Option<ProductionMode> {
     let layout = inventory_overlay_layout(action_rail_width);
     let x = layout.production_x + layout.production_width - 204.0;
-    let y = layout.panel_y + 19.0;
+    let y = layout.panel_y + GAME_PANEL_HEADER_BASELINE - 19.0;
 
     if mouse.y < y || mouse.y > y + 26.0 {
         return None;
@@ -14144,12 +15426,13 @@ fn draw_npc_ship_interaction_list(
 
 fn draw_station_service_list(render: StationActionRailRender<'_>) {
     let StationActionRailRender {
+        content_registry,
         station,
         selected_service,
         in_range,
         credits,
         inventory,
-        purchased_unlocks,
+        completed_research,
         action_rail_width,
     } = render;
     let layout = station_action_layout(station, action_rail_width);
@@ -14277,11 +15560,23 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
             width: detail.w,
         });
         draw_recipe_unlock_table(RecipeUnlockTableRender {
+            content_registry,
             station,
             service,
             in_range,
             credits,
-            purchased_unlocks,
+            completed_research,
+            action_rail_width,
+            x: detail.x,
+            width: detail.w,
+        });
+        draw_research_lead_table(RecipeUnlockTableRender {
+            content_registry,
+            station,
+            service,
+            in_range,
+            credits,
+            completed_research,
             action_rail_width,
             x: detail.x,
             width: detail.w,
@@ -14489,13 +15784,113 @@ fn format_trade_stock(offer: &TradeOffer) -> String {
     }
 }
 
+fn draw_research_lead_table(render: RecipeUnlockTableRender<'_>) {
+    let RecipeUnlockTableRender {
+        content_registry,
+        station,
+        service,
+        in_range,
+        credits: _,
+        completed_research,
+        action_rail_width,
+        x,
+        width,
+    } = render;
+    if service.research.is_empty() {
+        return;
+    }
+    let y = research_lead_table_y(station, service, action_rail_width);
+    let layout = recipe_unlock_table_layout(x, y, width);
+    let research_column = layout.columns[0];
+    let status_column = layout.columns[1];
+    draw_text(
+        "Research leads",
+        research_column.x,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    draw_text(
+        "K research",
+        x + width - 92.0,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(126, 156, 164, 220),
+    );
+    draw_line(
+        x,
+        y + 24.0,
+        x + width,
+        y + 24.0,
+        1.0,
+        Color::from_rgba(96, 137, 150, 220),
+    );
+    for (index, lead) in service.research.iter().enumerate() {
+        let row = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row) {
+            continue;
+        }
+        let hovered = row.contains(mouse_vec2());
+        let completed = completed_research.iter().any(|done| done == &lead.research);
+        draw_rectangle(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            if hovered {
+                Color::from_rgba(13, 32, 40, 210)
+            } else if index % 2 == 0 {
+                Color::from_rgba(8, 18, 24, 118)
+            } else {
+                Color::from_rgba(6, 12, 18, 82)
+            },
+        );
+        draw_text(
+            &fit_debug_text(
+                &research_display_name(content_registry, &lead.research),
+                research_column.w,
+                15,
+            ),
+            research_column.x,
+            row.y + 20.0,
+            15.0,
+            if lead.unavailable {
+                Color::from_rgba(126, 143, 148, 220)
+            } else {
+                Color::from_rgba(205, 226, 230, 255)
+            },
+        );
+        let status = if completed {
+            "Complete"
+        } else if lead.unavailable {
+            "Unavailable"
+        } else if !in_range {
+            "Approach"
+        } else {
+            "Available"
+        };
+        draw_text(
+            &fit_debug_text(status, status_column.w, 15),
+            status_column.x,
+            row.y + 20.0,
+            15.0,
+            if completed || (in_range && !lead.unavailable) {
+                Color::from_rgba(150, 221, 226, 255)
+            } else {
+                Color::from_rgba(226, 190, 150, 255)
+            },
+        );
+    }
+}
+
 fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
     let RecipeUnlockTableRender {
+        content_registry,
         station,
         service,
         in_range,
         credits,
-        purchased_unlocks,
+        completed_research,
         action_rail_width,
         x,
         width,
@@ -14535,7 +15930,8 @@ fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
             continue;
         }
         let hovered = row.contains(mouse_vec2());
-        let purchased = purchased_unlocks.contains(&unlock.recipe);
+        let purchased = research_id_that_unlocks_recipe(content_registry, &unlock.recipe)
+            .is_some_and(|research_id| completed_research.iter().any(|done| done == research_id));
         let affordable = in_range && !unlock.unavailable && credits >= unlock.price && !purchased;
         draw_rectangle(
             row.x,
@@ -14597,6 +15993,19 @@ fn recipe_unlock_table_y(
         + if service.trade.is_empty() { 42.0 } else { 20.0 }
 }
 
+fn research_lead_table_y(
+    station: &StationDestination,
+    service: &StationService,
+    action_rail_width: f32,
+) -> f32 {
+    recipe_unlock_table_y(station, service, action_rail_width)
+        + if service.recipe_unlocks.is_empty() {
+            0.0
+        } else {
+            28.0 + service.recipe_unlocks.len() as f32 * WORK_ROW_HEIGHT + 20.0
+        }
+}
+
 fn draw_station_detail(render: StationDetailRender<'_>) {
     let StationDetailRender {
         content_registry,
@@ -14613,14 +16022,6 @@ fn draw_station_detail(render: StationDetailRender<'_>) {
     let text = Color::from_rgba(205, 226, 230, 255);
     let warning = Color::from_rgba(226, 190, 150, 255);
     let preview_size = 118.0;
-
-    draw_text(
-        "Station",
-        x,
-        y - 28.0,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
 
     if let Some(texture) = &station.texture {
         draw_texture_ex(
@@ -14785,14 +16186,6 @@ fn draw_planet_detail(render: PlanetDetailRender<'_>) {
     let warning = Color::from_rgba(226, 190, 150, 255);
     let unavailable = Color::from_rgba(108, 127, 132, 190);
     let preview_size = 118.0;
-
-    draw_text(
-        "Planet",
-        x,
-        y - 28.0,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
 
     if let Some(texture) = &planet.texture {
         draw_texture_ex(
@@ -15165,18 +16558,6 @@ fn draw_npc_ship_detail(
     let distance = npc_ship_surface_distance(ship, npc_ship);
     let identified = npc_ship.identified;
 
-    draw_text(
-        if identified {
-            "NPC Ship"
-        } else {
-            "Unknown Contact"
-        },
-        x,
-        y - 28.0,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-
     if let Some(texture) = &npc_ship.texture {
         draw_texture_ex(
             texture,
@@ -15407,13 +16788,6 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
     let image_size = 190.0;
     let center = vec2(x + width * 0.5, y + 74.0);
 
-    draw_text(
-        "Ship",
-        x,
-        y - 28.0,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
     draw_ship_sprite(center, texture, image_size, false, 0.0);
     let preview_rect = Rect::new(
         center.x - image_size * 0.5,
@@ -16319,7 +17693,7 @@ fn draw_hud(view: HudView<'_>) {
 }
 
 fn draw_interaction_prompt(game: &GameState) {
-    if game.map_open || game.skills_open || game.upgrades_open || game.content_open {
+    if game.map_open || game.research_open || game.upgrades_open || game.content_open {
         return;
     }
 
@@ -16497,7 +17871,11 @@ mod tests {
                 value: "watchful".to_string(),
             },
         ];
-        game.purchased_recipe_unlocks = vec!["core:advanced_scanner_core".to_string()];
+        game.completed_research = vec!["core:advanced_scanner_core".to_string()];
+        game.active_research = Some(ActiveResearch {
+            research: "core:fusion_drive_core".to_string(),
+            remaining_seconds: 12.5,
+        });
         game.installed_power_modules = installed_power_modules_from_ids(
             &game.content_registry,
             &["core:compact_fission_cell".to_string()],
@@ -16515,11 +17893,15 @@ mod tests {
         let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
         let restored = toml::from_str::<SaveData>(&serialized).expect("save should deserialize");
 
+        assert!(!serialized.contains("purchased_recipe_unlocks"));
         assert_eq!(restored.content_pack_options, game.content_pack_options);
+        assert_eq!(restored.completed_research, game.completed_research);
+        assert_eq!(restored.active_research.len(), 1);
         assert_eq!(
-            restored.purchased_recipe_unlocks,
-            game.purchased_recipe_unlocks
+            restored.active_research[0].research,
+            "core:fusion_drive_core"
         );
+        assert_eq!(restored.active_research[0].remaining_seconds, 12.5);
         assert_eq!(
             restored.installed_power_modules,
             vec!["core:compact_fission_cell".to_string()]
@@ -16536,6 +17918,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_purchased_recipe_unlocks_migrate_to_completed_research() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let game = test_game_with_systems(registry, Vec::new());
+        let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
+        let legacy_serialized = serialized.replace(
+            "completed_research = []",
+            "purchased_recipe_unlocks = [\"core:advanced_scanner_core\"]",
+        );
+        let save =
+            toml::from_str::<SaveData>(&legacy_serialized).expect("legacy save should deserialize");
+
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.stations = make_test_recipe_unlock_station();
+        restored.recipe_vendor_locked_recipes =
+            research_locked_recipes(&restored.content_registry, &restored.stations);
+        restored.apply_save(save);
+
+        assert_eq!(
+            restored.completed_research,
+            vec!["core:advanced_scanner_core".to_string()]
+        );
+        assert!(recipe_is_unlocked(&restored, "core:advanced_scanner_core"));
+    }
+
+    #[test]
     fn save_data_sanitizes_non_finite_runtime_floats() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -16549,7 +17959,6 @@ mod tests {
         game.ship.systems.hull.current = f32::NAN;
         game.ship.systems.shields.max = f32::INFINITY;
         game.shield_recharge_delay_remaining = f32::INFINITY;
-        game.skills[0].xp = f32::NAN;
         game.smelt_recipes = make_smelting_recipes(&game.content_registry);
         game.smelt_settings = vec![
             CraftSetting {
@@ -16573,7 +17982,6 @@ mod tests {
         assert_eq!(restored.ship.hull.current, restored.ship.hull.max);
         assert_eq!(restored.ship.shields.max, 1.0);
         assert_eq!(restored.shield_recharge_delay_remaining, 0.0);
-        assert_eq!(restored.skills[0].xp, 0.0);
         assert!(restored
             .smelt_settings
             .iter()
@@ -16640,7 +18048,6 @@ mod tests {
                 id: "core:test_turret_item".to_string(),
                 name: "Test turret item".to_string(),
                 tier: "weapon".to_string(),
-                xp_value: 1.0,
                 unit_mass: 100.0,
             },
         );
@@ -17011,6 +18418,8 @@ mod tests {
         let circuit = required_item(&registry, "core:circuit");
         let mut game = test_game_with_systems(registry, Vec::new());
         let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        destroyed.credit_reward_min = 45;
+        destroyed.credit_reward_max = 45;
         destroyed.hull.current = 0.0;
         destroyed.cargo_defaults = vec![ItemStack {
             item: circuit.clone(),
@@ -17022,6 +18431,12 @@ mod tests {
 
         assert!(game.npc_ships.is_empty());
         assert_eq!(game.inventory.count(&circuit), 2);
+        assert_eq!(game.credits, default_credits() + 45);
+        assert!(operation_feedback_contains(
+            &game,
+            "Loot",
+            "Test NPC: 2 cargo, 45 cr"
+        ));
     }
 
     #[test]
@@ -17035,6 +18450,8 @@ mod tests {
             (cargo_rating_kg(&game.ship_upgrades) / iron_ore.unit_mass).ceil() as u32 + 1;
         game.inventory.add_item(iron_ore, existing_count);
         let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        destroyed.credit_reward_min = 30;
+        destroyed.credit_reward_max = 30;
         destroyed.hull.current = 0.0;
         destroyed.cargo_defaults = vec![ItemStack {
             item: circuit.clone(),
@@ -17046,6 +18463,29 @@ mod tests {
 
         assert!(game.npc_ships.is_empty());
         assert_eq!(game.inventory.count(&circuit), 0);
+        assert_eq!(game.credits, default_credits() + 30);
+        assert!(operation_feedback_contains(
+            &game,
+            "Loot",
+            "Test NPC: 30 cr"
+        ));
+    }
+
+    #[test]
+    fn destroyed_non_hostile_npc_does_not_award_credits() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut destroyed = test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0));
+        destroyed.credit_reward_min = 99;
+        destroyed.credit_reward_max = 99;
+        destroyed.hull.current = 0.0;
+        game.npc_ships = vec![destroyed];
+
+        remove_destroyed_npc_ships(&mut game);
+
+        assert!(game.npc_ships.is_empty());
+        assert_eq!(game.credits, default_credits());
     }
 
     #[test]
@@ -18041,7 +19481,8 @@ mod tests {
             price: 250,
             unavailable: false,
         }];
-        game.recipe_vendor_locked_recipes = recipe_vendor_locked_recipes(&game.stations);
+        game.recipe_vendor_locked_recipes =
+            research_locked_recipes(&game.content_registry, &game.stations);
         game.ship.position = vec2(120.0, 0.0);
 
         assert!(!recipe_is_unlocked(&game, "core:advanced_scanner_core"));
@@ -18049,7 +19490,7 @@ mod tests {
         assert_eq!(game.credits, 750);
         assert!(recipe_is_unlocked(&game, "core:advanced_scanner_core"));
         assert_eq!(
-            game.purchased_recipe_unlocks,
+            game.completed_research,
             vec!["core:advanced_scanner_core".to_string()]
         );
         assert!(operation_feedback_contains(
@@ -18057,6 +19498,182 @@ mod tests {
             "Unlock",
             "Advanced scanner core"
         ));
+    }
+
+    #[test]
+    fn research_node_state_tracks_locked_available_affordable_and_completed() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let starter = registry
+            .research
+            .get("core:frontier_survey_methods")
+            .expect("starter research should exist");
+        let scanner = registry
+            .research
+            .get("core:advanced_scanner_core")
+            .expect("scanner research should exist");
+
+        assert_eq!(
+            research_node_state(starter, None, &[], starter.price),
+            ResearchNodeState::Affordable
+        );
+        assert_eq!(
+            research_node_state(starter, None, &[], starter.price.saturating_sub(1)),
+            ResearchNodeState::Available
+        );
+        assert_eq!(
+            research_node_state(scanner, None, &[], 10_000),
+            ResearchNodeState::Locked
+        );
+        assert_eq!(
+            research_node_state(
+                scanner,
+                None,
+                &[
+                    "core:frontier_survey_methods".to_string(),
+                    "core:mining_calibration_i".to_string(),
+                ],
+                scanner.price,
+            ),
+            ResearchNodeState::Affordable
+        );
+        assert_eq!(
+            research_node_state(
+                starter,
+                Some(&ActiveResearch {
+                    research: "core:frontier_survey_methods".to_string(),
+                    remaining_seconds: 3.0,
+                }),
+                &[],
+                starter.price,
+            ),
+            ResearchNodeState::Researching
+        );
+        assert_eq!(
+            research_node_state(
+                starter,
+                None,
+                &["core:frontier_survey_methods".to_string()],
+                0,
+            ),
+            ResearchNodeState::Completed
+        );
+    }
+
+    #[test]
+    fn research_starts_with_timer_then_completes_rewarded_recipe() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.credits = 1_500;
+        game.recipe_vendor_locked_recipes =
+            research_locked_recipes(&game.content_registry, &game.stations);
+        game.completed_research = vec![
+            "core:frontier_survey_methods".to_string(),
+            "core:mining_calibration_i".to_string(),
+        ];
+
+        assert!(!recipe_is_unlocked(&game, "core:advanced_scanner_core"));
+        assert!(start_research(&mut game, "core:advanced_scanner_core"));
+
+        assert_eq!(game.credits, 650);
+        assert!(!game
+            .completed_research
+            .contains(&"core:advanced_scanner_core".to_string()));
+        assert!(game.active_research.as_ref().is_some_and(|active| {
+            active.research == "core:advanced_scanner_core" && active.remaining_seconds == 15.0
+        }));
+        assert!(!recipe_is_unlocked(&game, "core:advanced_scanner_core"));
+        assert!(operation_feedback_contains(
+            &game,
+            "Research",
+            "Started Advanced Scanner Core"
+        ));
+        assert_eq!(
+            research_node_state(
+                game.content_registry
+                    .research
+                    .get("core:yield_optimization_i")
+                    .expect("yield research should exist"),
+                game.active_research.as_ref(),
+                &[
+                    "core:frontier_survey_methods".to_string(),
+                    "core:mining_calibration_i".to_string(),
+                    "core:refinery_throughput_i".to_string(),
+                    "core:fabrication_templates_i".to_string(),
+                ],
+                10_000,
+            ),
+            ResearchNodeState::Locked
+        );
+        assert!(start_research(&mut game, "core:yield_optimization_i"));
+        assert_eq!(game.credits, 650);
+        assert_eq!(
+            game.active_research
+                .as_ref()
+                .map(|active| active.research.as_str()),
+            Some("core:advanced_scanner_core")
+        );
+
+        update_active_research(&mut game, 14.0);
+        assert!(!recipe_is_unlocked(&game, "core:advanced_scanner_core"));
+        update_active_research(&mut game, 1.0);
+
+        assert!(game
+            .completed_research
+            .contains(&"core:advanced_scanner_core".to_string()));
+        assert!(game.active_research.is_none());
+        assert!(recipe_is_unlocked(&game, "core:advanced_scanner_core"));
+        assert!(operation_feedback_contains(
+            &game,
+            "Research",
+            "Completed Advanced Scanner Core"
+        ));
+    }
+
+    #[test]
+    fn completed_research_rewards_drive_operation_effects() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let completed = vec![
+            "core:frontier_survey_methods".to_string(),
+            "core:mining_calibration_i".to_string(),
+            "core:refinery_throughput_i".to_string(),
+            "core:fabrication_templates_i".to_string(),
+            "core:yield_optimization_i".to_string(),
+        ];
+        let smelting_recipes = make_recipes_for_station(&registry, "core:smelting");
+        let smelting_recipe = smelting_recipes
+            .iter()
+            .find(|recipe| recipe.id == "core:iron_plate")
+            .expect("iron plate recipe should load");
+        let fabrication_recipes = make_recipes_for_station(&registry, "core:crafting");
+        let fabrication_recipe = fabrication_recipes
+            .iter()
+            .find(|recipe| recipe.id == "core:gear")
+            .expect("gear recipe should load");
+
+        assert_eq!(
+            completed_research_reward_amount(&registry, &completed, "mining_speed_percent"),
+            13.0
+        );
+        assert_eq!(
+            completed_research_reward_amount(&registry, &completed, "bonus_output_chance"),
+            3.0
+        );
+        assert!(mining_operation_seconds(&registry, &completed) < BASE_MINING_SECONDS);
+        assert!(
+            recipe_operation_seconds(&registry, &completed, WorkKind::Smelting, smelting_recipe)
+                < smelting_recipe.base_seconds
+        );
+        assert!(
+            recipe_operation_seconds(
+                &registry,
+                &completed,
+                WorkKind::Fabrication,
+                fabrication_recipe
+            ) < fabrication_recipe.base_seconds
+        );
     }
 
     #[test]
@@ -18658,7 +20275,7 @@ mod tests {
         game.selected_station = Some(0);
         game.selected_station_service = Some(0);
         game.map_open = true;
-        game.skills_open = true;
+        game.research_open = true;
         game.upgrades_open = true;
         game.content_open = true;
 
@@ -18669,11 +20286,11 @@ mod tests {
 
         handle_escape_pressed(&mut game);
         assert!(!game.upgrades_open);
-        assert!(game.skills_open);
+        assert!(game.research_open);
         assert!(!game.escape_dialog_open);
 
         handle_escape_pressed(&mut game);
-        assert!(!game.skills_open);
+        assert!(!game.research_open);
         assert!(game.map_open);
         assert!(!game.escape_dialog_open);
 
@@ -19095,6 +20712,7 @@ mod tests {
                     kind: "shop".to_string(),
                     description: Some("A test shop service.".to_string()),
                     trade: Vec::new(),
+                    research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                 },
                 StationService {
@@ -19103,10 +20721,25 @@ mod tests {
                     kind: "garage".to_string(),
                     description: Some("A test garage service.".to_string()),
                     trade: Vec::new(),
+                    research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                 },
             ],
         }
+    }
+
+    fn make_test_recipe_unlock_station() -> Vec<StationDestination> {
+        let mut stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        stations[0].services[0].recipe_unlocks = vec![RecipeUnlockOffer {
+            recipe: "core:advanced_scanner_core".to_string(),
+            price: 250,
+            unavailable: false,
+        }];
+        stations
     }
 
     fn test_defense_threat(
@@ -19146,6 +20779,8 @@ mod tests {
             identified: false,
             cargo_capacity: 100.0,
             cargo_defaults: Vec::new(),
+            credit_reward_min: 0,
+            credit_reward_max: 0,
             hull: ShipResource::full(50.0),
             shields: ShipResource::full(25.0),
             energy: ShipResource::full(20.0),
@@ -19190,11 +20825,13 @@ mod tests {
             planets,
             stations: Vec::new(),
             recipe_vendor_locked_recipes: Vec::new(),
-            purchased_recipe_unlocks: Vec::new(),
+            active_research: None,
+            completed_research: Vec::new(),
             selected_planet: None,
             selected_station: None,
             selected_npc_ship: None,
             selected_station_service: None,
+            selected_research: None,
             destination_planet: None,
             orbiting_planet: None,
             system_destinations: HashMap::new(),
@@ -19215,11 +20852,10 @@ mod tests {
             processing_recipes: Vec::new(),
             processing_settings: Vec::new(),
             production_mode: ProductionMode::Smelting,
-            skills: make_skills(),
             ship_upgrades: make_ship_upgrades(),
             inventory_open: false,
             map_open: false,
-            skills_open: false,
+            research_open: false,
             upgrades_open: false,
             content_open: false,
             content_browser: ContentBrowserState::default(),

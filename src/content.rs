@@ -27,6 +27,8 @@ pub struct ContentRegistry {
     pub power_module_order: Vec<String>,
     pub recipes: HashMap<String, RecipeDef>,
     pub recipe_order: Vec<String>,
+    pub research: HashMap<String, ResearchDef>,
+    pub research_order: Vec<String>,
     pub factions: HashMap<String, FactionDef>,
     pub faction_order: Vec<String>,
     pub universes: HashMap<String, UniverseDef>,
@@ -109,7 +111,6 @@ pub struct ItemDef {
     pub id: String,
     pub name: String,
     pub tier: String,
-    pub xp_value: f32,
     pub unit_mass: f32,
 }
 
@@ -121,6 +122,28 @@ pub struct RecipeDef {
     pub ingredients: Vec<StackDef>,
     pub purpose: Option<String>,
     pub allow_duplicate_output: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchDef {
+    pub id: String,
+    pub name: String,
+    pub tier: u32,
+    pub column: i32,
+    pub row: i32,
+    pub price: u32,
+    pub duration_seconds: f32,
+    pub requires: Vec<String>,
+    pub revealed_by: Vec<String>,
+    pub rewards: Vec<ResearchRewardDef>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchRewardDef {
+    pub kind: String,
+    pub target: Option<String>,
+    pub amount: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +188,8 @@ pub struct NpcShipDef {
     pub mass: f32,
     pub cargo_capacity: f32,
     pub cargo_defaults: Vec<StackDef>,
+    pub credit_reward_min: u32,
+    pub credit_reward_max: u32,
     pub hull_capacity: f32,
     pub shield_capacity: f32,
     pub energy_capacity: f32,
@@ -383,7 +408,6 @@ pub struct HazardEffectsDef {
 pub struct StationDef {
     pub id: String,
     pub name: String,
-    pub skill: Option<String>,
     pub base_seconds: Option<f32>,
     pub system: Option<String>,
     pub position: Option<[f32; 2]>,
@@ -403,7 +427,14 @@ pub struct StationServiceDef {
     pub kind: String,
     pub description: Option<String>,
     pub trade: Vec<TradeStockDef>,
+    pub research: Vec<ResearchLeadDef>,
     pub recipe_unlocks: Vec<RecipeUnlockDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchLeadDef {
+    pub research: String,
+    pub unavailable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -500,7 +531,6 @@ struct ItemFileDef {
     id: String,
     name: String,
     tier: String,
-    xp_value: f32,
     unit_mass: f32,
 }
 
@@ -508,6 +538,12 @@ struct ItemFileDef {
 struct RecipesFile {
     #[serde(default)]
     recipes: Vec<RecipeFileDef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ResearchFile {
+    #[serde(default)]
+    research: Vec<ResearchFileDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,6 +562,31 @@ struct RecipeFileDef {
 struct StackFileDef {
     item: String,
     count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchFileDef {
+    id: String,
+    name: String,
+    tier: u32,
+    column: i32,
+    row: i32,
+    price: u32,
+    duration_seconds: f32,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    revealed_by: Vec<String>,
+    #[serde(default)]
+    rewards: Vec<ResearchRewardFileDef>,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchRewardFileDef {
+    kind: String,
+    target: Option<String>,
+    amount: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -584,6 +645,10 @@ struct NpcShipFileDef {
     cargo_capacity: f32,
     #[serde(default)]
     cargo_defaults: Vec<StackFileDef>,
+    #[serde(default)]
+    credit_reward_min: u32,
+    #[serde(default)]
+    credit_reward_max: u32,
     hull_capacity: f32,
     shield_capacity: f32,
     energy_capacity: f32,
@@ -797,7 +862,6 @@ struct UpgradesFile {
 struct StationFileDef {
     id: String,
     name: String,
-    skill: Option<String>,
     base_seconds: Option<f32>,
     system: Option<String>,
     position: Option<[f32; 2]>,
@@ -822,7 +886,16 @@ struct StationServiceFileDef {
     #[serde(default)]
     trade: Vec<TradeStockFileDef>,
     #[serde(default)]
+    research: Vec<ResearchLeadFileDef>,
+    #[serde(default)]
     recipe_unlocks: Vec<RecipeUnlockFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchLeadFileDef {
+    research: String,
+    #[serde(default)]
+    unavailable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1171,7 +1244,6 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     id: id.clone(),
                     name: item.name,
                     tier: item.tier,
-                    xp_value: item.xp_value,
                     unit_mass: item.unit_mass,
                 },
             )
@@ -1435,6 +1507,11 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             "cargo capacity",
             errors,
         );
+        if npc_ship.credit_reward_min > npc_ship.credit_reward_max {
+            errors.push(format!(
+                "NPC ship `{id}` has credit_reward_min greater than credit_reward_max"
+            ));
+        }
         validate_positive(
             npc_ship.hull_capacity,
             "NPC ship",
@@ -1492,6 +1569,8 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     mass: npc_ship.mass,
                     cargo_capacity: npc_ship.cargo_capacity,
                     cargo_defaults,
+                    credit_reward_min: npc_ship.credit_reward_min,
+                    credit_reward_max: npc_ship.credit_reward_max,
                     hull_capacity: npc_ship.hull_capacity,
                     shield_capacity: npc_ship.shield_capacity,
                     energy_capacity: npc_ship.energy_capacity,
@@ -1555,6 +1634,70 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             registry.recipe_order.push(id.clone());
         } else {
             errors.push(format!("Duplicate recipe id `{id}`"));
+        }
+    }
+
+    let research = read_optional_toml::<ResearchFile>(&raw_pack.path.join("research.toml"), errors);
+    for node in research.research {
+        let id = namespaced_id(&pack_id, &node.id);
+        validate_local_content_id(&id, "research", errors);
+        validate_required_name(&id, "Research", &node.name, errors);
+        if node.price == 0 {
+            errors.push(format!("Research `{id}` has zero price"));
+        }
+        if !node.duration_seconds.is_finite() || node.duration_seconds <= 0.0 {
+            errors.push(format!("Research `{id}` has non-positive duration_seconds"));
+        }
+        let requires = node
+            .requires
+            .into_iter()
+            .map(|required| namespaced_id(&pack_id, &required))
+            .collect::<Vec<_>>();
+        let revealed_by = node
+            .revealed_by
+            .into_iter()
+            .map(|revealer| namespaced_id(&pack_id, &revealer))
+            .collect::<Vec<_>>();
+        let rewards = node
+            .rewards
+            .into_iter()
+            .map(|reward| {
+                if reward.kind.trim().is_empty() {
+                    errors.push(format!("Research `{id}` has a reward with empty kind"));
+                }
+                ResearchRewardDef {
+                    kind: reward.kind,
+                    target: reward.target.map(|target| namespaced_id(&pack_id, &target)),
+                    amount: reward.amount,
+                }
+            })
+            .collect::<Vec<_>>();
+        if rewards.is_empty() {
+            errors.push(format!("Research `{id}` has no rewards"));
+        }
+        let inserted = registry
+            .research
+            .insert(
+                id.clone(),
+                ResearchDef {
+                    id: id.clone(),
+                    name: node.name,
+                    tier: node.tier,
+                    column: node.column,
+                    row: node.row,
+                    price: node.price,
+                    duration_seconds: node.duration_seconds,
+                    requires,
+                    revealed_by,
+                    rewards,
+                    summary: node.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.research_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate research id `{id}`"));
         }
     }
 
@@ -1918,7 +2061,6 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 StationDef {
                     id: id.clone(),
                     name: station.name,
-                    skill: station.skill,
                     base_seconds: station.base_seconds,
                     system,
                     position: station.position,
@@ -2072,12 +2214,21 @@ fn resolve_station_services(
                 }
             })
             .collect();
+        let research = service
+            .research
+            .into_iter()
+            .map(|lead| ResearchLeadDef {
+                research: namespaced_id(pack_id, &lead.research),
+                unavailable: lead.unavailable,
+            })
+            .collect();
         resolved.push(StationServiceDef {
             id,
             name: service.name,
             kind: service.kind,
             description: service.description,
             trade,
+            research,
             recipe_unlocks,
         });
     }
@@ -2228,6 +2379,38 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                     recipe.id, ingredient.item
                 ));
             }
+        }
+    }
+
+    for research in registry.research.values() {
+        for required in &research.requires {
+            validate_reference(
+                registry.research.contains_key(required),
+                "Research",
+                &research.id,
+                "required research",
+                required,
+                errors,
+            );
+            if required == &research.id {
+                errors.push(format!("Research `{}` requires itself", research.id));
+            }
+        }
+        for revealer in &research.revealed_by {
+            validate_reference(
+                registry.research.contains_key(revealer),
+                "Research",
+                &research.id,
+                "revealing research",
+                revealer,
+                errors,
+            );
+            if revealer == &research.id {
+                errors.push(format!("Research `{}` reveals itself", research.id));
+            }
+        }
+        for reward in &research.rewards {
+            validate_research_reward(registry, research, reward, errors);
         }
     }
 
@@ -2448,6 +2631,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                     &service.id,
                     "recipe unlock",
                     &unlock.recipe,
+                    errors,
+                );
+            }
+            for lead in &service.research {
+                validate_reference(
+                    registry.research.contains_key(&lead.research),
+                    "Station service",
+                    &service.id,
+                    "research lead",
+                    &lead.research,
                     errors,
                 );
             }
@@ -2728,6 +2921,91 @@ fn validate_reference(
         errors.push(format!(
             "{source_kind} `{source_id}` references missing {target_kind} `{target_id}`"
         ));
+    }
+}
+
+fn validate_research_reward(
+    registry: &ContentRegistry,
+    research: &ResearchDef,
+    reward: &ResearchRewardDef,
+    errors: &mut Vec<String>,
+) {
+    match reward.kind.as_str() {
+        "recipe_unlock" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` recipe_unlock reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.recipes.contains_key(target),
+                "Research",
+                &research.id,
+                "recipe reward",
+                target,
+                errors,
+            );
+        }
+        "item_visibility" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` item_visibility reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.items.contains_key(target),
+                "Research",
+                &research.id,
+                "item visibility reward",
+                target,
+                errors,
+            );
+        }
+        "station_visibility" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` station_visibility reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.stations.contains_key(target),
+                "Research",
+                &research.id,
+                "station visibility reward",
+                target,
+                errors,
+            );
+        }
+        "mining_speed_percent"
+        | "smelting_speed_percent"
+        | "fabrication_speed_percent"
+        | "bonus_output_chance" => {
+            let Some(amount) = reward.amount else {
+                errors.push(format!(
+                    "Research `{}` {} reward has no amount",
+                    research.id, reward.kind
+                ));
+                return;
+            };
+            if !amount.is_finite() || amount <= 0.0 {
+                errors.push(format!(
+                    "Research `{}` {} reward has non-positive amount",
+                    research.id, reward.kind
+                ));
+            }
+        }
+        _ => {
+            errors.push(format!(
+                "Research `{}` has unsupported reward kind `{}`",
+                research.id, reward.kind
+            ));
+        }
     }
 }
 
@@ -3062,6 +3340,8 @@ mod tests {
                     && npc_ship.archetype == "patrol-cutter"
                     && npc_ship.role == "patrol"
                     && npc_ship.spawn_count == 1
+                    && npc_ship.credit_reward_min == 0
+                    && npc_ship.credit_reward_max == 0
                     && npc_ship.cargo_defaults
                         == [StackDef {
                             item: "core:fuel_canister".to_string(),
@@ -3076,6 +3356,50 @@ mod tests {
         assert!(registry.recipes.contains_key("core:point_defense_turret"));
         assert!(registry.recipes.contains_key("core:balanced_shield_matrix"));
         assert!(registry.recipes.contains_key("core:hazard_shield_matrix"));
+        assert_eq!(
+            registry.research_order.first().map(String::as_str),
+            Some("core:frontier_survey_methods")
+        );
+        assert!(registry
+            .research
+            .get("core:frontier_survey_methods")
+            .is_some_and(|research| {
+                research.name == "Frontier Survey Methods"
+                    && research.tier == 0
+                    && research.column == 0
+                    && research.row == 0
+                    && research.price == 450
+                    && research.duration_seconds == 5.0
+                    && research.requires.is_empty()
+                    && research.revealed_by.is_empty()
+                    && research.rewards.len() == 1
+                    && research.rewards[0].kind == "mining_speed_percent"
+                    && research.rewards[0].amount == Some(5.0)
+            }));
+        assert!(registry
+            .research
+            .get("core:advanced_scanner_core")
+            .is_some_and(|research| {
+                research.requires == ["core:mining_calibration_i"]
+                    && research.revealed_by == ["core:mining_calibration_i"]
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "recipe_unlock"
+                            && reward.target.as_deref() == Some("core:advanced_scanner_core")
+                    })
+            }));
+        assert!(registry
+            .research
+            .get("remote-duskfall:duskfall_vanadium_frames")
+            .is_some_and(|research| {
+                research.name == "Duskfall Vanadium Frames"
+                    && research.requires == ["core:jump_core"]
+                    && research.revealed_by == ["core:jump_core"]
+                    && research.duration_seconds == 60.0
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "recipe_unlock"
+                            && reward.target.as_deref() == Some("remote-duskfall:vanadium_frame")
+                    })
+            }));
         assert!(registry.power_modules.contains_key("core:film_solar_sail"));
         assert!(registry
             .power_modules
@@ -3250,7 +3574,15 @@ mod tests {
                     .iter()
                     .find(|service| service.id == "core:pale_archive_recipes")
             })
-            .is_some_and(|service| service.recipe_unlocks.len() == 3));
+            .is_some_and(|service| {
+                service.kind == "research"
+                    && service.recipe_unlocks.is_empty()
+                    && service.research.len() == 3
+                    && service
+                        .research
+                        .iter()
+                        .any(|lead| lead.research == "core:advanced_scanner_core")
+            }));
         assert!(registry
             .stations
             .get("core:frontier_exchange")
@@ -3379,6 +3711,135 @@ optional_depends_on = [
     }
 
     #[test]
+    fn loads_research_nodes_and_rewards_from_content_pack() {
+        let root = make_temp_content_root("research-valid");
+        write_minimal_core_pack(&root);
+        write_minimal_core_recipe(&root, "scanner_core");
+        let pack_path = root.join("core");
+        fs::write(
+            pack_path.join("research.toml"),
+            r#"
+[[research]]
+id = "survey_methods"
+name = "Survey Methods"
+tier = 0
+column = 0
+row = 1
+price = 100
+duration_seconds = 5.0
+requires = []
+revealed_by = []
+summary = "Basic survey research."
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = 5.0
+
+[[research]]
+id = "scanner_core"
+name = "Scanner Core"
+tier = 1
+column = 1
+row = 1
+price = 250
+duration_seconds = 12.0
+requires = ["survey_methods"]
+revealed_by = ["survey_methods"]
+summary = "Scanner recipe research."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "scanner_core"
+"#,
+        )
+        .expect("research should be written");
+
+        let registry = load_content_packs(&root).expect("research pack should load");
+        assert_eq!(
+            registry.research_order,
+            vec![
+                "core:survey_methods".to_string(),
+                "core:scanner_core".to_string()
+            ]
+        );
+        assert!(registry
+            .research
+            .get("core:scanner_core")
+            .is_some_and(|research| {
+                research.requires == ["core:survey_methods"]
+                    && research.revealed_by == ["core:survey_methods"]
+                    && research.duration_seconds == 12.0
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "recipe_unlock"
+                            && reward.target.as_deref() == Some("core:scanner_core")
+                    })
+            }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rejects_research_with_invalid_references_and_rewards() {
+        let root = make_temp_content_root("research-invalid");
+        write_minimal_core_pack(&root);
+        let pack_path = root.join("core");
+        fs::write(
+            pack_path.join("research.toml"),
+            r#"
+[[research]]
+id = "bad_node"
+name = "Bad Node"
+tier = 0
+column = 0
+row = 0
+price = 0
+duration_seconds = 0.0
+requires = ["missing_required"]
+revealed_by = ["missing_revealer"]
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "missing_recipe"
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = -1.0
+
+[[research.rewards]]
+kind = "unknown_reward"
+"#,
+        )
+        .expect("research should be written");
+
+        let errors = load_content_packs(&root).expect_err("invalid research should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error == "Research `core:bad_node` has zero price"));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` has non-positive duration_seconds"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Research `core:bad_node` references missing required research `core:missing_required`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Research `core:bad_node` references missing revealing research `core:missing_revealer`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` references missing recipe reward `core:missing_recipe`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` mining_speed_percent reward has non-positive amount"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` has unsupported reward kind `unknown_reward`"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn skips_optional_compatibility_pack_when_dependency_is_missing() {
         let root = make_temp_content_root("compat-missing");
         write_minimal_core_pack(&root);
@@ -3479,14 +3940,12 @@ optional_depends_on = []
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 
 [[items]]
 id = "point_defense"
 name = "Point Defense"
 tier = "weapon"
-xp_value = 4.0
 unit_mass = 20.0
 "#,
         )
@@ -3548,14 +4007,12 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 
 [[items]]
 id = "point_defense"
 name = "Point Defense"
 tier = "weapon"
-xp_value = 4.0
 unit_mass = 20.0
 "#,
         )
@@ -3622,14 +4079,12 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 
 [[items]]
 id = "point_defense"
 name = "Point Defense"
 tier = "weapon"
-xp_value = 4.0
 unit_mass = 20.0
 "#,
         )
@@ -3693,7 +4148,6 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 "#,
         )
@@ -3773,7 +4227,6 @@ position = [25.0, -50.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 "#,
         )
@@ -3841,7 +4294,6 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 "#,
         )
@@ -3964,14 +4416,12 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 
 [[items]]
 id = "point_defense"
 name = "Point Defense"
 tier = "weapon"
-xp_value = 4.0
 unit_mass = 20.0
 "#,
         )
@@ -4288,6 +4738,14 @@ system = "bad_system"
 position = [0.0, 0.0]
 faction = "missing_station_faction"
 culture = "missing_station_culture"
+
+[[stations.services]]
+id = "bad_station_research"
+name = "Bad Station Research"
+kind = "research"
+
+[[stations.services.research]]
+research = "missing_research"
 "#,
         )
         .expect("stations should be written");
@@ -4331,6 +4789,8 @@ cargo_capacity = 50.0
 cargo_defaults = [
   { item = "missing_cargo", count = 0 },
 ]
+credit_reward_min = 20
+credit_reward_max = 10
 hull_capacity = 25.0
 shield_capacity = 10.0
 energy_capacity = 20.0
@@ -4384,6 +4844,10 @@ weapon_slots = ["missing_npc_weapon"]
         }));
         assert!(errors.iter().any(|error| {
             error
+                == "NPC ship `bad-ship-pack:bad_npc` has credit_reward_min greater than credit_reward_max"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
                 == "NPC ship `bad-ship-pack:bad_npc` references missing system `bad-ship-pack:missing_system`"
         }));
         assert!(errors.iter().any(|error| {
@@ -4405,6 +4869,10 @@ weapon_slots = ["missing_npc_weapon"]
         assert!(errors.iter().any(|error| {
             error
                 == "Station `bad-ship-pack:bad_station` references missing culture `bad-ship-pack:missing_station_culture`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Station service `bad-ship-pack:bad_station_research` references missing research lead `bad-ship-pack:missing_research`"
         }));
         assert!(errors.iter().any(|error| {
             error
@@ -4453,7 +4921,6 @@ version = "0.1.0"
 id = "core_item"
 name = "Core item"
 tier = "component"
-xp_value = 1.0
 unit_mass = 1.0
 "#,
         )
@@ -4464,11 +4931,30 @@ unit_mass = 1.0
 [[stations]]
 id = "crafting"
 name = "Crafting"
-skill = "crafting"
 base_seconds = 1.0
 "#,
         )
         .expect("core stations should be written");
+    }
+
+    fn write_minimal_core_recipe(root: &Path, recipe_id: &str) {
+        let pack_path = root.join("core");
+        fs::write(
+            pack_path.join("recipes.toml"),
+            format!(
+                r#"
+[[recipes]]
+id = "{recipe_id}"
+station = "crafting"
+output = {{ item = "core_item", count = 1 }}
+ingredients = [
+  {{ item = "core_item", count = 1 }},
+]
+purpose = "Minimal recipe."
+"#
+            ),
+        )
+        .expect("core recipes should be written");
     }
 
     fn write_addon_pack(root: &Path, version: &str, item_id: &str) {
@@ -4494,7 +4980,6 @@ depends_on = ["core"]
 id = "{item_id}"
 name = "Addon item"
 tier = "component"
-xp_value = 1.0
 unit_mass = 1.0
 "#
             ),
@@ -4524,7 +5009,6 @@ version = "0.1.0"
 id = "hybrid_item"
 name = "Hybrid item"
 tier = "component"
-xp_value = 1.0
 unit_mass = 1.0
 "#,
         )

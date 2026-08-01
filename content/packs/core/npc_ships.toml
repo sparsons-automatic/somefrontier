@@ -17,6 +17,8 @@ cargo_defaults = [
   { item = "iron_ore", count = 8 },
   { item = "copper_ore", count = 6 },
 ]
+credit_reward_min = 0
+credit_reward_max = 0
 hull_capacity = 70.0
 shield_capacity = 45.0
 energy_capacity = 60.0
@@ -41,6 +43,8 @@ cargo_capacity = 12000.0
 cargo_defaults = [
   { item = "fuel_canister", count = 1 },
 ]
+credit_reward_min = 0
+credit_reward_max = 0
 hull_capacity = 82.0
 shield_capacity = 80.0
 energy_capacity = 90.0
@@ -66,6 +70,8 @@ cargo_capacity = 2500.0
 cargo_defaults = [
   { item = "circuit", count = 1 },
 ]
+credit_reward_min = 35
+credit_reward_max = 70
 hull_capacity = 36.0
 shield_capacity = 20.0
 energy_capacity = 40.0

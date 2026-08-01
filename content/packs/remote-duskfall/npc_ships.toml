@@ -16,6 +16,8 @@ cargo_capacity = 2500.0
 cargo_defaults = [
   { item = "core:circuit", count = 1 },
 ]
+credit_reward_min = 60
+credit_reward_max = 110
 hull_capacity = 36.0
 shield_capacity = 20.0
 energy_capacity = 40.0

@@ -1,0 +1,127 @@
+[[research]]
+id = "frontier_survey_methods"
+name = "Frontier Survey Methods"
+tier = 0
+column = 0
+row = 0
+price = 450
+duration_seconds = 5.0
+requires = []
+revealed_by = []
+summary = "Basic archive methods for turning scan records and cargo work into useful frontier knowledge."
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = 5.0
+
+[[research]]
+id = "mining_calibration_i"
+name = "Mining Calibration I"
+tier = 1
+column = 1
+row = 0
+price = 600
+duration_seconds = 8.0
+requires = ["frontier_survey_methods"]
+revealed_by = ["frontier_survey_methods"]
+summary = "Calibrated cutter timing and survey marks make routine mining faster."
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = 8.0
+
+[[research]]
+id = "refinery_throughput_i"
+name = "Refinery Throughput I"
+tier = 1
+column = 1
+row = 1
+price = 650
+duration_seconds = 8.0
+requires = ["frontier_survey_methods"]
+revealed_by = ["frontier_survey_methods"]
+summary = "Refinery sequencing improves smelting cycle speed."
+
+[[research.rewards]]
+kind = "smelting_speed_percent"
+amount = 8.0
+
+[[research]]
+id = "fabrication_templates_i"
+name = "Fabrication Templates I"
+tier = 1
+column = 1
+row = 2
+price = 700
+duration_seconds = 10.0
+requires = ["frontier_survey_methods"]
+revealed_by = ["frontier_survey_methods"]
+summary = "Reusable fixture templates improve crafting and processing speed."
+
+[[research.rewards]]
+kind = "fabrication_speed_percent"
+amount = 8.0
+
+[[research]]
+id = "advanced_scanner_core"
+name = "Advanced Scanner Core"
+tier = 2
+column = 2
+row = 0
+price = 850
+duration_seconds = 15.0
+requires = ["mining_calibration_i"]
+revealed_by = ["mining_calibration_i"]
+summary = "Unlocks the advanced scanner core recipe for deeper survey capability."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "advanced_scanner_core"
+
+[[research]]
+id = "yield_optimization_i"
+name = "Yield Optimization I"
+tier = 2
+column = 2
+row = 2
+price = 950
+duration_seconds = 20.0
+requires = ["fabrication_templates_i", "refinery_throughput_i"]
+revealed_by = ["fabrication_templates_i"]
+summary = "Shared production notes improve the chance of recovering an extra finished unit."
+
+[[research.rewards]]
+kind = "bonus_output_chance"
+amount = 3.0
+
+[[research]]
+id = "fusion_drive_core"
+name = "Fusion Drive Core"
+tier = 3
+column = 3
+row = 0
+price = 1250
+duration_seconds = 30.0
+requires = ["advanced_scanner_core"]
+revealed_by = ["advanced_scanner_core"]
+summary = "Unlocks the fusion drive core recipe for long-range route preparation."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "fusion_drive_core"
+
+[[research]]
+id = "jump_core"
+name = "Jump Core"
+tier = 4
+column = 4
+row = 0
+price = 1800
+duration_seconds = 45.0
+requires = ["fusion_drive_core"]
+revealed_by = ["fusion_drive_core"]
+summary = "Unlocks the jump core recipe for late remote-route capability."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "jump_core"
