@@ -86,6 +86,7 @@ const KNOWN_SYSTEMS_PANEL_WIDTH: f32 = 280.0;
 const KNOWN_SYSTEM_ROW_HEIGHT: f32 = 70.0;
 const WARP_CHARGE_SECONDS: f32 = 2.0;
 const MAX_SCAN_LEVEL: u8 = 3;
+const OPERATION_FEEDBACK_LIMIT: usize = 6;
 const STARTER_SYSTEM_ID: &str = "core:frontier";
 const UI_FONT_PATH: &str = "assets/fonts/Junicode.ttf";
 
@@ -218,6 +219,15 @@ struct GameState {
     save_dirty: bool,
     save_status_timer: f32,
     save_status_manual: bool,
+    operation_feedback: Vec<OperationFeedback>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OperationFeedback {
+    category: String,
+    message: String,
+    aggregate_key: Option<String>,
+    count: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1082,6 +1092,7 @@ impl GameState {
             save_dirty: true,
             save_status_timer: 0.0,
             save_status_manual: false,
+            operation_feedback: Vec::new(),
         };
         if let Some(save_data) = save_data {
             draw_startup_transition_assets(
@@ -2308,6 +2319,11 @@ fn install_shield_in_slot(
     }
     game.rebuild_ship_from_upgrades();
     game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Install",
+        format!("Shield installed: {}", shield_def.name),
+    );
     Ok(())
 }
 
@@ -2358,6 +2374,11 @@ fn install_weapon_in_slot(
         game.equipped_weapons.push(installed_weapon);
     }
     game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Install",
+        format!("Weapon installed: {}", weapon_def.name),
+    );
     Ok(())
 }
 
@@ -2768,6 +2789,98 @@ fn pay_cost(inventory: &mut Inventory, cost: &[ItemStack]) {
     }
 }
 
+fn push_operation_feedback(
+    game: &mut GameState,
+    category: impl Into<String>,
+    message: impl Into<String>,
+) {
+    let entry = OperationFeedback {
+        category: category.into(),
+        message: message.into(),
+        aggregate_key: None,
+        count: 1,
+    };
+    game.operation_feedback.retain(|existing| {
+        existing.category != entry.category || existing.message != entry.message
+    });
+    game.operation_feedback.insert(0, entry);
+    game.operation_feedback.truncate(OPERATION_FEEDBACK_LIMIT);
+}
+
+fn push_aggregate_operation_feedback(
+    game: &mut GameState,
+    category: impl Into<String>,
+    aggregate_key: impl Into<String>,
+    count: u32,
+    format_message: impl Fn(u32) -> String,
+) {
+    let category = category.into();
+    let aggregate_key = aggregate_key.into();
+    let mut total = count;
+    game.operation_feedback.retain(|existing| {
+        if existing.category == category
+            && existing
+                .aggregate_key
+                .as_ref()
+                .is_some_and(|key| key == &aggregate_key)
+        {
+            total = total.saturating_add(existing.count);
+            false
+        } else {
+            true
+        }
+    });
+    game.operation_feedback.insert(
+        0,
+        OperationFeedback {
+            category,
+            message: format_message(total),
+            aggregate_key: Some(aggregate_key),
+            count: total,
+        },
+    );
+    game.operation_feedback.truncate(OPERATION_FEEDBACK_LIMIT);
+}
+
+fn route_ready_feedback(game: &GameState) -> Option<String> {
+    known_system_ids(&game.content_registry)
+        .into_iter()
+        .filter(|system_id| system_id != &game.current_system_id)
+        .find_map(|system_id| {
+            let summary = route_readiness_summary(game, &system_id);
+            matches!(
+                summary.as_str(),
+                "Route ready" | "Remote prep ready" | "Route ready; Scanner array 2 recommended"
+            )
+            .then(|| {
+                format!(
+                    "{}: {}",
+                    system_display_name(&game.content_registry, &system_id),
+                    summary
+                )
+            })
+        })
+}
+
+fn push_route_ready_feedback(game: &mut GameState) {
+    if let Some(message) = route_ready_feedback(game) {
+        push_operation_feedback(game, "Route", message);
+    }
+}
+
+fn recipe_display_name(registry: &content::ContentRegistry, recipe_id: &str) -> String {
+    registry
+        .recipes
+        .get(recipe_id)
+        .and_then(|recipe| {
+            registry
+                .items
+                .get(&recipe.output.item)
+                .map(|item| format!("{} x{}", item.name, recipe.output.count))
+        })
+        .unwrap_or_else(|| local_content_id(recipe_id).replace('_', " "))
+}
+
 fn buy_ship_upgrade(game: &mut GameState, upgrade_index: usize) -> bool {
     let Some(upgrade) = game.ship_upgrades.get(upgrade_index).copied() else {
         return false;
@@ -2780,6 +2893,15 @@ fn buy_ship_upgrade(game: &mut GameState, upgrade_index: usize) -> bool {
     pay_cost(&mut game.inventory, &cost);
     apply_ship_upgrade(&mut game.ship, upgrade.kind);
     game.ship_upgrades[upgrade_index].level += 1;
+    push_operation_feedback(
+        game,
+        "Upgrade",
+        format!(
+            "{} upgraded to level {}",
+            upgrade.kind.name(),
+            game.ship_upgrades[upgrade_index].level
+        ),
+    );
     true
 }
 
@@ -6300,11 +6422,18 @@ fn start_player_warp_charge(game: &mut GameState, target_system_id: String) {
     }
 
     break_planet_orbit(game);
+    let target_name = system_display_name(&game.content_registry, &target_system_id).to_string();
+    let charge_seconds = warp_charge_seconds(&game.ship_upgrades);
     game.pending_warp = Some(PendingWarp {
         target_system_id,
-        timer: warp_charge_seconds(&game.ship_upgrades),
+        timer: charge_seconds,
         cost,
     });
+    push_operation_feedback(
+        game,
+        "Travel",
+        format!("Warp charging for {target_name} ({charge_seconds:.1}s)"),
+    );
 }
 
 fn update_pending_warp(game: &mut GameState, dt: f32) {
@@ -6329,6 +6458,14 @@ fn update_pending_warp(game: &mut GameState, dt: f32) {
 
     pay_cost(&mut game.inventory, &warp.cost);
     game.save_dirty = true;
+    let target_name =
+        system_display_name(&game.content_registry, &warp.target_system_id).to_string();
+    let cost_label = format_warp_cost(&warp.cost);
+    push_operation_feedback(
+        game,
+        "Travel",
+        format!("Warp committed to {target_name}; spent {cost_label}"),
+    );
     let label = format!(
         "Loading local space ... {}",
         system_display_name(&game.content_registry, &warp.target_system_id)
@@ -6401,6 +6538,18 @@ struct StationDetailRender<'a> {
     selected_service: Option<usize>,
     in_range: bool,
     distance: f32,
+    operation_feedback: &'a [OperationFeedback],
+    x: f32,
+    y: f32,
+    width: f32,
+}
+
+struct PlanetDetailRender<'a> {
+    content_registry: &'a content::ContentRegistry,
+    planet: &'a Planet,
+    in_range: bool,
+    is_orbiting: bool,
+    operation_feedback: &'a [OperationFeedback],
     x: f32,
     y: f32,
     width: f32,
@@ -6723,6 +6872,7 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
         return;
     };
     let arrival = target_system.arrival;
+    let target_name = target_system.name.clone();
 
     remember_current_system_destination(game);
 
@@ -6741,6 +6891,7 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.ship.velocity = Vec2::ZERO;
     game.ship.angular_velocity = 0.0;
     game.save_dirty = true;
+    push_operation_feedback(game, "Travel", format!("Arrived in {target_name}"));
 }
 
 fn set_destination_planet(game: &mut GameState, destination_planet: Option<usize>) {
@@ -6812,15 +6963,19 @@ fn identify_selected_npc_ship(game: &mut GameState) -> bool {
     let Some(npc_ship_index) = game.selected_npc_ship else {
         return false;
     };
-    let Some(npc_ship) = game.npc_ships.get_mut(npc_ship_index) else {
+    let Some(name) = game.npc_ships.get_mut(npc_ship_index).and_then(|npc_ship| {
+        if !npc_ship_is_in_system(npc_ship, &game.current_system_id)
+            || !npc_ship_in_interaction_range(&game.ship, npc_ship)
+        {
+            None
+        } else {
+            npc_ship.identified = true;
+            Some(npc_ship.name.clone())
+        }
+    }) else {
         return false;
     };
-    if !npc_ship_is_in_system(npc_ship, &game.current_system_id)
-        || !npc_ship_in_interaction_range(&game.ship, npc_ship)
-    {
-        return false;
-    }
-    npc_ship.identified = true;
+    push_operation_feedback(game, "Contact", format!("Identified {name}"));
     true
 }
 
@@ -7490,6 +7645,14 @@ fn purchase_recipe_unlock(
     game.purchased_recipe_unlocks.sort();
     game.purchased_recipe_unlocks.dedup();
     game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Unlock",
+        format!(
+            "Recipe available: {}",
+            recipe_display_name(&game.content_registry, &unlock.recipe)
+        ),
+    );
     true
 }
 
@@ -7541,10 +7704,17 @@ fn select_station_service(
         return false;
     }
 
+    let station_name = station.name.clone();
+    let service_name = station.services[service_index].name.clone();
     game.selected_station = Some(station_index);
     game.selected_planet = None;
     game.selected_npc_ship = None;
     game.selected_station_service = Some(service_index);
+    push_operation_feedback(
+        game,
+        "Station",
+        format!("{service_name} service selected at {station_name}"),
+    );
     true
 }
 
@@ -7561,10 +7731,13 @@ fn buy_station_trade_offer(
     if !in_range {
         return true;
     }
-    let Some(offer) = game
-        .stations
-        .get_mut(station_index)
-        .and_then(|station| station.services.get_mut(service_index))
+    let Some(station) = game.stations.get_mut(station_index) else {
+        return false;
+    };
+    let station_name = station.name.clone();
+    let Some(offer) = station
+        .services
+        .get_mut(service_index)
         .and_then(|service| service.trade.get_mut(offer_index))
     else {
         return false;
@@ -7577,8 +7750,20 @@ fn buy_station_trade_offer(
     if let Some(stock) = offer.stock.as_mut() {
         *stock = stock.saturating_sub(1);
     }
-    game.inventory.add_item(offer.item.clone(), 1);
+    let item = offer.item.clone();
+    let buy_price = offer.buy_price;
+
+    game.inventory.add_item(item.clone(), 1);
     game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Trade",
+        format!(
+            "Bought {} from {} for {} cr",
+            item.name, station_name, buy_price
+        ),
+    );
+    push_route_ready_feedback(game);
     true
 }
 
@@ -7595,10 +7780,13 @@ fn sell_station_trade_offer(
     if !in_range {
         return true;
     }
-    let Some(offer) = game
-        .stations
-        .get_mut(station_index)
-        .and_then(|station| station.services.get_mut(service_index))
+    let Some(station) = game.stations.get_mut(station_index) else {
+        return false;
+    };
+    let station_name = station.name.clone();
+    let Some(offer) = station
+        .services
+        .get_mut(service_index)
         .and_then(|service| service.trade.get_mut(offer_index))
     else {
         return false;
@@ -7607,12 +7795,23 @@ fn sell_station_trade_offer(
         return true;
     }
 
-    game.inventory.remove_item(&offer.item, 1);
-    game.credits = game.credits.saturating_add(offer.sell_price);
+    let item = offer.item.clone();
+    let sell_price = offer.sell_price;
+    game.inventory.remove_item(&item, 1);
+    game.credits = game.credits.saturating_add(sell_price);
     if let Some(stock) = offer.stock.as_mut() {
         *stock = stock.saturating_add(1);
     }
+
     game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Trade",
+        format!(
+            "Sold {} to {} for {} cr",
+            item.name, station_name, sell_price
+        ),
+    );
     true
 }
 
@@ -7707,12 +7906,27 @@ fn launch_planet_scan(game: &mut GameState, planet_index: usize) -> bool {
         if !drone_returns {
             game.inventory.remove_item(&scan_item, 1);
         }
+        let mut feedback = None;
         if let Some(planet) = game.planets.get_mut(planet_index) {
+            let previous_level = planet.scan_level;
             let scan_steps = scan_steps.saturating_add(scanner_survey_bonus(&game.ship_upgrades));
             planet.scan_level = planet
                 .scan_level
                 .saturating_add(scan_steps)
                 .min(MAX_SCAN_LEVEL);
+            let detail = if planet.scan_level >= MAX_SCAN_LEVEL {
+                "survey complete"
+            } else if previous_level < 2 && planet.scan_level >= 2 {
+                "composition revealed"
+            } else if previous_level < 1 && planet.scan_level >= 1 {
+                "surface record updated"
+            } else {
+                "scan data updated"
+            };
+            feedback = Some(format!("{}: {detail}", planet.info.classification));
+        }
+        if let Some(message) = feedback {
+            push_operation_feedback(game, "Survey", message);
         }
         return true;
     }
@@ -7898,7 +8112,7 @@ fn max_scroll_offset(row_count: usize, row_height: f32, viewport_height: f32) ->
 }
 
 fn update_production(game: &mut GameState, dt: f32) {
-    update_recipes(
+    let smelted = update_recipes(
         RecipeUpdate {
             inventory: &mut game.inventory,
             recipes: &game.smelt_recipes,
@@ -7910,7 +8124,19 @@ fn update_production(game: &mut GameState, dt: f32) {
         },
         dt,
     );
-    update_recipes(
+    for stack in smelted {
+        let item_name = stack.item.name.clone();
+        push_aggregate_operation_feedback(
+            game,
+            "Production",
+            format!("smelt:{}", stack.item.id),
+            stack.count,
+            |count| format!("Produced {item_name} x{count}"),
+        );
+        push_route_ready_feedback(game);
+    }
+
+    let crafted = update_recipes(
         RecipeUpdate {
             inventory: &mut game.inventory,
             recipes: &game.craft_recipes,
@@ -7922,7 +8148,19 @@ fn update_production(game: &mut GameState, dt: f32) {
         },
         dt,
     );
-    update_recipes(
+    for stack in crafted {
+        let item_name = stack.item.name.clone();
+        push_aggregate_operation_feedback(
+            game,
+            "Production",
+            format!("craft:{}", stack.item.id),
+            stack.count,
+            |count| format!("Built {item_name} x{count}"),
+        );
+        push_route_ready_feedback(game);
+    }
+
+    let processed = update_recipes(
         RecipeUpdate {
             inventory: &mut game.inventory,
             recipes: &game.processing_recipes,
@@ -7934,6 +8172,17 @@ fn update_production(game: &mut GameState, dt: f32) {
         },
         dt,
     );
+    for stack in processed {
+        let item_name = stack.item.name.clone();
+        push_aggregate_operation_feedback(
+            game,
+            "Production",
+            format!("process:{}", stack.item.id),
+            stack.count,
+            |count| format!("Processed {item_name} x{count}"),
+        );
+        push_route_ready_feedback(game);
+    }
 }
 
 struct RecipeUpdate<'a> {
@@ -7946,7 +8195,7 @@ struct RecipeUpdate<'a> {
     skill_kind: SkillKind,
 }
 
-fn update_recipes(update: RecipeUpdate<'_>, dt: f32) {
+fn update_recipes(update: RecipeUpdate<'_>, dt: f32) -> Vec<ItemStack> {
     let RecipeUpdate {
         inventory,
         recipes,
@@ -7971,18 +8220,18 @@ fn update_recipes(update: RecipeUpdate<'_>, dt: f32) {
         locked_recipes,
         purchased_unlocks,
     ) else {
-        return;
+        return Vec::new();
     };
     let recipe = &recipes[recipe_index];
     let operation_seconds = recipe_operation_seconds(skills, skill_kind, recipe);
     let setting = &mut settings[recipe_index];
     setting.progress += dt / operation_seconds;
     if setting.progress < 1.0 {
-        return;
+        return Vec::new();
     }
     if !inventory.can_craft(recipe) {
         setting.progress = 0.0;
-        return;
+        return Vec::new();
     }
 
     setting.progress -= 1.0;
@@ -7995,7 +8244,12 @@ fn update_recipes(update: RecipeUpdate<'_>, dt: f32) {
             inventory.add_item(recipe.output.item.clone(), bonus);
         }
         award_skill_xp(skills, skill_kind, &recipe.output.item, recipe.output.count);
+        return vec![ItemStack {
+            item: recipe.output.item.clone(),
+            count: recipe.output.count.saturating_add(bonus),
+        }];
     }
+    Vec::new()
 }
 
 fn clear_blocked_recipe_progress(
@@ -8098,14 +8352,26 @@ fn update_mining(game: &mut GameState, dt: f32) {
         }
 
         game.inventory.add_item(mineable.item.clone(), mined);
+        let mut total_mined = mined;
         let bonus = bonus_output_count(&game.skills, SkillKind::Mining, mined);
         if bonus > 0 {
             game.inventory.add_item(mineable.item.clone(), bonus);
+            total_mined = total_mined.saturating_add(bonus);
         }
         if rand::gen_range(0.0, 1.0) < richness_bonus_chance {
             game.inventory.add_item(mineable.item.clone(), mined);
+            total_mined = total_mined.saturating_add(mined);
         }
         award_skill_xp(&mut game.skills, SkillKind::Mining, &mineable.item, mined);
+        let item_name = mineable.item.name.clone();
+        push_aggregate_operation_feedback(
+            game,
+            "Mining",
+            format!("mine:{}", mineable.item.id),
+            total_mined,
+            |count| format!("Recovered {item_name} x{count}"),
+        );
+        push_route_ready_feedback(game);
     }
 }
 
@@ -13077,15 +13343,16 @@ fn draw_compact_list(lines: &[&str], x: f32, y: f32, max_width: f32, font_size: 
 fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
     if let Some(planet_index) = game.selected_planet {
         if let Some(planet) = game.planets.get(planet_index) {
-            draw_planet_detail(
-                &game.content_registry,
+            draw_planet_detail(PlanetDetailRender {
+                content_registry: &game.content_registry,
                 planet,
-                planet_in_interaction_range(&game.ship, planet),
-                game.orbiting_planet == Some(planet_index),
+                in_range: planet_in_interaction_range(&game.ship, planet),
+                is_orbiting: game.orbiting_planet == Some(planet_index),
+                operation_feedback: &game.operation_feedback,
                 x,
                 y,
                 width,
-            );
+            });
             return;
         }
     }
@@ -13098,6 +13365,7 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
                 selected_service: game.selected_station_service,
                 in_range: station_in_interaction_range(&game.ship, station),
                 distance: station_surface_distance(&game.ship, station),
+                operation_feedback: &game.operation_feedback,
                 x,
                 y,
                 width,
@@ -13108,7 +13376,15 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
 
     if let Some(npc_ship_index) = game.selected_npc_ship {
         if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
-            draw_npc_ship_detail(&game.content_registry, &game.ship, npc_ship, x, y, width);
+            draw_npc_ship_detail(
+                &game.content_registry,
+                &game.ship,
+                npc_ship,
+                &game.operation_feedback,
+                x,
+                y,
+                width,
+            );
             return;
         }
     }
@@ -13123,6 +13399,7 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
         cargo_capacity: cargo_rating_kg(&game.ship_upgrades),
         current_system_id: &game.current_system_id,
         shield_recharge_delay_remaining: game.shield_recharge_delay_remaining,
+        operation_feedback: &game.operation_feedback,
         texture: game.ship_texture.as_ref(),
         x,
         y,
@@ -13479,8 +13756,42 @@ fn draw_station_trade_table(render: StationTradeTableRender<'_>) {
             12.0,
             detail_color,
         );
-        draw_trade_action_button(buy_rect, "Buy", can_buy, buy_rect.contains(mouse));
-        draw_trade_action_button(sell_rect, "Sell", can_sell, sell_rect.contains(mouse));
+        draw_trade_action_button(
+            buy_rect,
+            &trade_buy_label(offer, in_range, credits),
+            can_buy,
+            buy_rect.contains(mouse),
+        );
+        draw_trade_action_button(
+            sell_rect,
+            &trade_sell_label(in_range, cargo_count),
+            can_sell,
+            sell_rect.contains(mouse),
+        );
+    }
+}
+
+fn trade_buy_label(offer: &TradeOffer, in_range: bool, credits: u32) -> String {
+    if !in_range {
+        "Approach".to_string()
+    } else if offer.unavailable {
+        "Unavailable".to_string()
+    } else if offer.stock == Some(0) {
+        "No stock".to_string()
+    } else if credits < offer.buy_price {
+        format!("Need {}", offer.buy_price.saturating_sub(credits))
+    } else {
+        "Buy".to_string()
+    }
+}
+
+fn trade_sell_label(in_range: bool, cargo_count: u32) -> String {
+    if !in_range {
+        "Approach".to_string()
+    } else if cargo_count == 0 {
+        "No cargo".to_string()
+    } else {
+        "Sell".to_string()
     }
 }
 
@@ -13608,6 +13919,12 @@ fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
         );
         let price_label = if purchased {
             "Owned".to_string()
+        } else if unlock.unavailable {
+            "Unavailable".to_string()
+        } else if !in_range {
+            "Approach".to_string()
+        } else if credits < unlock.price {
+            format!("Need {}", unlock.price.saturating_sub(credits))
         } else {
             unlock.price.to_string()
         };
@@ -13643,6 +13960,7 @@ fn draw_station_detail(render: StationDetailRender<'_>) {
         selected_service,
         in_range,
         distance,
+        operation_feedback,
         x,
         y,
         width,
@@ -13775,9 +14093,20 @@ fn draw_station_detail(render: StationDetailRender<'_>) {
                 warning
             },
         );
-        if let Some(description) = service.description.as_deref() {
-            draw_wrapped_text(description, x, after_status + 16.0, width, 15, text);
-        }
+        let after_description = service
+            .description
+            .as_deref()
+            .map(|description| {
+                draw_wrapped_text(description, x, after_status + 16.0, width, 15, text)
+            })
+            .unwrap_or(after_status);
+        draw_latest_operation_row(
+            operation_feedback,
+            &["Station", "Trade", "Unlock", "Route"],
+            x,
+            after_description + 30.0,
+            width,
+        );
     } else {
         draw_text(
             "Select a service group from the station list.",
@@ -13786,18 +14115,27 @@ fn draw_station_detail(render: StationDetailRender<'_>) {
             16.0,
             warning,
         );
+        draw_latest_operation_row(
+            operation_feedback,
+            &["Station", "Trade", "Unlock", "Route"],
+            x,
+            selected_y + 58.0,
+            width,
+        );
     }
 }
 
-fn draw_planet_detail(
-    content_registry: &content::ContentRegistry,
-    planet: &Planet,
-    in_range: bool,
-    is_orbiting: bool,
-    x: f32,
-    y: f32,
-    width: f32,
-) {
+fn draw_planet_detail(render: PlanetDetailRender<'_>) {
+    let PlanetDetailRender {
+        content_registry,
+        planet,
+        in_range,
+        is_orbiting,
+        operation_feedback,
+        x,
+        y,
+        width,
+    } = render;
     let label = Color::from_rgba(88, 116, 126, 180);
     let text = Color::from_rgba(205, 226, 230, 255);
     let warning = Color::from_rgba(226, 190, 150, 255);
@@ -13975,6 +14313,13 @@ fn draw_planet_detail(
         } else {
             warning
         },
+    );
+    draw_latest_operation_row(
+        operation_feedback,
+        &["Survey", "Mining"],
+        x,
+        status_y + 64.0,
+        width,
     );
 }
 
@@ -14162,6 +14507,7 @@ fn draw_npc_ship_detail(
     content_registry: &content::ContentRegistry,
     ship: &Ship,
     npc_ship: &NpcShip,
+    operation_feedback: &[OperationFeedback],
     x: f32,
     y: f32,
     width: f32,
@@ -14358,7 +14704,14 @@ fn draw_npc_ship_detail(
     } else {
         "Contact details are not available until identification completes."
     };
-    draw_wrapped_text(summary, x, detail_y + 26.0, width, 15, text);
+    let after_summary = draw_wrapped_text(summary, x, detail_y + 26.0, width, 15, text);
+    draw_latest_operation_row(
+        operation_feedback,
+        &["Contact"],
+        x,
+        after_summary + 30.0,
+        width,
+    );
 }
 
 fn draw_ship_detail(view: ShipDetailView<'_>) {
@@ -14372,6 +14725,7 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         cargo_capacity,
         current_system_id,
         shield_recharge_delay_remaining,
+        operation_feedback,
         texture,
         x,
         y,
@@ -14666,44 +15020,147 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         15.0,
         label,
     );
-    if weapons.is_empty() {
+    let operation_y = if weapons.is_empty() {
         draw_text("No turret slots equipped", x, weapons_y + 28.0, 18.0, text);
+        weapons_y + 78.0
+    } else {
+        for (index, weapon) in weapons.iter().take(3).enumerate() {
+            let row_y = weapons_y + 28.0 + index as f32 * 44.0;
+            draw_text(
+                &fit_debug_text(&weapon.name, width, 17),
+                x,
+                row_y,
+                17.0,
+                accent,
+            );
+            let cooldown = if weapon.cooldown_remaining > 0.0 {
+                format!(" {:.1}s", weapon.cooldown_remaining)
+            } else {
+                String::new()
+            };
+            let status = format!(
+                "{}{}  {:.0}u  {:.0}e",
+                weapon.readiness_label(),
+                cooldown,
+                weapon.range,
+                weapon.energy_cost
+            );
+            draw_text(
+                &fit_debug_text(&status, width, 15),
+                x,
+                row_y + 19.0,
+                15.0,
+                if weapon.status == WeaponStatus::InsufficientEnergy {
+                    Color::from_rgba(226, 190, 150, 245)
+                } else {
+                    text
+                },
+            );
+        }
+        weapons_y + 28.0 + weapons.len().min(3) as f32 * 44.0 + 28.0
+    };
+
+    draw_operation_feedback(operation_feedback, x, operation_y, width);
+}
+
+fn draw_operation_feedback(entries: &[OperationFeedback], x: f32, y: f32, width: f32) {
+    let label = Color::from_rgba(88, 116, 126, 180);
+    let text = Color::from_rgba(205, 226, 230, 245);
+    let accent = Color::from_rgba(150, 221, 226, 245);
+    draw_line(
+        x,
+        y - 18.0,
+        x + width,
+        y - 18.0,
+        1.0,
+        Color::from_rgba(82, 114, 124, 95),
+    );
+    draw_text("Operations", x, y, 15.0, label);
+    if entries.is_empty() {
+        draw_text(
+            "No recent ship operations",
+            x,
+            y + 28.0,
+            16.0,
+            Color::from_rgba(126, 143, 148, 220),
+        );
         return;
     }
 
-    for (index, weapon) in weapons.iter().take(3).enumerate() {
-        let row_y = weapons_y + 28.0 + index as f32 * 44.0;
+    for (index, entry) in entries.iter().take(OPERATION_FEEDBACK_LIMIT).enumerate() {
+        let row_y = y + 28.0 + index as f32 * 23.0;
+        if index == 0 {
+            draw_rectangle(
+                x - 8.0,
+                row_y - 12.0,
+                3.0,
+                15.0,
+                Color::from_rgba(150, 221, 226, 210),
+            );
+        }
         draw_text(
-            &fit_debug_text(&weapon.name, width, 17),
+            &fit_debug_text(&entry.category, 88.0, 14),
             x,
             row_y,
-            17.0,
-            accent,
-        );
-        let cooldown = if weapon.cooldown_remaining > 0.0 {
-            format!(" {:.1}s", weapon.cooldown_remaining)
-        } else {
-            String::new()
-        };
-        let status = format!(
-            "{}{}  {:.0}u  {:.0}e",
-            weapon.readiness_label(),
-            cooldown,
-            weapon.range,
-            weapon.energy_cost
+            14.0,
+            if index == 0 { accent } else { label },
         );
         draw_text(
-            &fit_debug_text(&status, width, 15),
-            x,
-            row_y + 19.0,
+            &fit_debug_text(&entry.message, width - 96.0, 15),
+            x + 96.0,
+            row_y,
             15.0,
-            if weapon.status == WeaponStatus::InsufficientEnergy {
-                Color::from_rgba(226, 190, 150, 245)
+            if index == 0 {
+                Color::from_rgba(235, 242, 226, 255)
             } else {
                 text
             },
         );
     }
+}
+
+fn draw_latest_operation_row(
+    entries: &[OperationFeedback],
+    categories: &[&str],
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let Some(entry) = entries.iter().find(|entry| {
+        categories
+            .iter()
+            .any(|category| *category == entry.category)
+    }) else {
+        return;
+    };
+    let label = Color::from_rgba(88, 116, 126, 180);
+    let text = Color::from_rgba(205, 226, 230, 245);
+    draw_text("Latest", x, y, 15.0, label);
+    draw_text(
+        &fit_debug_text(
+            &format!("{} / {}", entry.category, entry.message),
+            width,
+            15,
+        ),
+        x,
+        y + 24.0,
+        15.0,
+        text,
+    );
+}
+
+#[cfg(test)]
+fn operation_feedback_contains(game: &GameState, category: &str, text: &str) -> bool {
+    game.operation_feedback
+        .iter()
+        .any(|entry| entry.category == category && entry.message.contains(text))
+}
+
+#[cfg(test)]
+fn latest_operation_feedback(game: &GameState) -> Option<(&str, &str)> {
+    game.operation_feedback
+        .first()
+        .map(|entry| (entry.category.as_str(), entry.message.as_str()))
 }
 
 struct WorkRow {
@@ -14731,6 +15188,7 @@ struct ShipDetailView<'a> {
     cargo_capacity: f32,
     current_system_id: &'a str,
     shield_recharge_delay_remaining: f32,
+    operation_feedback: &'a [OperationFeedback],
     texture: Option<&'a Texture2D>,
     x: f32,
     y: f32,
@@ -16472,11 +16930,20 @@ mod tests {
         assert_eq!(game.credits, 75);
         assert_eq!(game.inventory.count(&iron), 1);
         assert_eq!(game.stations[0].services[0].trade[0].stock, Some(1));
+        assert!(operation_feedback_contains(
+            &game,
+            "Trade",
+            "Bought Iron ore"
+        ));
 
         assert!(sell_station_trade_offer(&mut game, 0, 0, 0));
         assert_eq!(game.credits, 85);
         assert_eq!(game.inventory.count(&iron), 0);
         assert_eq!(game.stations[0].services[0].trade[0].stock, Some(2));
+        assert_eq!(
+            latest_operation_feedback(&game),
+            Some(("Trade", "Sold Iron ore to Test Station for 10 cr"))
+        );
     }
 
     #[test]
@@ -16506,6 +16973,86 @@ mod tests {
             game.purchased_recipe_unlocks,
             vec!["core:advanced_scanner_core".to_string()]
         );
+        assert!(operation_feedback_contains(
+            &game,
+            "Unlock",
+            "Advanced scanner core"
+        ));
+    }
+
+    #[test]
+    fn operation_feedback_is_bounded_and_deduped() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        push_operation_feedback(&mut game, "Trade", "Bought Iron ore");
+        push_operation_feedback(&mut game, "Trade", "Bought Iron ore");
+        assert_eq!(game.operation_feedback.len(), 1);
+
+        for index in 0..(OPERATION_FEEDBACK_LIMIT + 2) {
+            push_operation_feedback(&mut game, "Test", format!("Message {index}"));
+        }
+
+        assert_eq!(game.operation_feedback.len(), OPERATION_FEEDBACK_LIMIT);
+        assert_eq!(
+            latest_operation_feedback(&game),
+            Some(("Test", "Message 7"))
+        );
+        assert!(!operation_feedback_contains(
+            &game,
+            "Trade",
+            "Bought Iron ore"
+        ));
+    }
+
+    #[test]
+    fn operation_feedback_aggregates_repeated_output() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        push_aggregate_operation_feedback(
+            &mut game,
+            "Mining",
+            format!("mine:{}", iron.id),
+            1,
+            |count| format!("Recovered Iron ore x{count}"),
+        );
+        push_aggregate_operation_feedback(
+            &mut game,
+            "Mining",
+            format!("mine:{}", iron.id),
+            2,
+            |count| format!("Recovered Iron ore x{count}"),
+        );
+
+        assert_eq!(
+            latest_operation_feedback(&game),
+            Some(("Mining", "Recovered Iron ore x3"))
+        );
+        assert_eq!(game.operation_feedback[0].count, 3);
+    }
+
+    #[test]
+    fn trade_and_unlock_disabled_labels_explain_blockers() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let offer = TradeOffer {
+            item: iron,
+            buy_price: 25,
+            sell_price: 10,
+            stock: Some(2),
+            restock_days: Some(3.0),
+            unavailable: false,
+        };
+
+        assert_eq!(trade_buy_label(&offer, false, 100), "Approach");
+        assert_eq!(trade_buy_label(&offer, true, 10), "Need 15");
+        assert_eq!(trade_sell_label(false, 1), "Approach");
+        assert_eq!(trade_sell_label(true, 0), "No cargo");
     }
 
     #[test]
@@ -16751,16 +17298,31 @@ mod tests {
         start_player_warp_charge(&mut game, remote_system.clone());
         assert!(game.pending_warp.is_some());
         assert_eq!(game.inventory.count(&fuel_canister), 1);
+        assert!(operation_feedback_contains(
+            &game,
+            "Travel",
+            "Warp charging"
+        ));
 
         update_pending_warp(&mut game, WARP_CHARGE_SECONDS + 0.1);
         assert_eq!(game.inventory.count(&fuel_canister), 0);
         assert!(game.scene_transition.is_some());
+        assert!(operation_feedback_contains(
+            &game,
+            "Travel",
+            "Warp committed"
+        ));
 
         apply_transition_action(
             &mut game,
             TransitionAction::SwitchSystem(remote_system.clone()),
         );
         assert_eq!(game.current_system_id, remote_system);
+        assert!(operation_feedback_contains(
+            &game,
+            "Travel",
+            "Arrived in Duskfall Reach"
+        ));
     }
 
     #[test]
@@ -16797,6 +17359,11 @@ mod tests {
         assert!(launch_planet_scan(&mut game, 0));
         assert_eq!(game.planets[0].scan_level, 1);
         assert_eq!(game.inventory.count(&survey_drone), 0);
+        assert!(operation_feedback_contains(
+            &game,
+            "Survey",
+            "surface record updated"
+        ));
 
         game.inventory.add_item(improved_survey_drone.clone(), 1);
         assert!(launch_planet_scan(&mut game, 0));
@@ -16805,6 +17372,11 @@ mod tests {
         assert!(planet_has_surface_scan(&game.planets[0]));
         assert!(planet_has_composition_scan(&game.planets[0]));
         assert!(planet_has_richness_scan(&game.planets[0]));
+        assert!(operation_feedback_contains(
+            &game,
+            "Survey",
+            "survey complete"
+        ));
     }
 
     #[test]
@@ -17585,6 +18157,7 @@ mod tests {
             save_dirty: false,
             save_status_timer: 0.0,
             save_status_manual: false,
+            operation_feedback: Vec::new(),
         }
     }
 }

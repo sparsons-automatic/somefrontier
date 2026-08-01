@@ -123,6 +123,16 @@ informational and does not change flight handling.
 Some crafted items are installable modules. Shield and weapon install items can
 be swapped through ship detail surfaces when a matching slot exists.
 
+The ship detail panel includes an `Operations` readout for recent meaningful
+changes. It records compact feedback for survey results, mined resources,
+produced materials, station trades, recipe unlocks, installed modules, upgrades,
+warp preparation, and remote-system arrival. Repeated messages collapse into
+the newest row so routine mining or production stays readable. Planet, station,
+and contact panes also mirror the latest relevant operation while selected.
+Disabled trade and unlock actions use short reason labels such as approach
+requirements, missing cargo, missing credits, owned unlocks, and out-of-stock
+offers.
+
 ## Skills
 
 Open skills with `K`. Mining, smelting, crafting, and processing actions award
