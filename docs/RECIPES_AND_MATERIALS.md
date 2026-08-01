@@ -9,7 +9,7 @@ This document tracks current and planned material chains for Some Frontier.
 | Raw resource | Mined directly from planets | Iron ore, copper ore, nickel ore |
 | Refined material | Smelted from raw resources | Iron plate, copper plate |
 | Component | Fabricated from refined materials | Copper wire, gear, circuit |
-| Utility item | Enables exploration or operations | Survey drone |
+| Utility item | Enables exploration or operations | Survey drone, shield matrix |
 | Fuel and energy | Powers travel or advanced systems | Reactor cell, hydrogen fuel |
 
 ## Space Mining Resource Pool
@@ -49,6 +49,21 @@ upgrade chains.
 | Advanced expansion | Cobalt, silver, gold, platinum group metals, rare earths | High-performance parts, advanced scanners, drone systems |
 | Energy expansion | Uranium, thorium, helium-3 | Reactor fuels, fusion cells, long-range engines |
 | Late-game expansion | Exotic matter, vitrine crystal, eldridium nodule | Jump systems, exotic containment, endgame upgrades |
+
+## Early-To-Remote Arc
+
+The current first progression arc is operational rather than quest-driven. The
+starter system should teach surveying, mining, production, trading, and ship
+upgrades, then prepare the player for the first remote route.
+
+| Step | Player Goal | Material Or Service Link |
+|---|---|---|
+| Establish income | Survey nearby bodies, mine common ore, and sell surplus stock | Iron ore, copper ore, and early station markets |
+| Build survey capacity | Craft or buy survey drones before exploring unscanned bodies | Circuits, gears, copper wire, Freebelt Commissary |
+| Make route fuel | Process water ice into hydrogen fuel, then package fuel canisters | Water ice, hydrogen fuel, aluminum plate |
+| Improve remote scans | Upgrade Scanner Array toward level 2 before remote exploration | Electronics, silver contacts, advanced scanner cores |
+| Depart prepared | Carry fuel and useful repair or cargo capacity before remote warp | Fuel canisters, ship upgrades, station stock |
+| Exploit remote space | Use the remote system for harsher and more advanced resources | Vanadium, reactor materials, advanced industrial resources |
 
 ## Current Materials
 
@@ -109,6 +124,8 @@ larger drone/drive parts range from 35-48 kg.
 | Circuit | Component | Fabricate iron plate and copper wire | Survey drones, upgrades |
 | Survey drone | Utility item | Fabricate components | Planet scanning |
 | Improved survey drone | Utility item | Upgrade survey drone with electronics and alloy | Future deeper scan capability |
+| Balanced shield matrix | Utility item | Craft components and alloy | Default swappable shield module |
+| Hazard shield matrix | Utility item | Upgrade balanced shield matrix with contacts and coolant | Hazard-resistant shield module |
 
 ## Current Recipes
 
@@ -142,6 +159,8 @@ larger drone/drive parts range from 35-48 kg.
 | Advanced scanner core x1 | Electronics x1, rare earth magnet x1, silver contact x1 | Crafting | High-tier survey upgrade component |
 | Fusion drive core x1 | Helium-3 cell x1, reactor pellet x1, gold conductor x1 | Crafting | Long-range engine upgrade component |
 | Jump core x1 | Exotic matter capsule x1, advanced scanner core x1, eldridium nodule x1 | Crafting | Late-game jump upgrade component |
+| Balanced shield matrix x1 | Circuit x2, copper wire x6, structural alloy x1 | Crafting | Balanced ship shield module |
+| Hazard shield matrix x1 | Balanced shield matrix x1, silver contact x1, coolant x2 | Crafting | Hazard-tuned shield module |
 
 ## Planet Resource Map
 

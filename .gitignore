@@ -1,6 +1,7 @@
 /target/
 /tmp/
 /.codex/
+/TODO.md
 
 # Rust/tooling output
 **/*.rs.bk

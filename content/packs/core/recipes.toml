@@ -224,6 +224,40 @@ ingredients = [
 purpose = "Deeper scan capability."
 
 [[recipes]]
+id = "point_defense_turret"
+station = "crafting"
+output = { item = "core:point_defense_turret", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 1 },
+  { item = "core:circuit", count = 1 },
+  { item = "core:gear", count = 2 },
+  { item = "core:copper_wire", count = 4 },
+]
+purpose = "Craftable ship weapon for automatic defensive turret slots."
+
+[[recipes]]
+id = "balanced_shield_matrix"
+station = "crafting"
+output = { item = "core:balanced_shield_matrix", count = 1 }
+ingredients = [
+  { item = "core:circuit", count = 2 },
+  { item = "core:copper_wire", count = 6 },
+  { item = "core:structural_alloy", count = 1 },
+]
+purpose = "Balanced ship shield module."
+
+[[recipes]]
+id = "hazard_shield_matrix"
+station = "crafting"
+output = { item = "core:hazard_shield_matrix", count = 1 }
+ingredients = [
+  { item = "core:balanced_shield_matrix", count = 1 },
+  { item = "core:silver_contact", count = 1 },
+  { item = "core:coolant", count = 2 },
+]
+purpose = "Shield module tuned for hazardous planetary fields."
+
+[[recipes]]
 id = "rare_earth_magnet"
 station = "crafting"
 output = { item = "core:rare_earth_magnet", count = 1 }

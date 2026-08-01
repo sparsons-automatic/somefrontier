@@ -1,0 +1,15 @@
+[[research]]
+id = "duskfall_vanadium_frames"
+name = "Duskfall Vanadium Frames"
+tier = 5
+column = 5
+row = 1
+price = 2200
+duration_seconds = 60.0
+requires = ["core:jump_core"]
+revealed_by = ["core:jump_core"]
+summary = "Field notes from Duskfall Reach turn vanadium plate into heat-tolerant remote-system frames."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "vanadium_frame"

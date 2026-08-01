@@ -1,0 +1,25 @@
+[[npc_ships]]
+id = "redwake_remote_probe"
+name = "Redwake Remote Probe"
+texture = "content/packs/core/assets/ships/npc-scout-01.png"
+system = "duskfall_reach"
+position = [-820.0, 520.0]
+radius = 22.0
+archetype = "raider-pressure-probe"
+role = "hostile"
+faction = "core:redwake_raiders"
+behavior_tags = ["hostile", "probe", "pressure"]
+spawn_weight = 0.55
+spawn_count = 1
+mass = 18000.0
+cargo_capacity = 2500.0
+cargo_defaults = [
+  { item = "core:circuit", count = 1 },
+]
+credit_reward_min = 60
+credit_reward_max = 110
+hull_capacity = 36.0
+shield_capacity = 20.0
+energy_capacity = 40.0
+weapon_slots = ["core:point_defense_turret"]
+summary = "A Redwake probe that shadows remote haulers and bleeds shields when it gets close."

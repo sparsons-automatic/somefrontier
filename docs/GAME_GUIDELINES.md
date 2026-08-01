@@ -19,7 +19,7 @@ travel, survey, extract, process, upgrade, and push farther out.
   path, even if slow.
 - Travel should feel spatial and purposeful. Destination markers, scanned state,
   and map interactions should reinforce that planets are real places.
-- Production should stay readable. Mining, smelting, crafting, skills, and
+- Production should stay readable. Mining, smelting, crafting, research, and
   upgrades should continue using familiar table-like UI patterns.
 - New resources should earn their place by connecting to at least one meaningful
   recipe, upgrade, hazard, or exploration decision.
@@ -35,7 +35,7 @@ inside those rules.
 Base game mechanics:
 
 - Flight, camera, map interaction, and destination behavior.
-- Inventory, mining, smelting, crafting, skills, scanning, and save/load rules.
+- Inventory, mining, smelting, crafting, research, scanning, and save/load rules.
 - UI layout, disabled states, and action execution.
 - Pack validation and compatibility rules.
 
@@ -58,6 +58,8 @@ for defining how the game itself works.
 - Use disabled states when the player lacks range, items, or prerequisites.
 - Avoid hiding why an action is unavailable.
 - Prefer compact operational screens over large explanatory panels.
+- Prefer shared layout helpers for table columns, row hitboxes, fitted text, and
+  scrollbars before adding new hard-coded menu offsets.
 
 ## Fuel Direction
 

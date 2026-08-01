@@ -17,10 +17,20 @@ pub struct ContentRegistry {
     pub item_order: Vec<String>,
     pub ships: HashMap<String, ShipDef>,
     pub ship_order: Vec<String>,
+    pub npc_ships: HashMap<String, NpcShipDef>,
+    pub npc_ship_order: Vec<String>,
+    pub shields: HashMap<String, ShieldDef>,
+    pub shield_order: Vec<String>,
+    pub weapons: HashMap<String, WeaponDef>,
+    pub weapon_order: Vec<String>,
     pub power_modules: HashMap<String, PowerModuleDef>,
     pub power_module_order: Vec<String>,
     pub recipes: HashMap<String, RecipeDef>,
     pub recipe_order: Vec<String>,
+    pub research: HashMap<String, ResearchDef>,
+    pub research_order: Vec<String>,
+    pub factions: HashMap<String, FactionDef>,
+    pub faction_order: Vec<String>,
     pub universes: HashMap<String, UniverseDef>,
     pub universe_order: Vec<String>,
     pub galaxy_groups: HashMap<String, GalaxyGroupDef>,
@@ -101,7 +111,6 @@ pub struct ItemDef {
     pub id: String,
     pub name: String,
     pub tier: String,
-    pub xp_value: f32,
     pub unit_mass: f32,
 }
 
@@ -116,6 +125,28 @@ pub struct RecipeDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResearchDef {
+    pub id: String,
+    pub name: String,
+    pub tier: u32,
+    pub column: i32,
+    pub row: i32,
+    pub price: u32,
+    pub duration_seconds: f32,
+    pub requires: Vec<String>,
+    pub revealed_by: Vec<String>,
+    pub rewards: Vec<ResearchRewardDef>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchRewardDef {
+    pub kind: String,
+    pub target: Option<String>,
+    pub amount: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackDef {
     pub item: String,
     pub count: u32,
@@ -136,6 +167,82 @@ pub struct ShipDef {
     pub hull_capacity: f32,
     pub shield_capacity: f32,
     pub power_modules: Vec<String>,
+    pub shield_slots: Vec<String>,
+    pub weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NpcShipDef {
+    pub id: String,
+    pub name: String,
+    pub texture: Option<String>,
+    pub system: String,
+    pub position: [f32; 2],
+    pub radius: f32,
+    pub archetype: String,
+    pub role: String,
+    pub faction: Option<String>,
+    pub behavior_tags: Vec<String>,
+    pub spawn_weight: f32,
+    pub spawn_count: u32,
+    pub mass: f32,
+    pub cargo_capacity: f32,
+    pub cargo_defaults: Vec<StackDef>,
+    pub credit_reward_min: u32,
+    pub credit_reward_max: u32,
+    pub hull_capacity: f32,
+    pub shield_capacity: f32,
+    pub energy_capacity: f32,
+    pub shield_slots: Vec<String>,
+    pub weapon_slots: Vec<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShieldDef {
+    pub id: String,
+    pub name: String,
+    pub install_item: String,
+    pub capacity: f32,
+    pub recharge_delay: f32,
+    pub recharge_rate: f32,
+    pub damage_resistance: f32,
+    pub hazard_resistance: f32,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WeaponDef {
+    pub id: String,
+    pub name: String,
+    pub kind: WeaponKind,
+    pub install_item: String,
+    pub range: f32,
+    pub cooldown_seconds: f32,
+    pub damage: f32,
+    pub energy_cost: f32,
+    pub tracking_degrees: f32,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponKind {
+    TurretDefense,
+}
+
+impl WeaponKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::TurretDefense => "turret_defense",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "turret_defense" => Some(Self::TurretDefense),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +258,46 @@ pub struct PowerModuleDef {
     pub heat: f32,
     pub risk: f32,
     pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FactionDef {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub default_disposition: FactionDisposition,
+    pub color: [u8; 3],
+    pub tags: Vec<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactionDisposition {
+    Friendly,
+    Neutral,
+    Hostile,
+    Unknown,
+}
+
+impl FactionDisposition {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Friendly => "friendly",
+            Self::Neutral => "neutral",
+            Self::Hostile => "hostile",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "friendly" => Some(Self::Friendly),
+            "neutral" => Some(Self::Neutral),
+            "hostile" => Some(Self::Hostile),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +353,7 @@ pub struct SystemDef {
     pub galaxy: Option<String>,
     pub universe: Option<String>,
     pub primary_star: Option<String>,
+    pub faction: Option<String>,
     pub arrival: [f32; 2],
     pub description: Option<String>,
     pub tags: Vec<String>,
@@ -226,6 +374,7 @@ pub struct StarDef {
 pub struct PlanetDef {
     pub id: String,
     pub system: String,
+    pub faction: Option<String>,
     pub classification: String,
     pub texture: Option<String>,
     pub position: [f32; 2],
@@ -259,7 +408,6 @@ pub struct HazardEffectsDef {
 pub struct StationDef {
     pub id: String,
     pub name: String,
-    pub skill: Option<String>,
     pub base_seconds: Option<f32>,
     pub system: Option<String>,
     pub position: Option<[f32; 2]>,
@@ -279,7 +427,14 @@ pub struct StationServiceDef {
     pub kind: String,
     pub description: Option<String>,
     pub trade: Vec<TradeStockDef>,
+    pub research: Vec<ResearchLeadDef>,
     pub recipe_unlocks: Vec<RecipeUnlockDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchLeadDef {
+    pub research: String,
+    pub unavailable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,9 +475,31 @@ struct PackManifest {
     version: String,
     description: Option<String>,
     #[serde(default)]
-    depends_on: Vec<String>,
+    depends_on: Vec<PackDependencyFileDef>,
     #[serde(default)]
-    optional_depends_on: Vec<String>,
+    optional_depends_on: Vec<PackDependencyFileDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum PackDependencyFileDef {
+    Id(String),
+    Detailed { id: String, version: Option<String> },
+}
+
+impl PackDependencyFileDef {
+    fn id(&self) -> &str {
+        match self {
+            Self::Id(id) | Self::Detailed { id, .. } => id,
+        }
+    }
+
+    fn version(&self) -> Option<&str> {
+        match self {
+            Self::Id(_) => None,
+            Self::Detailed { version, .. } => version.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -354,7 +531,6 @@ struct ItemFileDef {
     id: String,
     name: String,
     tier: String,
-    xp_value: f32,
     unit_mass: f32,
 }
 
@@ -362,6 +538,12 @@ struct ItemFileDef {
 struct RecipesFile {
     #[serde(default)]
     recipes: Vec<RecipeFileDef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ResearchFile {
+    #[serde(default)]
+    research: Vec<ResearchFileDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,6 +562,31 @@ struct RecipeFileDef {
 struct StackFileDef {
     item: String,
     count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchFileDef {
+    id: String,
+    name: String,
+    tier: u32,
+    column: i32,
+    row: i32,
+    price: u32,
+    duration_seconds: f32,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    revealed_by: Vec<String>,
+    #[serde(default)]
+    rewards: Vec<ResearchRewardFileDef>,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchRewardFileDef {
+    kind: String,
+    target: Option<String>,
+    amount: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -404,6 +611,95 @@ struct ShipFileDef {
     shield_capacity: f32,
     #[serde(default)]
     power_modules: Vec<String>,
+    #[serde(default)]
+    shield_slots: Vec<String>,
+    #[serde(default)]
+    weapon_slots: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NpcShipsFile {
+    #[serde(default)]
+    npc_ships: Vec<NpcShipFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpcShipFileDef {
+    id: String,
+    name: String,
+    texture: Option<String>,
+    system: String,
+    position: [f32; 2],
+    #[serde(default = "default_npc_ship_radius")]
+    radius: f32,
+    archetype: String,
+    role: String,
+    faction: Option<String>,
+    #[serde(default)]
+    behavior_tags: Vec<String>,
+    #[serde(default = "default_spawn_weight")]
+    spawn_weight: f32,
+    #[serde(default = "default_spawn_count")]
+    spawn_count: u32,
+    mass: f32,
+    cargo_capacity: f32,
+    #[serde(default)]
+    cargo_defaults: Vec<StackFileDef>,
+    #[serde(default)]
+    credit_reward_min: u32,
+    #[serde(default)]
+    credit_reward_max: u32,
+    hull_capacity: f32,
+    shield_capacity: f32,
+    energy_capacity: f32,
+    #[serde(default)]
+    shield_slots: Vec<String>,
+    #[serde(default)]
+    weapon_slots: Vec<String>,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ShieldsFile {
+    #[serde(default)]
+    shields: Vec<ShieldFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShieldFileDef {
+    id: String,
+    name: String,
+    install_item: String,
+    capacity: f32,
+    recharge_delay: f32,
+    recharge_rate: f32,
+    #[serde(default)]
+    damage_resistance: f32,
+    #[serde(default)]
+    hazard_resistance: f32,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WeaponsFile {
+    #[serde(default)]
+    weapons: Vec<WeaponFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WeaponFileDef {
+    id: String,
+    name: String,
+    kind: String,
+    install_item: String,
+    range: f32,
+    cooldown_seconds: f32,
+    damage: f32,
+    #[serde(default)]
+    energy_cost: f32,
+    #[serde(default = "default_full_tracking_degrees")]
+    tracking_degrees: f32,
+    summary: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -427,6 +723,27 @@ struct PowerModuleFileDef {
     heat: f32,
     #[serde(default)]
     risk: f32,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FactionsFile {
+    #[serde(default)]
+    factions: Vec<FactionFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactionFileDef {
+    id: String,
+    name: String,
+    #[serde(default = "default_faction_kind")]
+    kind: String,
+    #[serde(default = "default_faction_disposition")]
+    default_disposition: String,
+    #[serde(default = "default_faction_color")]
+    color: [u8; 3],
+    #[serde(default)]
+    tags: Vec<String>,
     summary: Option<String>,
 }
 
@@ -505,6 +822,7 @@ struct SystemFileDef {
     galaxy: Option<String>,
     universe: Option<String>,
     primary_star: Option<String>,
+    faction: Option<String>,
     arrival: [f32; 2],
     description: Option<String>,
     #[serde(default)]
@@ -544,7 +862,6 @@ struct UpgradesFile {
 struct StationFileDef {
     id: String,
     name: String,
-    skill: Option<String>,
     base_seconds: Option<f32>,
     system: Option<String>,
     position: Option<[f32; 2]>,
@@ -569,7 +886,16 @@ struct StationServiceFileDef {
     #[serde(default)]
     trade: Vec<TradeStockFileDef>,
     #[serde(default)]
+    research: Vec<ResearchLeadFileDef>,
+    #[serde(default)]
     recipe_unlocks: Vec<RecipeUnlockFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchLeadFileDef {
+    research: String,
+    #[serde(default)]
+    unavailable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -618,6 +944,7 @@ struct StarterFile {
 struct PlanetFileDef {
     id: String,
     system: String,
+    faction: Option<String>,
     classification: String,
     texture: Option<String>,
     position: [f32; 2],
@@ -664,17 +991,20 @@ struct RawPack {
 
 pub fn load_content_packs(root: &Path) -> Result<ContentRegistry, Vec<String>> {
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
     let raw_packs = discover_packs(root, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
 
+    let raw_packs = select_loadable_packs(raw_packs, &mut warnings);
     let ordered_packs = sort_packs(raw_packs, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
 
     let mut registry = ContentRegistry::default();
+    registry.warnings.extend(warnings);
     for raw_pack in ordered_packs {
         load_pack(raw_pack, &mut registry, &mut errors);
     }
@@ -725,11 +1055,69 @@ fn discover_packs(root: &Path, errors: &mut Vec<String>) -> Vec<RawPack> {
         if manifest.version.trim().is_empty() {
             errors.push(format!("Pack `{}` has an empty version", manifest.id));
         }
+        validate_pack_dependency_declarations(&manifest, errors);
 
         packs.push(RawPack { manifest, path });
     }
 
     packs
+}
+
+fn select_loadable_packs(raw_packs: Vec<RawPack>, warnings: &mut Vec<String>) -> Vec<RawPack> {
+    let versions_by_id = raw_packs
+        .iter()
+        .map(|pack| (pack.manifest.id.clone(), pack.manifest.version.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut loadable_ids = versions_by_id.keys().cloned().collect::<HashSet<_>>();
+
+    loop {
+        let mut changed = false;
+        for pack in &raw_packs {
+            if !loadable_ids.contains(&pack.manifest.id) {
+                continue;
+            }
+            for dependency in &pack.manifest.optional_depends_on {
+                let dependency_id = dependency.id();
+                let Some(installed_version) = versions_by_id.get(dependency_id) else {
+                    warnings.push(format!(
+                        "Skipping pack `{}` because optional dependency `{dependency_id}` is not installed",
+                        pack.manifest.id
+                    ));
+                    loadable_ids.remove(&pack.manifest.id);
+                    changed = true;
+                    break;
+                };
+                if !loadable_ids.contains(dependency_id) {
+                    warnings.push(format!(
+                        "Skipping pack `{}` because optional dependency `{dependency_id}` is not loaded",
+                        pack.manifest.id
+                    ));
+                    loadable_ids.remove(&pack.manifest.id);
+                    changed = true;
+                    break;
+                }
+                if let Some(required_version) = dependency.version() {
+                    if installed_version != required_version {
+                        warnings.push(format!(
+                            "Skipping pack `{}` because optional dependency `{dependency_id}` requires version `{required_version}` but installed version is `{installed_version}`",
+                            pack.manifest.id
+                        ));
+                        loadable_ids.remove(&pack.manifest.id);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    raw_packs
+        .into_iter()
+        .filter(|pack| loadable_ids.contains(&pack.manifest.id))
+        .collect()
 }
 
 fn sort_packs(raw_packs: Vec<RawPack>, errors: &mut Vec<String>) -> Vec<RawPack> {
@@ -779,15 +1167,30 @@ fn visit_pack(
         return;
     };
 
-    for dependency in &pack.manifest.depends_on {
-        if !by_id.contains_key(dependency) {
+    for dependency in pack
+        .manifest
+        .depends_on
+        .iter()
+        .chain(pack.manifest.optional_depends_on.iter())
+    {
+        let dependency_id = dependency.id();
+        let Some(dependency_pack) = by_id.get(dependency_id) else {
             errors.push(format!(
-                "Pack `{}` depends on missing pack `{dependency}`",
+                "Pack `{}` depends on missing pack `{dependency_id}`",
                 pack.manifest.id
             ));
             continue;
+        };
+        if let Some(required_version) = dependency.version() {
+            if dependency_pack.manifest.version != required_version {
+                errors.push(format!(
+                    "Pack `{}` depends on `{dependency_id}` version `{required_version}` but installed version is `{}`",
+                    pack.manifest.id, dependency_pack.manifest.version
+                ));
+                continue;
+            }
         }
-        visit_pack(dependency, by_id, visiting, visited, ordered, errors);
+        visit_pack(dependency_id, by_id, visiting, visited, ordered, errors);
     }
 
     visiting.remove(id);
@@ -805,8 +1208,18 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         version: raw_pack.manifest.version,
         description: raw_pack.manifest.description,
         path: raw_pack.path.clone(),
-        depends_on: raw_pack.manifest.depends_on,
-        optional_depends_on: raw_pack.manifest.optional_depends_on,
+        depends_on: raw_pack
+            .manifest
+            .depends_on
+            .into_iter()
+            .map(|dependency| dependency.id().to_string())
+            .collect(),
+        optional_depends_on: raw_pack
+            .manifest
+            .optional_depends_on
+            .into_iter()
+            .map(|dependency| dependency.id().to_string())
+            .collect(),
         options,
     });
 
@@ -831,7 +1244,6 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     id: id.clone(),
                     name: item.name,
                     tier: item.tier,
-                    xp_value: item.xp_value,
                     unit_mass: item.unit_mass,
                 },
             )
@@ -893,6 +1305,104 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         }
     }
 
+    let weapons = read_optional_toml::<WeaponsFile>(&raw_pack.path.join("weapons.toml"), errors);
+    let shields = read_optional_toml::<ShieldsFile>(&raw_pack.path.join("shields.toml"), errors);
+    for shield in shields.shields {
+        let id = namespaced_id(&pack_id, &shield.id);
+        validate_local_content_id(&id, "shield", errors);
+        validate_required_name(&id, "Shield", &shield.name, errors);
+        validate_positive(shield.capacity, "Shield", &id, "capacity", errors);
+        validate_positive(
+            shield.recharge_delay,
+            "Shield",
+            &id,
+            "recharge delay",
+            errors,
+        );
+        validate_positive(shield.recharge_rate, "Shield", &id, "recharge rate", errors);
+        validate_fraction(
+            shield.damage_resistance,
+            "Shield",
+            &id,
+            "damage resistance",
+            errors,
+        );
+        validate_fraction(
+            shield.hazard_resistance,
+            "Shield",
+            &id,
+            "hazard resistance",
+            errors,
+        );
+        let inserted = registry
+            .shields
+            .insert(
+                id.clone(),
+                ShieldDef {
+                    id: id.clone(),
+                    name: shield.name,
+                    install_item: namespaced_id(&pack_id, &shield.install_item),
+                    capacity: shield.capacity,
+                    recharge_delay: shield.recharge_delay,
+                    recharge_rate: shield.recharge_rate,
+                    damage_resistance: shield.damage_resistance,
+                    hazard_resistance: shield.hazard_resistance,
+                    summary: shield.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.shield_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate shield id `{id}`"));
+        }
+    }
+
+    for weapon in weapons.weapons {
+        let id = namespaced_id(&pack_id, &weapon.id);
+        validate_local_content_id(&id, "weapon", errors);
+        validate_required_name(&id, "Weapon", &weapon.name, errors);
+        validate_positive(weapon.range, "Weapon", &id, "range", errors);
+        validate_positive(weapon.cooldown_seconds, "Weapon", &id, "cooldown", errors);
+        validate_positive(weapon.damage, "Weapon", &id, "damage", errors);
+        if weapon.energy_cost < 0.0 {
+            errors.push(format!("Weapon `{id}` has negative energy cost"));
+        }
+        if weapon.tracking_degrees < 0.0 {
+            errors.push(format!("Weapon `{id}` has negative tracking degrees"));
+        }
+        let Some(kind) = WeaponKind::from_id(&weapon.kind) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported kind `{}`",
+                weapon.kind
+            ));
+            continue;
+        };
+        let inserted = registry
+            .weapons
+            .insert(
+                id.clone(),
+                WeaponDef {
+                    id: id.clone(),
+                    name: weapon.name,
+                    kind,
+                    install_item: namespaced_id(&pack_id, &weapon.install_item),
+                    range: weapon.range,
+                    cooldown_seconds: weapon.cooldown_seconds,
+                    damage: weapon.damage,
+                    energy_cost: weapon.energy_cost,
+                    tracking_degrees: weapon.tracking_degrees,
+                    summary: weapon.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.weapon_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate weapon id `{id}`"));
+        }
+    }
+
     let ships = read_optional_toml::<ShipsFile>(&raw_pack.path.join("ships.toml"), errors);
     for ship in ships.ships {
         let id = namespaced_id(&pack_id, &ship.id);
@@ -950,6 +1460,16 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                         .into_iter()
                         .map(|module| namespaced_id(&pack_id, &module))
                         .collect(),
+                    shield_slots: ship
+                        .shield_slots
+                        .into_iter()
+                        .map(|shield| namespaced_id(&pack_id, &shield))
+                        .collect(),
+                    weapon_slots: ship
+                        .weapon_slots
+                        .into_iter()
+                        .map(|weapon| namespaced_id(&pack_id, &weapon))
+                        .collect(),
                 },
             )
             .is_none();
@@ -957,6 +1477,121 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             registry.ship_order.push(id.clone());
         } else {
             errors.push(format!("Duplicate ship id `{id}`"));
+        }
+    }
+
+    let npc_ships =
+        read_optional_toml::<NpcShipsFile>(&raw_pack.path.join("npc_ships.toml"), errors);
+    for npc_ship in npc_ships.npc_ships {
+        let id = namespaced_id(&pack_id, &npc_ship.id);
+        validate_local_content_id(&id, "NPC ship", errors);
+        validate_required_name(&id, "NPC ship", &npc_ship.name, errors);
+        validate_required_name(&id, "NPC ship archetype", &npc_ship.archetype, errors);
+        validate_required_name(&id, "NPC ship role", &npc_ship.role, errors);
+        validate_positive(npc_ship.radius, "NPC ship", &id, "radius", errors);
+        validate_positive(
+            npc_ship.spawn_weight,
+            "NPC ship",
+            &id,
+            "spawn weight",
+            errors,
+        );
+        if npc_ship.spawn_count == 0 {
+            errors.push(format!("NPC ship `{id}` has zero spawn count"));
+        }
+        validate_positive(npc_ship.mass, "NPC ship", &id, "mass", errors);
+        validate_positive(
+            npc_ship.cargo_capacity,
+            "NPC ship",
+            &id,
+            "cargo capacity",
+            errors,
+        );
+        if npc_ship.credit_reward_min > npc_ship.credit_reward_max {
+            errors.push(format!(
+                "NPC ship `{id}` has credit_reward_min greater than credit_reward_max"
+            ));
+        }
+        validate_positive(
+            npc_ship.hull_capacity,
+            "NPC ship",
+            &id,
+            "hull capacity",
+            errors,
+        );
+        validate_positive(
+            npc_ship.shield_capacity,
+            "NPC ship",
+            &id,
+            "shield capacity",
+            errors,
+        );
+        validate_positive(
+            npc_ship.energy_capacity,
+            "NPC ship",
+            &id,
+            "energy capacity",
+            errors,
+        );
+        let texture = npc_ship
+            .texture
+            .map(|texture| resolve_texture_path(&raw_pack.path, &texture, &id, errors));
+        let cargo_defaults = npc_ship
+            .cargo_defaults
+            .into_iter()
+            .map(|stack| {
+                let stack = resolve_stack(&pack_id, stack);
+                if stack.count == 0 {
+                    errors.push(format!("NPC ship `{id}` has a zero-count cargo default"));
+                }
+                stack
+            })
+            .collect::<Vec<_>>();
+        let inserted = registry
+            .npc_ships
+            .insert(
+                id.clone(),
+                NpcShipDef {
+                    id: id.clone(),
+                    name: npc_ship.name,
+                    texture,
+                    system: namespaced_id(&pack_id, &npc_ship.system),
+                    position: npc_ship.position,
+                    radius: npc_ship.radius,
+                    archetype: npc_ship.archetype,
+                    role: npc_ship.role,
+                    faction: npc_ship
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
+                    behavior_tags: npc_ship.behavior_tags,
+                    spawn_weight: npc_ship.spawn_weight,
+                    spawn_count: npc_ship.spawn_count,
+                    mass: npc_ship.mass,
+                    cargo_capacity: npc_ship.cargo_capacity,
+                    cargo_defaults,
+                    credit_reward_min: npc_ship.credit_reward_min,
+                    credit_reward_max: npc_ship.credit_reward_max,
+                    hull_capacity: npc_ship.hull_capacity,
+                    shield_capacity: npc_ship.shield_capacity,
+                    energy_capacity: npc_ship.energy_capacity,
+                    shield_slots: npc_ship
+                        .shield_slots
+                        .into_iter()
+                        .map(|shield| namespaced_id(&pack_id, &shield))
+                        .collect(),
+                    weapon_slots: npc_ship
+                        .weapon_slots
+                        .into_iter()
+                        .map(|weapon| namespaced_id(&pack_id, &weapon))
+                        .collect(),
+                    summary: npc_ship.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.npc_ship_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate NPC ship id `{id}`"));
         }
     }
 
@@ -999,6 +1634,108 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             registry.recipe_order.push(id.clone());
         } else {
             errors.push(format!("Duplicate recipe id `{id}`"));
+        }
+    }
+
+    let research = read_optional_toml::<ResearchFile>(&raw_pack.path.join("research.toml"), errors);
+    for node in research.research {
+        let id = namespaced_id(&pack_id, &node.id);
+        validate_local_content_id(&id, "research", errors);
+        validate_required_name(&id, "Research", &node.name, errors);
+        if node.price == 0 {
+            errors.push(format!("Research `{id}` has zero price"));
+        }
+        if !node.duration_seconds.is_finite() || node.duration_seconds <= 0.0 {
+            errors.push(format!("Research `{id}` has non-positive duration_seconds"));
+        }
+        let requires = node
+            .requires
+            .into_iter()
+            .map(|required| namespaced_id(&pack_id, &required))
+            .collect::<Vec<_>>();
+        let revealed_by = node
+            .revealed_by
+            .into_iter()
+            .map(|revealer| namespaced_id(&pack_id, &revealer))
+            .collect::<Vec<_>>();
+        let rewards = node
+            .rewards
+            .into_iter()
+            .map(|reward| {
+                if reward.kind.trim().is_empty() {
+                    errors.push(format!("Research `{id}` has a reward with empty kind"));
+                }
+                ResearchRewardDef {
+                    kind: reward.kind,
+                    target: reward.target.map(|target| namespaced_id(&pack_id, &target)),
+                    amount: reward.amount,
+                }
+            })
+            .collect::<Vec<_>>();
+        if rewards.is_empty() {
+            errors.push(format!("Research `{id}` has no rewards"));
+        }
+        let inserted = registry
+            .research
+            .insert(
+                id.clone(),
+                ResearchDef {
+                    id: id.clone(),
+                    name: node.name,
+                    tier: node.tier,
+                    column: node.column,
+                    row: node.row,
+                    price: node.price,
+                    duration_seconds: node.duration_seconds,
+                    requires,
+                    revealed_by,
+                    rewards,
+                    summary: node.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.research_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate research id `{id}`"));
+        }
+    }
+
+    let factions = read_optional_toml::<FactionsFile>(&raw_pack.path.join("factions.toml"), errors);
+    for faction in factions.factions {
+        let id = namespaced_id(&pack_id, &faction.id);
+        validate_local_content_id(&id, "faction", errors);
+        validate_required_name(&id, "Faction", &faction.name, errors);
+        validate_required_name(&id, "Faction kind", &faction.kind, errors);
+        let default_disposition = match FactionDisposition::from_id(&faction.default_disposition) {
+            Some(disposition) => disposition,
+            None => {
+                errors.push(format!(
+                    "Faction `{id}` has unsupported default disposition `{}`",
+                    faction.default_disposition
+                ));
+                FactionDisposition::Neutral
+            }
+        };
+        let inserted = registry
+            .factions
+            .insert(
+                id.clone(),
+                FactionDef {
+                    id: id.clone(),
+                    name: faction.name,
+                    kind: faction.kind,
+                    default_disposition,
+                    color: faction.color,
+                    tags: faction.tags,
+                    summary: faction.summary,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.faction_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate faction id `{id}`"));
         }
     }
 
@@ -1156,6 +1893,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     primary_star: system
                         .primary_star
                         .map(|primary_star| namespaced_id(&pack_id, &primary_star)),
+                    faction: system
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     arrival: system.arrival,
                     description: system.description,
                     tags: system.tags,
@@ -1247,6 +1987,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 PlanetDef {
                     id: id.clone(),
                     system: namespaced_id(&pack_id, &planet.system),
+                    faction: planet
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     classification: planet.classification,
                     texture,
                     position: planet.position,
@@ -1318,15 +2061,18 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 StationDef {
                     id: id.clone(),
                     name: station.name,
-                    skill: station.skill,
                     base_seconds: station.base_seconds,
                     system,
                     position: station.position,
                     radius: station.radius,
                     texture,
                     icon: station.icon,
-                    culture: station.culture,
-                    faction: station.faction,
+                    culture: station
+                        .culture
+                        .map(|culture| namespaced_id(&pack_id, &culture)),
+                    faction: station
+                        .faction
+                        .map(|faction| namespaced_id(&pack_id, &faction)),
                     summary: station.summary,
                     services,
                 },
@@ -1468,12 +2214,21 @@ fn resolve_station_services(
                 }
             })
             .collect();
+        let research = service
+            .research
+            .into_iter()
+            .map(|lead| ResearchLeadDef {
+                research: namespaced_id(pack_id, &lead.research),
+                unavailable: lead.unavailable,
+            })
+            .collect();
         resolved.push(StationServiceDef {
             id,
             name: service.name,
             kind: service.kind,
             description: service.description,
             trade,
+            research,
             recipe_unlocks,
         });
     }
@@ -1627,6 +2382,38 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         }
     }
 
+    for research in registry.research.values() {
+        for required in &research.requires {
+            validate_reference(
+                registry.research.contains_key(required),
+                "Research",
+                &research.id,
+                "required research",
+                required,
+                errors,
+            );
+            if required == &research.id {
+                errors.push(format!("Research `{}` requires itself", research.id));
+            }
+        }
+        for revealer in &research.revealed_by {
+            validate_reference(
+                registry.research.contains_key(revealer),
+                "Research",
+                &research.id,
+                "revealing research",
+                revealer,
+                errors,
+            );
+            if revealer == &research.id {
+                errors.push(format!("Research `{}` reveals itself", research.id));
+            }
+        }
+        for reward in &research.rewards {
+            validate_research_reward(registry, research, reward, errors);
+        }
+    }
+
     for stack in &registry.starter_inventory {
         if !registry.items.contains_key(&stack.item) {
             errors.push(format!(
@@ -1657,6 +2444,28 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         }
     }
 
+    for weapon in registry.weapons.values() {
+        validate_reference(
+            registry.items.contains_key(&weapon.install_item),
+            "Weapon",
+            &weapon.id,
+            "install item",
+            &weapon.install_item,
+            errors,
+        );
+    }
+
+    for shield in registry.shields.values() {
+        validate_reference(
+            registry.items.contains_key(&shield.install_item),
+            "Shield",
+            &shield.id,
+            "install item",
+            &shield.install_item,
+            errors,
+        );
+    }
+
     for ship in registry.ships.values() {
         for module in &ship.power_modules {
             validate_reference(
@@ -1665,6 +2474,77 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 &ship.id,
                 "power module",
                 module,
+                errors,
+            );
+        }
+        for shield in &ship.shield_slots {
+            validate_reference(
+                registry.shields.contains_key(shield),
+                "Ship",
+                &ship.id,
+                "shield",
+                shield,
+                errors,
+            );
+        }
+        for weapon in &ship.weapon_slots {
+            validate_reference(
+                registry.weapons.contains_key(weapon),
+                "Ship",
+                &ship.id,
+                "weapon",
+                weapon,
+                errors,
+            );
+        }
+    }
+
+    for npc_ship in registry.npc_ships.values() {
+        validate_reference(
+            registry.systems.contains_key(&npc_ship.system),
+            "NPC ship",
+            &npc_ship.id,
+            "system",
+            &npc_ship.system,
+            errors,
+        );
+        if let Some(faction) = &npc_ship.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "NPC ship",
+                &npc_ship.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
+        for cargo in &npc_ship.cargo_defaults {
+            validate_reference(
+                registry.items.contains_key(&cargo.item),
+                "NPC ship",
+                &npc_ship.id,
+                "cargo item",
+                &cargo.item,
+                errors,
+            );
+        }
+        for shield in &npc_ship.shield_slots {
+            validate_reference(
+                registry.shields.contains_key(shield),
+                "NPC ship",
+                &npc_ship.id,
+                "shield",
+                shield,
+                errors,
+            );
+        }
+        for weapon in &npc_ship.weapon_slots {
+            validate_reference(
+                registry.weapons.contains_key(weapon),
+                "NPC ship",
+                &npc_ship.id,
+                "weapon",
+                weapon,
                 errors,
             );
         }
@@ -1679,6 +2559,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
             &planet.system,
             errors,
         );
+        if let Some(faction) = &planet.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "Planet",
+                &planet.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
         for mineable in &planet.mineables {
             if !registry.items.contains_key(mineable) {
                 errors.push(format!(
@@ -1703,6 +2593,26 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 errors,
             );
         }
+        if let Some(faction) = &station.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "Station",
+                &station.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
+        if let Some(culture) = &station.culture {
+            validate_reference(
+                registry.factions.contains_key(culture),
+                "Station",
+                &station.id,
+                "culture",
+                culture,
+                errors,
+            );
+        }
         for service in &station.services {
             for stock in &service.trade {
                 validate_reference(
@@ -1721,6 +2631,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                     &service.id,
                     "recipe unlock",
                     &unlock.recipe,
+                    errors,
+                );
+            }
+            for lead in &service.research {
+                validate_reference(
+                    registry.research.contains_key(&lead.research),
+                    "Station service",
+                    &service.id,
+                    "research lead",
+                    &lead.research,
                     errors,
                 );
             }
@@ -1890,6 +2810,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 ));
             }
         }
+        if let Some(faction) = &system.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "System",
+                &system.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
     }
 
     for star in registry.stars.values() {
@@ -1951,6 +2881,34 @@ fn collect_duplicate_recipe_output_warnings(registry: &mut ContentRegistry) {
     }
 }
 
+fn validate_pack_dependency_declarations(manifest: &PackManifest, errors: &mut Vec<String>) {
+    for dependency in manifest
+        .depends_on
+        .iter()
+        .chain(manifest.optional_depends_on.iter())
+    {
+        let dependency_id = dependency.id();
+        if !valid_pack_id(dependency_id) {
+            errors.push(format!(
+                "Pack `{}` has invalid dependency id `{dependency_id}`",
+                manifest.id
+            ));
+        }
+        if dependency_id == manifest.id {
+            errors.push(format!("Pack `{}` cannot depend on itself", manifest.id));
+        }
+        if dependency
+            .version()
+            .is_some_and(|version| version.trim().is_empty())
+        {
+            errors.push(format!(
+                "Pack `{}` dependency `{dependency_id}` has an empty version",
+                manifest.id
+            ));
+        }
+    }
+}
+
 fn validate_reference(
     exists: bool,
     source_kind: &str,
@@ -1963,6 +2921,91 @@ fn validate_reference(
         errors.push(format!(
             "{source_kind} `{source_id}` references missing {target_kind} `{target_id}`"
         ));
+    }
+}
+
+fn validate_research_reward(
+    registry: &ContentRegistry,
+    research: &ResearchDef,
+    reward: &ResearchRewardDef,
+    errors: &mut Vec<String>,
+) {
+    match reward.kind.as_str() {
+        "recipe_unlock" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` recipe_unlock reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.recipes.contains_key(target),
+                "Research",
+                &research.id,
+                "recipe reward",
+                target,
+                errors,
+            );
+        }
+        "item_visibility" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` item_visibility reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.items.contains_key(target),
+                "Research",
+                &research.id,
+                "item visibility reward",
+                target,
+                errors,
+            );
+        }
+        "station_visibility" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` station_visibility reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.stations.contains_key(target),
+                "Research",
+                &research.id,
+                "station visibility reward",
+                target,
+                errors,
+            );
+        }
+        "mining_speed_percent"
+        | "smelting_speed_percent"
+        | "fabrication_speed_percent"
+        | "bonus_output_chance" => {
+            let Some(amount) = reward.amount else {
+                errors.push(format!(
+                    "Research `{}` {} reward has no amount",
+                    research.id, reward.kind
+                ));
+                return;
+            };
+            if !amount.is_finite() || amount <= 0.0 {
+                errors.push(format!(
+                    "Research `{}` {} reward has non-positive amount",
+                    research.id, reward.kind
+                ));
+            }
+        }
+        _ => {
+            errors.push(format!(
+                "Research `{}` has unsupported reward kind `{}`",
+                research.id, reward.kind
+            ));
+        }
     }
 }
 
@@ -2103,6 +3146,12 @@ fn validate_positive(value: f32, kind: &str, id: &str, field: &str, errors: &mut
     }
 }
 
+fn validate_fraction(value: f32, kind: &str, id: &str, field: &str, errors: &mut Vec<String>) {
+    if !(0.0..=1.0).contains(&value) {
+        errors.push(format!("{kind} `{id}` has {field} outside 0.0..1.0"));
+    }
+}
+
 fn valid_pack_id(id: &str) -> bool {
     !id.is_empty()
         && id.chars().all(|character| {
@@ -2155,8 +3204,36 @@ fn default_station_radius() -> f32 {
     54.0
 }
 
+fn default_npc_ship_radius() -> f32 {
+    28.0
+}
+
+fn default_faction_kind() -> String {
+    "faction".to_string()
+}
+
+fn default_faction_disposition() -> String {
+    "neutral".to_string()
+}
+
+fn default_faction_color() -> [u8; 3] {
+    [150, 221, 226]
+}
+
+fn default_spawn_weight() -> f32 {
+    1.0
+}
+
+fn default_spawn_count() -> u32 {
+    1
+}
+
 fn default_station_icon() -> String {
     "station".to_string()
+}
+
+fn default_full_tracking_degrees() -> f32 {
+    360.0
 }
 
 impl Default for HazardEffectsFileDef {
@@ -2192,6 +3269,29 @@ mod tests {
         }));
         assert!(registry.items.contains_key("core:iron_ore"));
         assert!(registry.items.contains_key("core:survey_drone"));
+        assert!(registry.items.contains_key("core:point_defense_turret"));
+        assert!(registry.items.contains_key("core:balanced_shield_matrix"));
+        assert!(registry.items.contains_key("core:hazard_shield_matrix"));
+        assert_eq!(registry.factions.len(), 6);
+        assert!(registry
+            .factions
+            .get("core:redwake_raiders")
+            .is_some_and(|faction| {
+                faction.name == "Redwake Raiders"
+                    && faction.default_disposition == FactionDisposition::Hostile
+                    && faction.tags.iter().any(|tag| tag == "hostile")
+                    && faction.tags.iter().any(|tag| tag == "raider")
+                    && faction.tags.iter().any(|tag| tag == "probe")
+            }));
+        assert_eq!(registry.npc_ships.len(), 4);
+        assert!(registry
+            .npc_ships
+            .get("remote-duskfall:redwake_remote_probe")
+            .is_some_and(|npc_ship| {
+                npc_ship.system == "remote-duskfall:duskfall_reach"
+                    && npc_ship.role == "hostile"
+                    && npc_ship.behavior_tags.iter().any(|tag| tag == "pressure")
+            }));
         assert!(registry
             .ships
             .get("core:frontier_cargo_ship_01")
@@ -2200,10 +3300,104 @@ mod tests {
                     && ship.mass == 85000.0
                     && ship.forward_acceleration == 420.0
                     && ship.power_modules == ["core:compact_fission_cell"]
+                    && ship.shield_slots == ["core:balanced_shield_matrix"]
+                    && ship.weapon_slots == ["core:point_defense_turret"]
                     && ship.texture.as_deref().is_some_and(|texture| {
                         texture.contains(
                             "content/packs/core/./assets/ships/frontier-cargo-ship-01.png",
                         )
+                    })
+            }));
+        assert!(registry
+            .weapons
+            .get("core:point_defense_turret")
+            .is_some_and(|weapon| {
+                weapon.kind == WeaponKind::TurretDefense
+                    && weapon.install_item == "core:point_defense_turret"
+                    && weapon.range == 460.0
+                    && weapon.cooldown_seconds == 1.4
+                    && weapon.damage == 18.0
+                    && weapon.energy_cost == 7.0
+            }));
+        assert!(registry
+            .shields
+            .get("core:hazard_shield_matrix")
+            .is_some_and(|shield| {
+                shield.install_item == "core:hazard_shield_matrix"
+                    && shield.capacity == 85.0
+                    && shield.recharge_delay == 3.0
+                    && shield.recharge_rate == 6.0
+                    && shield.damage_resistance == 0.05
+                    && shield.hazard_resistance == 0.55
+            }));
+        assert!(registry
+            .npc_ships
+            .get("core:frontier_patrol_cutter")
+            .is_some_and(|npc_ship| {
+                npc_ship.name == "Frontier Patrol Cutter"
+                    && npc_ship.system == "core:frontier"
+                    && npc_ship.faction.as_deref() == Some("core:cinder_cooperative")
+                    && npc_ship.archetype == "patrol-cutter"
+                    && npc_ship.role == "patrol"
+                    && npc_ship.spawn_count == 1
+                    && npc_ship.credit_reward_min == 0
+                    && npc_ship.credit_reward_max == 0
+                    && npc_ship.cargo_defaults
+                        == [StackDef {
+                            item: "core:fuel_canister".to_string(),
+                            count: 1,
+                        }]
+                    && npc_ship.shield_slots == ["core:balanced_shield_matrix"]
+                    && npc_ship.weapon_slots == ["core:point_defense_turret"]
+                    && npc_ship.texture.as_deref().is_some_and(|texture| {
+                        texture.contains("content/packs/core/./assets/ships/npc-scout-01.png")
+                    })
+            }));
+        assert!(registry.recipes.contains_key("core:point_defense_turret"));
+        assert!(registry.recipes.contains_key("core:balanced_shield_matrix"));
+        assert!(registry.recipes.contains_key("core:hazard_shield_matrix"));
+        assert_eq!(
+            registry.research_order.first().map(String::as_str),
+            Some("core:frontier_survey_methods")
+        );
+        assert!(registry
+            .research
+            .get("core:frontier_survey_methods")
+            .is_some_and(|research| {
+                research.name == "Frontier Survey Methods"
+                    && research.tier == 0
+                    && research.column == 0
+                    && research.row == 0
+                    && research.price == 450
+                    && research.duration_seconds == 5.0
+                    && research.requires.is_empty()
+                    && research.revealed_by.is_empty()
+                    && research.rewards.len() == 1
+                    && research.rewards[0].kind == "mining_speed_percent"
+                    && research.rewards[0].amount == Some(5.0)
+            }));
+        assert!(registry
+            .research
+            .get("core:advanced_scanner_core")
+            .is_some_and(|research| {
+                research.requires == ["core:mining_calibration_i"]
+                    && research.revealed_by == ["core:mining_calibration_i"]
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "recipe_unlock"
+                            && reward.target.as_deref() == Some("core:advanced_scanner_core")
+                    })
+            }));
+        assert!(registry
+            .research
+            .get("remote-duskfall:duskfall_vanadium_frames")
+            .is_some_and(|research| {
+                research.name == "Duskfall Vanadium Frames"
+                    && research.requires == ["core:jump_core"]
+                    && research.revealed_by == ["core:jump_core"]
+                    && research.duration_seconds == 60.0
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "recipe_unlock"
+                            && reward.target.as_deref() == Some("remote-duskfall:vanadium_frame")
                     })
             }));
         assert!(registry.power_modules.contains_key("core:film_solar_sail"));
@@ -2255,6 +3449,10 @@ mod tests {
         assert!(registry.galaxies.contains_key("core:ember_spiral"));
         assert!(registry.regions.contains_key("core:cinder_reaches"));
         assert!(registry.systems.contains_key("core:frontier"));
+        assert!(registry
+            .systems
+            .get("core:frontier")
+            .is_some_and(|system| system.faction.as_deref() == Some("core:cinder_cooperative")));
         assert!(registry.stars.contains_key("core:frontier_primary"));
         assert!(registry
             .systems
@@ -2285,6 +3483,10 @@ mod tests {
             .planets
             .get("remote-duskfall:duskfall_vanadium_shard")
             .is_some_and(|planet| planet.system == "remote-duskfall:duskfall_reach"));
+        assert!(registry
+            .planets
+            .get("core:fractured_ice_body")
+            .is_some_and(|planet| planet.faction.as_deref() == Some("core:freebelt_compact")));
         assert!(registry
             .planets
             .get("remote-duskfall:redwake_reactor_moon")
@@ -2341,7 +3543,8 @@ mod tests {
                         texture
                             .contains("content/packs/core/./assets/stations/frontier-exchange.png")
                     })
-                    && station.faction.as_deref() == Some("Cinder Cooperative")
+                    && station.faction.as_deref() == Some("core:cinder_cooperative")
+                    && station.culture.as_deref() == Some("core:freebelt_compact")
                     && station.services.len() == 3
                     && station
                         .services
@@ -2371,7 +3574,92 @@ mod tests {
                     .iter()
                     .find(|service| service.id == "core:pale_archive_recipes")
             })
-            .is_some_and(|service| service.recipe_unlocks.len() == 3));
+            .is_some_and(|service| {
+                service.kind == "research"
+                    && service.recipe_unlocks.is_empty()
+                    && service.research.len() == 3
+                    && service
+                        .research
+                        .iter()
+                        .any(|lead| lead.research == "core:advanced_scanner_core")
+            }));
+        assert!(registry
+            .stations
+            .get("core:frontier_exchange")
+            .and_then(|station| station.services.iter().find(|service| {
+                service.id == "core:market"
+                    && service.name == "Starter Market"
+                    && service.kind == "shop"
+            }))
+            .is_some_and(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|stock| stock.item == "core:survey_drone")
+            }));
+        assert!(registry
+            .stations
+            .get("core:ore_lattice_depot")
+            .and_then(|station| {
+                station
+                    .services
+                    .iter()
+                    .find(|service| service.id == "core:ore_lattice_bulk_market")
+            })
+            .is_some_and(|service| {
+                service.kind == "shop"
+                    && service
+                        .trade
+                        .iter()
+                        .any(|stock| stock.item == "core:cobalt_ore")
+            }));
+        assert!(registry
+            .stations
+            .get("core:cinder_repair_yard")
+            .and_then(|station| {
+                station
+                    .services
+                    .iter()
+                    .find(|service| service.id == "core:cinder_yard_parts")
+            })
+            .is_some_and(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|stock| stock.item == "core:balanced_shield_matrix")
+                    && service
+                        .trade
+                        .iter()
+                        .any(|stock| stock.item == "core:point_defense_turret")
+            }));
+        assert!(registry
+            .stations
+            .get("core:freebelt_commissary")
+            .and_then(|station| station.services.iter().find(|service| {
+                service.id == "core:freebelt_supply" && service.name == "Supply Counter"
+            }))
+            .is_some_and(|service| {
+                service
+                    .trade
+                    .iter()
+                    .any(|stock| stock.item == "core:fuel_canister")
+                    && service
+                        .trade
+                        .iter()
+                        .any(|stock| stock.item == "core:improved_survey_drone")
+            }));
+        assert!(registry
+            .stations
+            .get("core:ember_watch_array")
+            .is_some_and(|station| {
+                station.services.iter().any(|service| {
+                    service.id == "core:ember_watch_beacon"
+                        && service.name == "Route Intel"
+                        && service.kind == "navigation"
+                }) && station.services.iter().any(|service| {
+                    service.id == "core:ember_watch_listening_post" && service.kind == "signals"
+                })
+            }));
         assert!(registry.upgrades.contains_key("core:engine"));
         assert_eq!(
             registry.recipe_order.first().map(String::as_str),
@@ -2385,12 +3673,248 @@ mod tests {
             .starter_inventory
             .iter()
             .any(|stack| stack.item == "core:survey_drone" && stack.count == 25));
+        assert!(registry
+            .starter_inventory
+            .iter()
+            .any(|stack| stack.item == "core:reactor_pellet" && stack.count == 3));
         assert!(!registry.warnings.iter().any(|warning| {
             warning.contains("station `core:processing`")
                 && warning.contains("output `core:reactor_pellet`")
                 && warning.contains("core:uranium_reactor_pellet")
                 && warning.contains("core:thorium_reactor_pellet")
         }));
+    }
+
+    #[test]
+    fn loads_optional_compatibility_pack_when_dependencies_match() {
+        let root = make_temp_content_root("compat-enabled");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.1.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:addon_item",
+        );
+
+        let registry = load_content_packs(&root).expect("compatibility pack should load");
+        assert!(registry.packs.iter().any(|pack| pack.id == "compat-pack"));
+        assert!(registry.items.contains_key("compat-pack:hybrid_item"));
+        assert!(registry.recipes.contains_key("compat-pack:hybrid_item"));
+        assert!(registry.warnings.is_empty());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn loads_research_nodes_and_rewards_from_content_pack() {
+        let root = make_temp_content_root("research-valid");
+        write_minimal_core_pack(&root);
+        write_minimal_core_recipe(&root, "scanner_core");
+        let pack_path = root.join("core");
+        fs::write(
+            pack_path.join("research.toml"),
+            r#"
+[[research]]
+id = "survey_methods"
+name = "Survey Methods"
+tier = 0
+column = 0
+row = 1
+price = 100
+duration_seconds = 5.0
+requires = []
+revealed_by = []
+summary = "Basic survey research."
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = 5.0
+
+[[research]]
+id = "scanner_core"
+name = "Scanner Core"
+tier = 1
+column = 1
+row = 1
+price = 250
+duration_seconds = 12.0
+requires = ["survey_methods"]
+revealed_by = ["survey_methods"]
+summary = "Scanner recipe research."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "scanner_core"
+"#,
+        )
+        .expect("research should be written");
+
+        let registry = load_content_packs(&root).expect("research pack should load");
+        assert_eq!(
+            registry.research_order,
+            vec![
+                "core:survey_methods".to_string(),
+                "core:scanner_core".to_string()
+            ]
+        );
+        assert!(registry
+            .research
+            .get("core:scanner_core")
+            .is_some_and(|research| {
+                research.requires == ["core:survey_methods"]
+                    && research.revealed_by == ["core:survey_methods"]
+                    && research.duration_seconds == 12.0
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "recipe_unlock"
+                            && reward.target.as_deref() == Some("core:scanner_core")
+                    })
+            }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rejects_research_with_invalid_references_and_rewards() {
+        let root = make_temp_content_root("research-invalid");
+        write_minimal_core_pack(&root);
+        let pack_path = root.join("core");
+        fs::write(
+            pack_path.join("research.toml"),
+            r#"
+[[research]]
+id = "bad_node"
+name = "Bad Node"
+tier = 0
+column = 0
+row = 0
+price = 0
+duration_seconds = 0.0
+requires = ["missing_required"]
+revealed_by = ["missing_revealer"]
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "missing_recipe"
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = -1.0
+
+[[research.rewards]]
+kind = "unknown_reward"
+"#,
+        )
+        .expect("research should be written");
+
+        let errors = load_content_packs(&root).expect_err("invalid research should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error == "Research `core:bad_node` has zero price"));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` has non-positive duration_seconds"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Research `core:bad_node` references missing required research `core:missing_required`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Research `core:bad_node` references missing revealing research `core:missing_revealer`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` references missing recipe reward `core:missing_recipe`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` mining_speed_percent reward has non-positive amount"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` has unsupported reward kind `unknown_reward`"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skips_optional_compatibility_pack_when_dependency_is_missing() {
+        let root = make_temp_content_root("compat-missing");
+        write_minimal_core_pack(&root);
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:addon_item",
+        );
+
+        let registry =
+            load_content_packs(&root).expect("missing optional dependency should not fail startup");
+        assert!(!registry.packs.iter().any(|pack| pack.id == "compat-pack"));
+        assert!(!registry.items.contains_key("compat-pack:hybrid_item"));
+        assert!(!registry.recipes.contains_key("compat-pack:hybrid_item"));
+        assert!(registry.warnings.iter().any(|warning| {
+            warning == "Skipping pack `compat-pack` because optional dependency `addon-pack` is not installed"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skips_optional_compatibility_pack_when_dependency_version_mismatches() {
+        let root = make_temp_content_root("compat-version");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.2.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:addon_item",
+        );
+
+        let registry =
+            load_content_packs(&root).expect("optional version mismatch should not fail startup");
+        assert!(!registry.packs.iter().any(|pack| pack.id == "compat-pack"));
+        assert!(registry.warnings.iter().any(|warning| {
+            warning == "Skipping pack `compat-pack` because optional dependency `addon-pack` requires version `0.1.0` but installed version is `0.2.0`"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn validates_enabled_compatibility_pack_references() {
+        let root = make_temp_content_root("compat-invalid");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.1.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = [
+  { id = "addon-pack", version = "0.1.0" },
+]
+"#,
+            "addon-pack:missing_item",
+        );
+
+        let errors =
+            load_content_packs(&root).expect_err("enabled invalid compat pack should fail");
+        assert!(errors.iter().any(|error| {
+            error == "Recipe `compat-pack:hybrid_item` uses missing item `addon-pack:missing_item`"
+        }));
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -2416,8 +3940,13 @@ optional_depends_on = []
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
@@ -2478,8 +4007,13 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
@@ -2545,8 +4079,13 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
@@ -2609,7 +4148,6 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 "#,
         )
@@ -2689,7 +4227,6 @@ position = [25.0, -50.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 "#,
         )
@@ -2757,7 +4294,6 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
 "#,
         )
@@ -2852,6 +4388,8 @@ choices = ["lean", "standard", "rich"]
             .expect("station asset should be written");
         fs::write(pack_path.join("assets/ships/local-ship.png"), b"fake")
             .expect("ship asset should be written");
+        fs::write(pack_path.join("assets/ships/local-npc.png"), b"fake")
+            .expect("npc ship asset should be written");
         fs::write(
             pack_path.join("pack.toml"),
             r#"
@@ -2878,11 +4416,31 @@ arrival = [0.0, 0.0]
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw"
-xp_value = 1.0
 unit_mass = 2.5
+
+[[items]]
+id = "point_defense"
+name = "Point Defense"
+tier = "weapon"
+unit_mass = 20.0
 "#,
         )
         .expect("items should be written");
+        fs::write(
+            pack_path.join("weapons.toml"),
+            r#"
+[[weapons]]
+id = "point_defense"
+name = "Point Defense"
+kind = "turret_defense"
+install_item = "point_defense"
+range = 300.0
+cooldown_seconds = 1.0
+damage = 12.0
+energy_cost = 5.0
+"#,
+        )
+        .expect("weapons should be written");
         fs::write(
             pack_path.join("ships.toml"),
             r#"
@@ -2902,6 +4460,29 @@ shield_capacity = 50.0
 "#,
         )
         .expect("ships should be written");
+        fs::write(
+            pack_path.join("npc_ships.toml"),
+            r#"
+[[npc_ships]]
+id = "local_npc"
+name = "Local NPC"
+texture = "./assets/ships/local-npc.png"
+system = "test_system"
+position = [40.0, -80.0]
+archetype = "test-courier"
+role = "hauler"
+behavior_tags = ["traffic"]
+mass = 500.0
+cargo_capacity = 100.0
+cargo_defaults = [
+  { item = "iron_ore", count = 1 },
+]
+hull_capacity = 25.0
+shield_capacity = 10.0
+energy_capacity = 20.0
+"#,
+        )
+        .expect("npc ships should be written");
         fs::write(
             pack_path.join("planets.toml"),
             r#"
@@ -2955,6 +4536,11 @@ summary = "A station using a plugin-local asset."
             .get("asset-pack:local_ship")
             .and_then(|ship| ship.texture.as_deref())
             .is_some_and(|texture| texture.contains("asset-pack/./assets/ships/local-ship.png")));
+        assert!(registry
+            .npc_ships
+            .get("asset-pack:local_npc")
+            .and_then(|npc_ship| npc_ship.texture.as_deref())
+            .is_some_and(|texture| texture.contains("asset-pack/./assets/ships/local-npc.png")));
 
         fs::remove_dir_all(root).ok();
     }
@@ -3003,11 +4589,446 @@ choices = ["standard"]
         fs::remove_dir_all(root).ok();
     }
 
+    #[test]
+    fn rejects_station_destination_without_position_pair() {
+        let root = make_temp_content_root("bad-station-destination");
+        let pack_path = root.join("bad-station-pack");
+        fs::create_dir_all(&pack_path).expect("temp pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            r#"
+id = "bad-station-pack"
+name = "Bad Station Pack"
+version = "0.1.0"
+"#,
+        )
+        .expect("pack manifest should be written");
+        fs::write(
+            pack_path.join("systems.toml"),
+            r#"
+[[systems]]
+id = "test_system"
+name = "Test System"
+arrival = [0.0, 0.0]
+"#,
+        )
+        .expect("systems should be written");
+        fs::write(
+            pack_path.join("stations.toml"),
+            r#"
+[[stations]]
+id = "partial_destination"
+name = "Partial Destination"
+system = "test_system"
+radius = 48.0
+"#,
+        )
+        .expect("stations should be written");
+
+        let errors = load_content_packs(&root)
+            .expect_err("station with only system or position should fail validation");
+        assert!(errors.iter().any(|error| {
+            error == "Station `bad-station-pack:partial_destination` must define both system and position to become a destination"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rejects_missing_ship_and_power_module_references() {
+        let root = make_temp_content_root("bad-ship-power-refs");
+        let pack_path = root.join("bad-ship-pack");
+        fs::create_dir_all(&pack_path).expect("temp pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            r#"
+id = "bad-ship-pack"
+name = "Bad Ship Pack"
+version = "0.1.0"
+"#,
+        )
+        .expect("pack manifest should be written");
+        fs::write(
+            pack_path.join("power.toml"),
+            r#"
+[[power_modules]]
+id = "bad_reactor"
+name = "Bad Reactor"
+family = "Test"
+install_item = "missing_reactor"
+generation = 10.0
+mass = 100.0
+fuel_item = "missing_fuel"
+"#,
+        )
+        .expect("power modules should be written");
+        fs::write(
+            pack_path.join("weapons.toml"),
+            r#"
+[[weapons]]
+id = "point_defense"
+name = "Point Defense"
+kind = "turret_defense"
+install_item = "missing_turret_item"
+range = 300.0
+cooldown_seconds = 1.0
+damage = 12.0
+"#,
+        )
+        .expect("weapons should be written");
+        fs::write(
+            pack_path.join("shields.toml"),
+            r#"
+[[shields]]
+id = "bad_shield"
+name = "Bad Shield"
+install_item = "missing_shield_item"
+capacity = 50.0
+recharge_delay = 2.0
+recharge_rate = 3.0
+damage_resistance = 1.5
+hazard_resistance = -0.1
+"#,
+        )
+        .expect("shields should be written");
+        fs::write(
+            pack_path.join("factions.toml"),
+            r#"
+[[factions]]
+id = "bad_faction"
+name = "Bad Faction"
+kind = "test"
+default_disposition = "furious"
+"#,
+        )
+        .expect("factions should be written");
+        fs::write(
+            pack_path.join("systems.toml"),
+            r#"
+[[systems]]
+id = "bad_system"
+name = "Bad System"
+faction = "missing_system_faction"
+arrival = [0.0, 0.0]
+"#,
+        )
+        .expect("systems should be written");
+        fs::write(
+            pack_path.join("planets.toml"),
+            r#"
+[[planets]]
+id = "bad_planet"
+system = "bad_system"
+faction = "missing_planet_faction"
+classification = "Bad Planet"
+position = [0.0, 0.0]
+radius = 64.0
+mineables = ["missing_planet_mineable"]
+summary = "A planet with missing faction ownership."
+"#,
+        )
+        .expect("planets should be written");
+        fs::write(
+            pack_path.join("stations.toml"),
+            r#"
+[[stations]]
+id = "bad_station"
+name = "Bad Station"
+system = "bad_system"
+position = [0.0, 0.0]
+faction = "missing_station_faction"
+culture = "missing_station_culture"
+
+[[stations.services]]
+id = "bad_station_research"
+name = "Bad Station Research"
+kind = "research"
+
+[[stations.services.research]]
+research = "missing_research"
+"#,
+        )
+        .expect("stations should be written");
+        fs::write(
+            pack_path.join("ships.toml"),
+            r#"
+[[ships]]
+id = "bad_ship"
+name = "Bad Ship"
+mass = 1000.0
+forward_acceleration = 10.0
+reverse_acceleration = 5.0
+turn_acceleration = 2.0
+energy_capacity = 100.0
+energy_recharge = 10.0
+linear_drag = 0.9
+hull_capacity = 100.0
+shield_capacity = 50.0
+power_modules = ["bad_reactor", "missing_module"]
+shield_slots = ["bad_shield", "missing_shield"]
+weapon_slots = ["point_defense", "missing_weapon"]
+"#,
+        )
+        .expect("ships should be written");
+        fs::write(
+            pack_path.join("npc_ships.toml"),
+            r#"
+[[npc_ships]]
+id = "bad_npc"
+name = "Bad NPC"
+system = "missing_system"
+position = [0.0, 0.0]
+radius = 12.0
+archetype = "bad-archetype"
+role = "hostile"
+faction = "missing_npc_faction"
+spawn_weight = 1.0
+spawn_count = 0
+mass = 100.0
+cargo_capacity = 50.0
+cargo_defaults = [
+  { item = "missing_cargo", count = 0 },
+]
+credit_reward_min = 20
+credit_reward_max = 10
+hull_capacity = 25.0
+shield_capacity = 10.0
+energy_capacity = 20.0
+shield_slots = ["missing_npc_shield"]
+weapon_slots = ["missing_npc_weapon"]
+"#,
+        )
+        .expect("npc ships should be written");
+
+        let errors =
+            load_content_packs(&root).expect_err("missing ship and power refs should fail");
+        assert!(errors.iter().any(|error| {
+            error
+                == "Power module `bad-ship-pack:bad_reactor` references missing install item `bad-ship-pack:missing_reactor`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Power module `bad-ship-pack:bad_reactor` references missing fuel item `bad-ship-pack:missing_fuel`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Weapon `bad-ship-pack:point_defense` references missing install item `bad-ship-pack:missing_turret_item`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Shield `bad-ship-pack:bad_shield` has damage resistance outside 0.0..1.0"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Shield `bad-ship-pack:bad_shield` has hazard resistance outside 0.0..1.0"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Shield `bad-ship-pack:bad_shield` references missing install item `bad-ship-pack:missing_shield_item`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship `bad-ship-pack:bad_ship` references missing power module `bad-ship-pack:missing_module`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship `bad-ship-pack:bad_ship` references missing shield `bad-ship-pack:missing_shield`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship `bad-ship-pack:bad_ship` references missing weapon `bad-ship-pack:missing_weapon`"
+        }));
+        assert!(errors
+            .iter()
+            .any(|error| error == "NPC ship `bad-ship-pack:bad_npc` has zero spawn count"));
+        assert!(errors.iter().any(|error| {
+            error == "NPC ship `bad-ship-pack:bad_npc` has a zero-count cargo default"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` has credit_reward_min greater than credit_reward_max"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing system `bad-ship-pack:missing_system`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Faction `bad-ship-pack:bad_faction` has unsupported default disposition `furious`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "System `bad-ship-pack:bad_system` references missing faction `bad-ship-pack:missing_system_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Planet `bad-ship-pack:bad_planet` references missing faction `bad-ship-pack:missing_planet_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Station `bad-ship-pack:bad_station` references missing faction `bad-ship-pack:missing_station_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Station `bad-ship-pack:bad_station` references missing culture `bad-ship-pack:missing_station_culture`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Station service `bad-ship-pack:bad_station_research` references missing research lead `bad-ship-pack:missing_research`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing faction `bad-ship-pack:missing_npc_faction`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing cargo item `bad-ship-pack:missing_cargo`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing shield `bad-ship-pack:missing_npc_shield`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "NPC ship `bad-ship-pack:bad_npc` references missing weapon `bad-ship-pack:missing_npc_weapon`"
+        }));
+
+        fs::remove_dir_all(root).ok();
+    }
+
     fn make_temp_content_root(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("some-frontier-{label}-{nanos}"))
+    }
+
+    fn write_minimal_core_pack(root: &Path) {
+        let pack_path = root.join("core");
+        fs::create_dir_all(&pack_path).expect("core pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            r#"
+id = "core"
+name = "Core"
+version = "0.1.0"
+"#,
+        )
+        .expect("core manifest should be written");
+        fs::write(
+            pack_path.join("items.toml"),
+            r#"
+[[items]]
+id = "core_item"
+name = "Core item"
+tier = "component"
+unit_mass = 1.0
+"#,
+        )
+        .expect("core items should be written");
+        fs::write(
+            pack_path.join("stations.toml"),
+            r#"
+[[stations]]
+id = "crafting"
+name = "Crafting"
+base_seconds = 1.0
+"#,
+        )
+        .expect("core stations should be written");
+    }
+
+    fn write_minimal_core_recipe(root: &Path, recipe_id: &str) {
+        let pack_path = root.join("core");
+        fs::write(
+            pack_path.join("recipes.toml"),
+            format!(
+                r#"
+[[recipes]]
+id = "{recipe_id}"
+station = "crafting"
+output = {{ item = "core_item", count = 1 }}
+ingredients = [
+  {{ item = "core_item", count = 1 }},
+]
+purpose = "Minimal recipe."
+"#
+            ),
+        )
+        .expect("core recipes should be written");
+    }
+
+    fn write_addon_pack(root: &Path, version: &str, item_id: &str) {
+        let pack_path = root.join("addon-pack");
+        fs::create_dir_all(&pack_path).expect("addon pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            format!(
+                r#"
+id = "addon-pack"
+name = "Addon Pack"
+version = "{version}"
+depends_on = ["core"]
+"#
+            ),
+        )
+        .expect("addon manifest should be written");
+        fs::write(
+            pack_path.join("items.toml"),
+            format!(
+                r#"
+[[items]]
+id = "{item_id}"
+name = "Addon item"
+tier = "component"
+unit_mass = 1.0
+"#
+            ),
+        )
+        .expect("addon items should be written");
+    }
+
+    fn write_compat_pack(root: &Path, dependencies: &str, addon_item: &str) {
+        let pack_path = root.join("compat-pack");
+        fs::create_dir_all(&pack_path).expect("compat pack directory should be created");
+        fs::write(
+            pack_path.join("pack.toml"),
+            format!(
+                r#"
+id = "compat-pack"
+name = "Compatibility Pack"
+version = "0.1.0"
+{dependencies}
+"#
+            ),
+        )
+        .expect("compat manifest should be written");
+        fs::write(
+            pack_path.join("items.toml"),
+            r#"
+[[items]]
+id = "hybrid_item"
+name = "Hybrid item"
+tier = "component"
+unit_mass = 1.0
+"#,
+        )
+        .expect("compat items should be written");
+        fs::write(
+            pack_path.join("recipes.toml"),
+            format!(
+                r#"
+[[recipes]]
+id = "hybrid_item"
+station = "core:crafting"
+output = {{ item = "hybrid_item", count = 1 }}
+ingredients = [
+  {{ item = "core:core_item", count = 1 }},
+  {{ item = "{addon_item}", count = 1 }},
+]
+purpose = "Compatibility recipe."
+"#
+            ),
+        )
+        .expect("compat recipes should be written");
     }
 }

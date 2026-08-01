@@ -12,3 +12,5 @@ linear_drag = 0.985
 hull_capacity = 100.0
 shield_capacity = 100.0
 power_modules = ["compact_fission_cell"]
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret"]

@@ -5,6 +5,7 @@ region = "cinder_reaches"
 galaxy = "ember_spiral"
 universe = "frontier_universe"
 primary_star = "frontier_primary"
+faction = "cinder_cooperative"
 arrival = [0.0, 0.0]
 description = "The starter local system for early mining, smelting, fabrication, and survey work."
 tags = ["starter", "industrial", "surveyed-route"]

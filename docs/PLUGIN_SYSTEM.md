@@ -1,8 +1,9 @@
 # Plugin System
 
 Some Frontier plugins should start as local data packs. A pack can add items,
-recipes, planets, assets, and eventually upgrades or events without compiling
-new Rust code.
+recipes, research, ships, NPC ships, factions, power modules, weapons, shields,
+planets, stations, systems, upgrades, assets, and eventually events without
+compiling new Rust code.
 
 The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
@@ -18,7 +19,7 @@ Base game responsibilities:
 - Flight physics and camera behavior.
 - Inventory rules and item stack behavior.
 - Mining, smelting, crafting, and future processing execution.
-- Skill XP rules, bonus calculations, and progression math.
+- Research purchase rules, reward application, and progression math.
 - Scan/drone mechanics and reveal behavior.
 - UI layout and interaction patterns.
 - Save/load format and migration rules.
@@ -27,19 +28,24 @@ Base game responsibilities:
 Core pack responsibilities:
 
 - Default items.
-- Default recipes.
+- Default recipes and research nodes.
+- Default ship, NPC ship, faction, power-module, weapon, and shield definitions.
 - Default planets and planet assets.
 - Default starting inventory.
 - Default station list.
-- Default upgrade definitions when those become data-driven.
+- Default station destinations, service groups, vendor stock, and research leads.
+- Default research progression definitions.
+- Default upgrade cost definitions.
 - Default scan requirements, such as the starter survey drone.
 
 Plugin pack responsibilities:
 
-- Add new items, recipes, planets, and assets.
+- Add new items, recipes, research nodes, ships, NPC ships, factions, power
+  modules, weapons, shields, planets, stations, systems, and assets.
 - Add compatibility recipes between packs.
 - Add alternate resource branches that use existing mechanics.
-- Add upgrade branches once upgrades are data-driven.
+- Add upgrade cost branches for base-game upgrade mechanics.
+- Add pack configuration options for future scenario or tuning hooks.
 - Add alternate starts later, without replacing base game rules.
 
 Plugins should extend the world, not redefine the rules underneath the player.
@@ -53,7 +59,7 @@ data hooks for packs to use.
 - Internal IDs are namespaced to avoid naming clashes.
 - Packs can depend on other packs explicitly.
 - Pack validation should fail loudly before the game starts.
-- Current core content should eventually become the built-in `core` pack.
+- Current core content lives in the built-in `core` pack.
 - Game mechanics should remain stable, predictable, and owned by the base game.
 
 ## Pack Layout
@@ -63,29 +69,49 @@ Recommended folder structure:
 ```text
 content/packs/core/
   pack.toml
+  config.toml
   items.toml
+  power.toml
+  weapons.toml
+  shields.toml
+  ships.toml
+  npc_ships.toml
+  factions.toml
   recipes.toml
+  research.toml
+  universe.toml
+  systems.toml
   planets.toml
   stations.toml
   upgrades.toml
   starter.toml
-  universe.toml
-  systems.toml
   assets/
     planets/
+    ships/
+    stations/
 
 content/packs/icy-frontier/
   pack.toml
+  config.toml
   items.toml
+  power.toml
+  weapons.toml
+  shields.toml
+  ships.toml
+  npc_ships.toml
+  factions.toml
   recipes.toml
+  research.toml
+  universe.toml
+  systems.toml
   planets.toml
   stations.toml
   upgrades.toml
   starter.toml
-  universe.toml
-  systems.toml
   assets/
     planets/
+    ships/
+    stations/
 ```
 
 The repository includes `content/packs/remote-duskfall/` as the first-party
@@ -102,7 +128,8 @@ can expose compatibility routes by adding one of those tags to their systems.
 Files are optional if a pack does not need that content type. For example, a
 recipe-only compatibility pack can include only `pack.toml` and `recipes.toml`.
 The `core` pack should include all default world content, including the default
-starter inventory, station list, upgrade costs, and starter system metadata.
+ship metadata, power modules, starter inventory, station list, upgrade costs,
+and starter system metadata.
 
 ## Installing and Removing Packs
 
@@ -114,15 +141,19 @@ To install the first remote destination example, keep this directory in place:
 ```text
 content/packs/remote-duskfall/
   pack.toml
+  config.toml
   systems.toml
   items.toml
   recipes.toml
+  research.toml
+  npc_ships.toml
   planets.toml
 ```
 
 On startup, the loader discovers `remote-duskfall`, loads it after `core`
 because `pack.toml` declares `depends_on = ["core"]`, validates all references,
-and makes `remote-duskfall:duskfall_reach` available as a remote system.
+loads plugin research such as `remote-duskfall:duskfall_vanadium_frames`, and
+makes `remote-duskfall:duskfall_reach` available as a remote system.
 
 To remove the remote destination pack, move or delete the whole directory:
 
@@ -195,8 +226,58 @@ Rules:
 - `id` must be unique.
 - `id` should use lowercase letters, numbers, and hyphens.
 - `depends_on` packs must load first.
-- `optional_depends_on` can be used later for compatibility recipes or bonus
-  content when another pack exists.
+- `depends_on` and `optional_depends_on` accept either string pack IDs or inline
+  tables with exact versions:
+
+```toml
+depends_on = [
+  { id = "core", version = "0.1.0" },
+]
+optional_depends_on = [
+  { id = "scanner-tech", version = "0.1.0" },
+]
+```
+
+- Required dependencies fail startup when missing or when an exact declared
+  version does not match.
+- Optional dependencies gate the whole pack. If any optional dependency is
+  missing or has the wrong exact version, the pack is skipped and startup
+  continues with a content warning.
+
+## `config.toml`
+
+Pack configuration options are loaded as metadata for future setup screens,
+scenario tuning, and compatibility switches. They do not change gameplay by
+themselves until base-game code reads them.
+
+```toml
+[[options]]
+id = "resource_density"
+label = "Resource density"
+description = "Reserved for future world generation resource tuning."
+type = "choice"
+default = "standard"
+choices = ["lean", "standard", "rich"]
+
+[[options]]
+id = "starter_supply_bonus"
+label = "Starter supply bonus"
+type = "bool"
+default = false
+```
+
+Rules:
+
+- `id` resolves to a namespaced option ID and must be unique within the pack.
+- `label` is required and must not be empty.
+- `description` is optional.
+- Supported `type` values are `bool`, `boolean`, `integer`, `int`, `number`,
+  `float`, `text`, `string`, and `choice`.
+- `default` must match the declared type. Integer defaults are also accepted for
+  `number` options.
+- `choice` options must include a non-empty `choices` list, and the default must
+  be one of those choices.
+- Empty choice entries are ignored.
 
 ## `items.toml`
 
@@ -205,14 +286,12 @@ Rules:
 id = "water_ice"
 name = "Water ice"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 10.0
 
 [[items]]
 id = "hydrogen_fuel"
 name = "Hydrogen fuel"
 tier = "fuel"
-xp_value = 2.5
 unit_mass = 4.0
 ```
 
@@ -229,6 +308,12 @@ exotic
 
 `unit_mass` is kilograms per inventory unit. Keep masses positive and tuned for
 gameplay-scale cargo units rather than literal laboratory samples.
+
+Rules:
+
+- `id` resolves to a namespaced item ID.
+- `name` and `tier` must not be empty.
+- `unit_mass` must be positive.
 
 ## `recipes.toml`
 
@@ -269,14 +354,15 @@ Inside the same pack, local shorthand is allowed:
 station = "smelting"
 ```
 
-The loader resolves it to the namespaced station ID:
+The loader resolves shorthand against the current pack. In `core`, this becomes:
 
 ```text
 core:smelting
 ```
 
 Plugin packs should reference core stations explicitly unless they define their
-own station:
+own same-pack station. A recipe in `icy-frontier` that writes `station =
+"smelting"` points at `icy-frontier:smelting`, not `core:smelting`.
 
 ```toml
 station = "core:crafting"
@@ -285,33 +371,418 @@ station = "core:crafting"
 Early implementation can map unsupported stations to existing tabs or reject
 them until the UI supports those stations.
 
+Rules:
+
+- `id`, `station`, `output.item`, and every ingredient `item` resolve to
+  namespaced IDs.
+- `output.count` and ingredient counts must be positive.
+- `ingredients` must not be empty.
+- `station`, output item, and ingredient items must all resolve to loaded
+  definitions.
+- `allow_duplicate_output = true` suppresses duplicate-output warnings only when
+  every recipe for that station/output pair opts in.
+
+## `research.toml`
+
+Research nodes define the progression tree that spends credits on knowledge,
+recipe access, visibility, and passive production effects. Runtime purchase UI,
+serial research timing, and reward application are base-game behavior, but packs
+can contribute nodes to the loaded research registry.
+
+```toml
+[[research]]
+id = "frontier_survey_methods"
+name = "Frontier Survey Methods"
+tier = 0
+column = 0
+row = 0
+price = 450
+duration_seconds = 5.0
+requires = []
+revealed_by = []
+summary = "Basic archive methods for turning scan records into useful frontier knowledge."
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = 5.0
+
+[[research]]
+id = "advanced_scanner_core"
+name = "Advanced Scanner Core"
+tier = 1
+column = 1
+row = 0
+price = 850
+duration_seconds = 15.0
+requires = ["frontier_survey_methods"]
+revealed_by = ["frontier_survey_methods"]
+summary = "Unlocks the advanced scanner core recipe."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "advanced_scanner_core"
+```
+
+Rules:
+
+- `id`, `requires`, `revealed_by`, and reward `target` values resolve to
+  namespaced IDs.
+- `name` must not be empty.
+- `tier` is a non-negative progression tier used for grouping, labels, and
+  author intent.
+- `column` and `row` place the node in a horizontal tree layout. Keep `column`
+  aligned with `tier` for ordinary tiered progression so the research screen's
+  vertical bands and labels stay clear; rows can branch related choices
+  vertically.
+- `price` must be positive and is paid in credits.
+- `duration_seconds` must be positive and controls how long the research takes
+  after purchase. Research runs asynchronously during flight, but only one node
+  can be active at a time.
+- `requires` gates purchase until the referenced research nodes are complete.
+- `revealed_by` gates visibility until the referenced research nodes are
+  complete. Leave it empty for starting-visible research.
+- Every node must define at least one reward.
+- `recipe_unlock` rewards require a `target` that references an existing recipe.
+- `item_visibility` rewards require a `target` that references an existing item.
+- `station_visibility` rewards require a `target` that references an existing
+  station.
+- `mining_speed_percent`, `smelting_speed_percent`,
+  `fabrication_speed_percent`, and `bonus_output_chance` rewards require a
+  positive `amount`.
+
 ## `stations.toml`
 
-Stations define world content categories used by recipes. The base game still
-owns the execution mechanics and UI behavior for each station.
+Stations define both world content categories used by recipes and physical
+station destinations that appear in local space. The base game still owns the
+execution mechanics and UI behavior for each station or service kind.
 
 ```toml
 [[stations]]
 id = "smelting"
 name = "Smelting"
-skill = "smelting"
 base_seconds = 2.0
 
 [[stations]]
-id = "crafting"
-name = "Crafting"
-skill = "fabrication"
-base_seconds = 1.5
+id = "frontier_exchange"
+name = "Frontier Exchange"
+system = "frontier"
+position = [760.0, -420.0]
+radius = 58.0
+icon = "ring"
+texture = "./assets/stations/frontier-exchange.png"
+culture = "freebelt_compact"
+faction = "cinder_cooperative"
+summary = "A modular trade station where refinery crews, haulers, and survey pilots exchange cargo and rumors."
+
+[[stations.services]]
+id = "market"
+name = "Exchange Market"
+kind = "shop"
+description = "Cargo buying and selling counter."
+
+[[stations.services.trade]]
+item = "iron_ore"
+buy_price = 18
+sell_price = 7
+stock = 80
+restock_days = 3.0
+
+[[stations.services.research]]
+research = "advanced_scanner_core"
 ```
 
 Rules:
 
 - `id` resolves to a namespaced station ID.
 - `name` is the player-facing label.
-- `skill` is optional and should match a base-game skill hook when present.
 - `base_seconds` is optional and must be positive when present.
+- `system` and `position` must be provided together. A station with both fields
+  becomes a local-space destination; a station with neither can still be used as
+  a recipe category.
+- `radius` defaults to 54.0 and must be positive.
+- `texture` is optional and uses the same path rules as planet and ship
+  textures.
+- `icon` defaults to `station`; currently supported values are interpreted by
+  base-game rendering.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
+- `culture` is optional. When present, it also resolves to a namespaced faction
+  or society record and must reference a loaded faction record.
+- `summary` is optional player-facing metadata.
+- Service `id` values resolve to namespaced IDs and must be unique within the
+  station.
+- Service `name` and `kind` must not be empty.
+- Service `kind` is player-facing context unless the base game has specific
+  behavior for it. Supported mechanics currently include trade stock, research
+  leads, and legacy recipe unlock rows; other concise kinds such as `garage`,
+  `cargo`, `navigation`, `signals`, or `contracts` can label future hooks
+  without adding behavior.
+- Trade `item` values must reference existing items. `buy_price` and
+  `sell_price` must be positive. `stock` and `restock_days` are optional, and
+  `restock_days` must be positive when present.
+- Research lead `research` values must reference existing research nodes.
+- Legacy recipe unlock `recipe` values must reference existing recipes, and
+  `price` must be positive. Prefer research leads for new content so the
+  research tree remains the progression purchase surface.
+- `unavailable = true` can mark trade stock, research leads, or legacy recipe
+  unlocks as known but not currently usable.
 - Defining a station does not automatically create new UI or behavior. The base
-  game must support the station mechanic.
+  game must support the station or service mechanic.
+
+## `power.toml`
+
+Power modules define installable ship power sources. The base game owns how
+power generation is applied; packs provide module stats and item references.
+
+```toml
+[[power_modules]]
+id = "compact_fission_cell"
+name = "Compact Fission Cell"
+family = "Nuclear"
+install_item = "compact_fission_cell"
+generation = 14.0
+mass = 3200.0
+fuel_item = "reactor_pellet"
+fuel_per_minute = 0.01
+heat = 0.35
+risk = 0.10
+summary = "Reliable nuclear ship power for frontier cargo work."
+```
+
+Rules:
+
+- `id`, `install_item`, and `fuel_item` resolve to namespaced IDs.
+- `name` and `family` must not be empty.
+- `generation` and `mass` must be positive.
+- `fuel_item` is optional. When present, it must reference an existing item.
+- `fuel_per_minute`, `heat`, and `risk` default to 0.0 and must not be
+  negative.
+- `install_item` must reference an existing item, usually something produced by
+  a recipe.
+- `summary` is optional player-facing metadata.
+
+## `weapons.toml`
+
+Weapon files define ship-mounted weapon equipment. The first supported weapon
+type is automatic turret defense: the player does not manually target or fire
+these weapons. The base game owns threat scanning, cooldowns, energy spending,
+target resolution, projectile visuals, and damage application. Each weapon also
+points at an inventory install item, allowing crafted turret objects to be
+swapped into ship weapon slots through the ship Defense rail.
+
+```toml
+[[weapons]]
+id = "point_defense_turret"
+name = "Point Defense Turret"
+kind = "turret_defense"
+install_item = "point_defense_turret"
+range = 460.0
+cooldown_seconds = 1.4
+damage = 18.0
+energy_cost = 7.0
+tracking_degrees = 360.0
+summary = "Automatic defensive turret that engages hostile threats near the ship."
+```
+
+Rules:
+
+- `id` resolves to a namespaced weapon ID.
+- `name` must not be empty.
+- `kind` must be `turret_defense`.
+- `install_item` must reference an existing item, usually something produced by
+  a crafting recipe. It is the inventory object consumed when this weapon is
+  installed and returned when the weapon is swapped out.
+- `range`, `cooldown_seconds`, and `damage` must be positive.
+- `energy_cost` defaults to 0.0 and must not be negative.
+- `tracking_degrees` defaults to 360.0 and must not be negative. Values at or
+  above 359 degrees behave as full-coverage defensive turrets.
+- Turret defense weapons only engage valid hostile threats. Neutral, owned, and
+  environmental entities are ignored by the base targeting rules.
+- `summary` is optional player-facing metadata.
+
+## `shields.toml`
+
+Shield files define ship-mounted defensive shield equipment. The base game owns
+capacity, recharge timing, resistance math, hazard interaction, save/load, and
+slot swapping. Each shield points at an inventory install item so crafted shield
+modules can be swapped into ship shield slots.
+
+```toml
+[[shields]]
+id = "balanced_shield_matrix"
+name = "Balanced Shield Matrix"
+install_item = "balanced_shield_matrix"
+capacity = 100.0
+recharge_delay = 4.0
+recharge_rate = 7.5
+damage_resistance = 0.10
+hazard_resistance = 0.15
+summary = "Balanced shield matrix with steady recharge and modest all-around resistance."
+```
+
+Rules:
+
+- `id` resolves to a namespaced shield ID.
+- `name` must not be empty.
+- `install_item` must reference an existing item, usually something produced by
+  a crafting recipe. It is the inventory object consumed when this shield is
+  installed and returned when the shield is swapped out.
+- `capacity`, `recharge_delay`, and `recharge_rate` must be positive.
+- `damage_resistance` and `hazard_resistance` default to 0.0 and must be
+  between 0.0 and 1.0.
+- Hazard resistance reduces configured planet hazard shield drain while the ship
+  is near a hazardous planet.
+- `summary` is optional player-facing metadata.
+
+## `ships.toml`
+
+Ship definitions provide data-driven hull and handling stats. The current
+starter ship uses this content metadata, while the base game still owns flight,
+damage, energy, save/load, shield and weapon slot behavior, and upgrade
+behavior.
+
+```toml
+[[ships]]
+id = "frontier_cargo_ship_01"
+name = "Frontier Cargo Ship"
+texture = "./assets/ships/frontier-cargo-ship-01.png"
+mass = 85000.0
+forward_acceleration = 420.0
+reverse_acceleration = 280.0
+turn_acceleration = 4.8
+energy_capacity = 100.0
+energy_recharge = 8.0
+linear_drag = 0.985
+hull_capacity = 100.0
+shield_capacity = 100.0
+power_modules = ["compact_fission_cell"]
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret"]
+```
+
+Rules:
+
+- `id` resolves to a namespaced ship ID.
+- `name` must not be empty.
+- `texture` is optional and uses the same path rules as planet and station
+  textures.
+- `mass`, acceleration, energy, drag, hull, and shield values must be positive.
+- `power_modules` defaults to an empty list. Entries resolve to namespaced power
+  module IDs and must reference loaded power modules.
+- `shield_slots` defaults to an empty list. Entries resolve to namespaced shield
+  IDs and must reference loaded shields.
+- `weapon_slots` defaults to an empty list. Entries resolve to namespaced weapon
+  IDs and must reference loaded weapons.
+
+## `npc_ships.toml`
+
+NPC ship definitions provide data-driven non-player ship archetypes that can
+appear in local space independently of the player. The runtime derives a
+behavior mode from each ship's role, faction, and behavior tags, then moves the
+ship with lightweight steering and spacing rules. Players can inspect nearby
+NPC ships and identify contacts to reveal faction, disposition, systems, loadout,
+and action hooks. Configured turret weapons are active at runtime: non-hostile
+NPCs engage hostile threats, and hostile NPCs can fire on the player when in
+range. Full hailing, docking, and trade exchanges are owned by later base-game
+systems.
+
+```toml
+[[npc_ships]]
+id = "frontier_patrol_cutter"
+name = "Frontier Patrol Cutter"
+texture = "./assets/ships/npc-scout-01.png"
+system = "frontier"
+position = [820.0, -520.0]
+radius = 28.0
+archetype = "patrol-cutter"
+role = "patrol"
+behavior_tags = ["security", "patrol", "non-hostile"]
+spawn_weight = 0.75
+spawn_count = 1
+mass = 42000.0
+cargo_capacity = 12000.0
+cargo_defaults = [
+  { item = "fuel_canister", count = 1 },
+]
+credit_reward_min = 0
+credit_reward_max = 0
+hull_capacity = 82.0
+shield_capacity = 80.0
+energy_capacity = 90.0
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret"]
+summary = "Local patrol craft that gives the system an early moving security presence."
+```
+
+Rules:
+
+- `id` resolves to a namespaced NPC ship ID.
+- `name`, `archetype`, and `role` must not be empty.
+- `texture` is optional and uses the same path rules as planet, station, and
+  ship textures.
+- `system` resolves to a namespaced system ID and must reference a loaded
+  system.
+- `position` is the local-space spawn and route anchor used by lightweight NPC
+  movement.
+- `radius` defaults to 28.0 and must be positive.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
+- `behavior_tags` defaults to an empty list. The runtime currently recognizes
+  `patrol`, `traffic`, `trade-route`, `follow`, `flee`, and `hostile` as
+  behavior-selection hints. Faction default disposition and `role = "hostile"`
+  can also select hostile interception. Hostile NPCs tagged `pressure` apply
+  light shield pressure while close to the player, with limited hull spillover
+  after shields are depleted.
+- `spawn_weight` defaults to 1.0 and must be positive.
+- `spawn_count` defaults to 1 and must be greater than zero.
+- `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
+  positive.
+- `cargo_defaults` defaults to an empty list. Entries resolve to namespaced item
+  IDs and must reference loaded items; counts must be greater than zero. At
+  runtime, destroyed NPC ships use these entries as automatic loot, adding each
+  full stack to the player inventory only when it fits within the player's cargo
+  rating.
+- `credit_reward_min` and `credit_reward_max` default to 0. Hostile NPC ships
+  award a random credit payout in this inclusive range when destroyed; ships
+  with `credit_reward_max = 0` do not award credits.
+- `shield_slots` and `weapon_slots` default to empty lists and must reference
+  loaded shields and weapons when present. NPC `weapon_slots` create live turret
+  systems from the same weapon definitions used by player ships.
+- `summary` is optional player-facing metadata.
+
+## `factions.toml`
+
+Faction files define player-facing societies, cultures, authorities, crews, and
+hostile groups that can own or influence world content. Faction records are
+data hooks for ownership and disposition; behavior systems such as diplomacy,
+regional spawning, contracts, and combat rules remain owned by the base game.
+
+```toml
+[[factions]]
+id = "cinder_cooperative"
+name = "Cinder Cooperative"
+kind = "cooperative"
+default_disposition = "friendly"
+color = [150, 221, 226]
+tags = ["industrial", "security", "starter"]
+summary = "Frontier industrial cooperative that coordinates starter-system refining, patrol, and station logistics."
+```
+
+Rules:
+
+- `id` resolves to a namespaced faction ID.
+- `name` and `kind` must not be empty. `kind` is descriptive metadata such as
+  `cooperative`, `guild`, `authority`, `compact`, `union`, or `raider`.
+- `default_disposition` defaults to `neutral` and must be one of `friendly`,
+  `neutral`, `hostile`, or `unknown`.
+- `color` defaults to `[150, 221, 226]` and is used as display metadata.
+- `tags` defaults to an empty list and provides future hooks for spawning,
+  encounters, services, and route rules.
+- `summary` is optional player-facing metadata.
+- Systems, planets, stations, and NPC ships can reference factions with a
+  `faction` field.
+- Stations can also use `culture` to reference a faction or society record that
+  describes local dock culture separately from formal ownership.
 
 ## `starter.toml`
 
@@ -363,8 +834,11 @@ Rules:
 - `id` resolves to a namespaced upgrade ID.
 - `item` must reference an existing item.
 - `base_count` is the flat cost added at every level.
-- `per_level` is multiplied by the next upgrade level.
+- `per_level` defaults to 0 and is multiplied by the next upgrade level.
 - `per_levels` defaults to 1 and lets expensive parts appear every few levels.
+- Each upgrade must define at least one cost.
+- Each cost must have a positive `base_count`, a positive `per_level`, or both.
+- `per_levels` must be positive.
 - Costs that resolve to zero for an early level are hidden at runtime.
 
 ## Universe and System Metadata
@@ -459,6 +933,8 @@ Rules:
 - `system` IDs are warp destination IDs.
 - `arrival` is the local-space ship position after warping into the system.
 - `primary_star` should reference a star in the same system when present.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
 - `tags` are optional and useful for discovery filters, route gating, and plugin
   compatibility.
 - Use `starter`, `surveyed-route`, `known`, or `remote` when the system should
@@ -515,20 +991,36 @@ summary = "A water-rich frozen body with deep ice fractures that could support f
 
 Rules:
 
-- `texture` is relative to the pack folder unless it starts with `assets/` or
-  another approved game-root path.
+- `texture` is optional. Paths starting with `./` or `../` resolve relative to
+  the pack folder. Paths starting with `assets/` or `content/` resolve from the
+  game root. Other relative paths resolve relative to the pack folder.
+- Runtime object textures for planets, stations, player ships, and NPC ships
+  should be transparent PNGs. Opaque source renders and full-screen transition
+  backgrounds can remain outside the content-pack runtime asset folders.
 - `system` is required and should reference an existing system.
+- `faction` is optional. When present, it resolves to a namespaced faction ID
+  and must reference a loaded faction record.
 - `mineables` must reference existing item IDs.
 - `orbit` is optional. If omitted, `position` remains a static local-space
-  coordinate. If present, the planet can later move slowly around `center` using
-  `radius`, `period_days`, and normalized `phase`.
-- `period_days` must be at least 30.0 so moving planets stay readable during
-  normal play.
+  coordinate.
+- An orbit can use a fixed `center`, `around = "primary_star"`, or `around`
+  with a same-system star or planet ID. If neither `center` nor `around` is
+  provided, the loader expects the planet's system to define `primary_star`.
+- `around = "primary_star"` resolves through the planet's system and is not
+  namespaced. Other orbit anchors resolve to namespaced IDs.
+- `radius` must be positive.
+- `eccentricity` defaults to 0.0 and must be in the supported range
+  `0.00..0.85`.
+- `axis_phase` and `phase` default to 0.0.
+- `period_days` must be positive and at least 30.0 so moving planets stay
+  readable during normal play.
 - `hazards` are descriptive survey text. They do not cause damage by
   themselves.
 - `hazard_effects` is optional and controls actual lightweight hazard behavior:
   `shield_drain_per_second` damages shields when the ship is too close, and
   `mining_speed_multiplier` slows mining while working that planet.
+- Negative `shield_drain_per_second` values are clamped to 0.0, and
+  `mining_speed_multiplier` values below 1.0 are clamped to 1.0.
 - Planets should start unscanned unless a scenario or save file says otherwise.
 - `position` should be local coordinates inside the planet's system.
 
@@ -544,14 +1036,20 @@ Example:
 id = "icy-scanner-compat"
 name = "Icy Frontier + Scanner Tech Compatibility"
 version = "0.1.0"
-depends_on = ["core", "icy-frontier", "scanner-tech"]
+depends_on = [
+  { id = "core", version = "0.1.0" },
+]
+optional_depends_on = [
+  { id = "icy-frontier", version = "0.1.0" },
+  { id = "scanner-tech", version = "0.1.0" },
+]
 ```
 
 ```toml
 # recipes.toml
 [[recipes]]
 id = "cryo_survey_drone"
-station = "crafting"
+station = "core:crafting"
 output = { item = "scanner-tech:cryo_survey_drone", count = 1 }
 ingredients = [
   { item = "scanner-tech:improved_survey_drone", count = 1 },
@@ -560,21 +1058,40 @@ ingredients = [
 purpose = "Improved survey drone with better icy-body hazard resistance."
 ```
 
+If either `icy-frontier` or `scanner-tech` is not installed, or if its declared
+version does not match exactly, the loader skips `icy-scanner-compat` before
+reading its item or recipe files. When both optional dependencies are present,
+the compatibility recipes use the same namespaced item, station, and recipe
+validation as ordinary pack content.
+
 ## Load Order
 
 1. Discover pack folders.
 2. Read all `pack.toml` files.
 3. Validate unique pack IDs.
-4. Sort packs by `depends_on`.
-5. Load item definitions.
-6. Load recipe definitions.
-7. Load universe, galaxy, region, system, and star metadata.
-8. Load planet definitions.
-9. Load station definitions.
-10. Load starter inventory definitions.
-11. Validate cross-references.
-12. Build runtime registries.
-13. Start the game only if validation succeeds.
+4. Skip packs whose `optional_depends_on` entries are missing or version
+   mismatched, recording content warnings.
+5. Sort remaining packs by `depends_on` and satisfied `optional_depends_on`.
+6. For each ordered pack, load `config.toml` options.
+7. Load item definitions.
+8. Load power module definitions.
+9. Load shield definitions.
+10. Load weapon definitions.
+11. Load ship definitions.
+12. Load NPC ship definitions.
+13. Load recipe definitions.
+14. Load research definitions.
+15. Load faction definitions.
+16. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
+    star metadata.
+17. Load planet definitions.
+18. Load station definitions and station services.
+19. Load upgrade cost definitions.
+20. Load starter inventory definitions.
+21. Validate cross-references.
+22. Record duplicate recipe-output warnings.
+23. Build runtime registries.
+24. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -582,14 +1099,61 @@ Reject startup when:
 
 - Two packs have the same pack ID.
 - Two definitions resolve to the same namespaced ID.
+- A pack ID, dependency ID, or local content ID uses unsupported characters.
+- A pack depends on itself.
 - A dependency is missing.
+- A required dependency declares an exact version that does not match the
+  installed pack.
+- A dependency declaration has an empty version.
 - Dependencies contain a cycle.
+- A pack option has an unsupported type, mismatched default, empty choice list,
+  or choice default outside its choices.
+- An item has an empty name, empty tier, or non-positive unit mass.
 - A recipe references a missing item.
 - A recipe references a missing station.
-- A system references a missing region, galaxy, or universe.
+- A recipe has no ingredients, zero output count, or a zero-count ingredient.
+- A research node has an empty name, zero price, no rewards, missing required or
+  revealing research, or a self-reference.
+- A research reward has an unsupported kind, is missing a required target or
+  amount, or references missing recipe, item, or station content.
+- A power module references a missing install item or fuel item.
+- A power module has an empty name or family, non-positive generation or mass,
+  or negative fuel use, heat, or risk.
+- A weapon references a missing install item, has an empty name, unsupported
+  kind, non-positive range, cooldown, or damage, or negative energy cost or
+  tracking degrees.
+- A shield references a missing install item, has an empty name, non-positive
+  capacity, recharge delay, or recharge rate, or resistance values outside
+  0.0..1.0.
+- A ship references a missing power module.
+- A ship references a missing shield.
+- A ship references a missing weapon.
+- A ship has an empty name or non-positive mass, acceleration, energy, drag,
+  hull, or shield values.
+- A faction has an empty name or kind, or an unsupported default disposition.
+- An NPC ship references a missing system, faction, cargo item, shield, or
+  weapon.
+- An NPC ship has an empty name, archetype, or role; non-positive radius,
+  spawn weight, mass, cargo capacity, hull, shield, or energy capacity; zero
+  spawn count; a zero-count cargo default; or a credit reward minimum greater
+  than its maximum.
+- A system references a missing region, galaxy, universe, or faction.
+- A system primary star is missing or belongs to another system.
 - A star references a missing system.
-- A planet references a missing system after local systems are enabled.
+- A planet references a missing system or faction after local systems are
+  enabled.
 - A planet references a missing mineable item.
+- A planet orbit has a missing anchor, an anchor outside the planet's system,
+  a non-positive radius, unsupported eccentricity, or invalid period.
+- A station references a missing system, faction, or culture.
+- A station defines only one of `system` or `position`.
+- A station has an empty name, non-positive base seconds, or non-positive
+  radius.
+- A station service has an empty name, empty kind, duplicate ID within a station,
+  invalid trade item, invalid research lead, invalid legacy recipe unlock, zero
+  prices, or non-positive restock days.
+- An upgrade has no costs, a missing cost item, a zero-count cost, or a
+  non-positive `per_levels` interval.
 - Starter inventory references a missing item.
 - A texture path is missing.
 - Counts are zero.
@@ -599,48 +1163,183 @@ Reject startup when:
 Warnings are acceptable for:
 
 - Unused items.
-- Recipes that use stations not exposed in the UI yet.
 - Planets placed very far from existing content.
 - Systems or regions that are defined but not discoverable yet.
-- Optional dependencies that are not installed.
+- Optional dependencies that are not installed or whose exact version does not
+  match.
+- Duplicate recipes for the same station/output pair, unless every duplicate
+  recipe opts in with `allow_duplicate_output = true`.
 
 ## Runtime Registry
 
 The runtime uses registry-backed item IDs for inventory, recipes, mining, and
-UI labels. Item names and XP values come from loaded content definitions.
+UI labels. Item names and unit mass values come from loaded content definitions.
 
 Runtime shape:
 
 ```rust
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct ItemId(String);
+struct PackDef {
+    id: String,
+    name: String,
+    version: String,
+    depends_on: Vec<String>,
+    optional_depends_on: Vec<String>,
+    options: Vec<PackOptionDef>,
+}
 
 struct ItemDef {
-    id: ItemId,
+    id: String,
     name: String,
-    tier: ItemTier,
-    xp_value: f32,
+    tier: String,
     unit_mass: f32,
 }
 
 struct RecipeDef {
     id: String,
-    station: StationKind,
-    output: ItemStack,
-    ingredients: Vec<ItemStack>,
-    purpose: String,
+    station: String,
+    output: StackDef,
+    ingredients: Vec<StackDef>,
+    purpose: Option<String>,
+    allow_duplicate_output: bool,
+}
+
+struct ResearchDef {
+    id: String,
+    name: String,
+    tier: u32,
+    column: i32,
+    row: i32,
+    price: u32,
+    duration_seconds: f32,
+    requires: Vec<String>,
+    revealed_by: Vec<String>,
+    rewards: Vec<ResearchRewardDef>,
+    summary: Option<String>,
+}
+
+struct ResearchRewardDef {
+    kind: String,
+    target: Option<String>,
+    amount: Option<f32>,
+}
+
+struct ShipDef {
+    id: String,
+    name: String,
+    texture: Option<String>,
+    mass: f32,
+    forward_acceleration: f32,
+    reverse_acceleration: f32,
+    turn_acceleration: f32,
+    energy_capacity: f32,
+    energy_recharge: f32,
+    linear_drag: f32,
+    hull_capacity: f32,
+    shield_capacity: f32,
+    power_modules: Vec<String>,
+    shield_slots: Vec<String>,
+    weapon_slots: Vec<String>,
+}
+
+struct NpcShipDef {
+    id: String,
+    name: String,
+    texture: Option<String>,
+    system: String,
+    position: [f32; 2],
+    radius: f32,
+    archetype: String,
+    role: String,
+    faction: Option<String>,
+    behavior_tags: Vec<String>,
+    spawn_weight: f32,
+    spawn_count: u32,
+    mass: f32,
+    cargo_capacity: f32,
+    cargo_defaults: Vec<StackDef>,
+    credit_reward_min: u32,
+    credit_reward_max: u32,
+    hull_capacity: f32,
+    shield_capacity: f32,
+    energy_capacity: f32,
+    shield_slots: Vec<String>,
+    weapon_slots: Vec<String>,
+    summary: Option<String>,
+}
+
+struct FactionDef {
+    id: String,
+    name: String,
+    kind: String,
+    default_disposition: FactionDisposition,
+    color: [u8; 3],
+    tags: Vec<String>,
+    summary: Option<String>,
+}
+
+enum FactionDisposition {
+    Friendly,
+    Neutral,
+    Hostile,
+    Unknown,
+}
+
+struct ShieldDef {
+    id: String,
+    name: String,
+    install_item: String,
+    capacity: f32,
+    recharge_delay: f32,
+    recharge_rate: f32,
+    damage_resistance: f32,
+    hazard_resistance: f32,
+    summary: Option<String>,
+}
+
+struct WeaponDef {
+    id: String,
+    name: String,
+    kind: WeaponKind,
+    install_item: String,
+    range: f32,
+    cooldown_seconds: f32,
+    damage: f32,
+    energy_cost: f32,
+    tracking_degrees: f32,
+    summary: Option<String>,
+}
+
+enum WeaponKind {
+    TurretDefense,
+}
+
+struct PowerModuleDef {
+    id: String,
+    name: String,
+    family: String,
+    install_item: String,
+    generation: f32,
+    mass: f32,
+    fuel_item: Option<String>,
+    fuel_per_minute: f32,
+    heat: f32,
+    risk: f32,
+    summary: Option<String>,
 }
 
 struct PlanetDef {
     id: String,
     system: String,
+    faction: Option<String>,
     classification: String,
-    texture: Option<Texture2D>,
-    position: Vec2,
+    texture: Option<String>,
+    position: [f32; 2],
+    orbit: Option<OrbitDef>,
     radius: f32,
     is_poi: bool,
-    mineables: Vec<ItemId>,
+    mineables: Vec<String>,
     hazards: Vec<String>,
+    hazard_effects: HazardEffectsDef,
     summary: String,
 }
 
@@ -649,6 +1348,7 @@ struct SystemDef {
     name: String,
     region: Option<String>,
     primary_star: Option<String>,
+    faction: Option<String>,
     arrival: Vec2,
     description: String,
     tags: Vec<String>,
@@ -661,7 +1361,19 @@ struct StarDef {
     classification: String,
     color: [u8; 3],
     radius: f32,
-    position: Vec2,
+    position: [f32; 2],
+}
+
+struct StationDef {
+    id: String,
+    name: String,
+    base_seconds: Option<f32>,
+    system: Option<String>,
+    position: Option<[f32; 2]>,
+    radius: f32,
+    culture: Option<String>,
+    faction: Option<String>,
+    services: Vec<StationServiceDef>,
 }
 ```
 
@@ -671,7 +1383,6 @@ Inventory stores item IDs through runtime item references:
 struct ItemRef {
     id: String,
     name: String,
-    xp_value: f32,
     unit_mass: f32,
 }
 
@@ -692,7 +1403,7 @@ struct ItemStack {
 6. [x] Convert inventory, recipes, mining, and UI labels to read from item IDs.
 7. [x] Remove hardcoded core content fallbacks from `main.rs` after parity is
    reached.
-8. Add support for optional compatibility packs.
+8. [x] Add support for optional compatibility packs.
 9. Add a simple in-game or startup content error screen.
 
 ## Authoring Guidelines
@@ -738,21 +1449,18 @@ depends_on = ["core"]
 id = "nickel_ore"
 name = "Nickel ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 13.0
 
 [[items]]
 id = "nickel_plate"
 name = "Nickel plate"
 tier = "refined_material"
-xp_value = 2.5
 unit_mass = 19.0
 
 [[items]]
 id = "structural_alloy"
 name = "Structural alloy"
 tier = "refined_material"
-xp_value = 4.0
 unit_mass = 28.0
 ```
 
