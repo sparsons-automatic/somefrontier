@@ -13,6 +13,11 @@ Run the game from the project root:
 cargo run
 ```
 
+For local debugging, `cargo run -- --debug` enables an in-game console. Press
+`` ` `` or `F12` during play to open it. Useful commands include
+`give <item_id> [count]`, `credits <amount>`, `credits set <amount>`,
+`research complete <id|all>`, `recipes unlock all`, and `warp <system_id>`.
+
 The title screen displays the Some Frontier logo and lets you start a new game,
 load an existing save, review content packs, adjust settings, or quit. New games
 use a world seed; choose one manually or randomize it before starting. Loading a
