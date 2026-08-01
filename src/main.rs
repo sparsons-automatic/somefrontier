@@ -73,6 +73,11 @@ const OBJECT_ACTION_RAIL_MIN_WIDTH: f32 = 280.0;
 const OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION: f32 = 0.55;
 const OBJECT_ACTION_RAIL_GAP: f32 = 8.0;
 const ACTION_RAIL_RESIZE_HITBOX_WIDTH: f32 = 28.0;
+const DEBUG_CONSOLE_DEFAULT_HEIGHT: f32 = 280.0;
+const DEBUG_CONSOLE_MIN_HEIGHT: f32 = 180.0;
+const DEBUG_CONSOLE_MAX_SCREEN_FRACTION: f32 = 0.82;
+const DEBUG_CONSOLE_RESIZE_HITBOX_HEIGHT: f32 = 28.0;
+const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
@@ -163,6 +168,7 @@ enum TransitionPhase {
 }
 
 struct GameState {
+    runtime_flags: RuntimeFlags,
     content_registry: content::ContentRegistry,
     content_pack_options: Vec<PackOptionSelection>,
     transition_assets: Vec<TransitionAsset>,
@@ -232,6 +238,7 @@ struct GameState {
     save_status_timer: f32,
     save_status_manual: bool,
     operation_feedback: Vec<OperationFeedback>,
+    debug_console: DebugConsole,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -325,6 +332,21 @@ enum GameStartMode {
     LoadGame {
         path: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RuntimeFlags {
+    debug: bool,
+}
+
+#[derive(Clone, Default)]
+struct DebugConsole {
+    open: bool,
+    input_active: bool,
+    input: String,
+    history: Vec<String>,
+    height_override: Option<f32>,
+    resize_previous_mouse: Option<Vec2>,
 }
 
 enum TitleAction {
@@ -939,7 +961,7 @@ enum ShipUpgradeKind {
 }
 
 impl GameState {
-    async fn new(start_mode: GameStartMode) -> Self {
+    async fn new(start_mode: GameStartMode, runtime_flags: RuntimeFlags) -> Self {
         draw_startup_transition(None, "Loading content packs ... core", 1.0);
         next_frame().await;
         let start_pack_options = match &start_mode {
@@ -1052,6 +1074,7 @@ impl GameState {
         let defense_threats = make_defense_threats();
 
         let mut game = Self {
+            runtime_flags,
             content_registry,
             content_pack_options,
             transition_assets,
@@ -1124,6 +1147,7 @@ impl GameState {
             save_status_timer: 0.0,
             save_status_manual: false,
             operation_feedback: Vec::new(),
+            debug_console: DebugConsole::default(),
         };
         if let Some(save_data) = save_data {
             draw_startup_transition_assets(
@@ -4262,6 +4286,7 @@ async fn run_startup_transition_out(assets: &[TransitionAsset], preferred_id: Op
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    let runtime_flags = RuntimeFlags::from_env_args();
     set_ui_font(load_ui_font().await);
     let branding_logo = load_asset_texture(BRANDING_LOGO_PATH).await;
     let ui_panel_corner = load_asset_texture(UI_PANEL_CORNER_PATH).await;
@@ -4273,7 +4298,7 @@ async fn main() {
                 seed: new_world_seed(),
                 pack_options: default_content_pack_option_selections(),
             });
-        AppState::Playing(Box::new(GameState::new(start_mode).await))
+        AppState::Playing(Box::new(GameState::new(start_mode, runtime_flags).await))
     } else {
         AppState::Title(TitleMenu::default())
     };
@@ -4285,14 +4310,18 @@ async fn main() {
                 if let Some(action) = update_title_menu(menu) {
                     match action {
                         TitleAction::NewGame { seed, pack_options } => {
-                            let mut game =
-                                GameState::new(GameStartMode::NewGame { seed, pack_options }).await;
+                            let mut game = GameState::new(
+                                GameStartMode::NewGame { seed, pack_options },
+                                runtime_flags,
+                            )
+                            .await;
                             save_game_now(&mut game, SaveFeedback::Manual);
                             app = AppState::Playing(Box::new(game));
                         }
                         TitleAction::LoadGame { path } => {
                             app = AppState::Playing(Box::new(
-                                GameState::new(GameStartMode::LoadGame { path }).await,
+                                GameState::new(GameStartMode::LoadGame { path }, runtime_flags)
+                                    .await,
                             ));
                         }
                         TitleAction::QuitDesktop => {
@@ -4326,10 +4355,273 @@ async fn main() {
     }
 }
 
+impl RuntimeFlags {
+    fn from_env_args() -> Self {
+        Self::from_args(env::args().skip(1))
+    }
+
+    fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            debug: args.into_iter().any(|arg| arg == "--debug"),
+        }
+    }
+}
+
 fn fast_start_enabled() -> bool {
     env::var("SOME_FRONTIER_FAST_START")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+fn handle_debug_console_toggle(game: &mut GameState) -> bool {
+    if !game.runtime_flags.debug {
+        return false;
+    }
+    if is_key_pressed(KeyCode::GraveAccent) || is_key_pressed(KeyCode::F12) {
+        game.debug_console.open = !game.debug_console.open;
+        game.debug_console.input_active = false;
+        return true;
+    }
+    false
+}
+
+fn handle_debug_console_input(game: &mut GameState) {
+    if !game.debug_console.open {
+        return;
+    }
+    let mouse = mouse_vec2();
+    if handle_debug_console_resize_input(game, mouse) {
+        return;
+    }
+    if is_mouse_button_pressed(MouseButton::Left) {
+        let console = debug_console_rect(game);
+        game.debug_console.input_active = debug_console_input_rect(console).contains(mouse);
+    }
+    if is_key_pressed(KeyCode::Escape) {
+        game.debug_console.open = false;
+        game.debug_console.input_active = false;
+        return;
+    }
+    if !game.debug_console.input_active {
+        return;
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        game.debug_console.input.pop();
+    }
+    while let Some(character) = get_char_pressed() {
+        if !character.is_control() {
+            game.debug_console.input.push(character);
+        }
+    }
+    if is_key_pressed(KeyCode::Enter) {
+        let command = game.debug_console.input.trim().to_string();
+        if command.is_empty() {
+            return;
+        }
+        let result = execute_debug_console_command(game, &command);
+        game.debug_console.history.insert(0, format!("> {command}"));
+        game.debug_console.history.insert(0, result);
+        game.debug_console
+            .history
+            .truncate(DEBUG_CONSOLE_HISTORY_LIMIT);
+        game.debug_console.input.clear();
+    }
+}
+
+fn handle_debug_console_resize_input(game: &mut GameState, mouse: Vec2) -> bool {
+    let console = debug_console_rect(game);
+    let handle = debug_console_resize_handle_rect(console);
+    if is_mouse_button_down(MouseButton::Left) {
+        if let Some(previous_mouse) = game.debug_console.resize_previous_mouse {
+            let delta_y = mouse.y - previous_mouse.y;
+            let height = debug_console_height(game);
+            game.debug_console.height_override = Some(clamp_debug_console_height(height - delta_y));
+            game.debug_console.resize_previous_mouse = Some(mouse);
+            return true;
+        }
+        if handle.contains(mouse) {
+            game.debug_console.resize_previous_mouse = Some(mouse);
+            return true;
+        }
+    } else {
+        game.debug_console.resize_previous_mouse = None;
+    }
+    false
+}
+
+fn execute_debug_console_command(game: &mut GameState, command: &str) -> String {
+    let parts = command.split_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        [] => "No command entered".to_string(),
+        ["help"] => debug_console_help().to_string(),
+        ["give", item_id] => debug_console_give(game, item_id, 1),
+        ["give", item_id, count] => match count.parse::<u32>() {
+            Ok(count) if count > 0 => debug_console_give(game, item_id, count),
+            _ => format!("Invalid item count `{count}`"),
+        },
+        ["credits", amount] => match amount.parse::<u32>() {
+            Ok(amount) if amount > 0 => {
+                game.credits = game.credits.saturating_add(amount);
+                game.save_dirty = true;
+                format!("Added {amount} credits")
+            }
+            _ => format!("Invalid credit amount `{amount}`"),
+        },
+        ["credits", "set", amount] => match amount.parse::<u32>() {
+            Ok(amount) => {
+                game.credits = amount;
+                game.save_dirty = true;
+                format!("Credits set to {amount}")
+            }
+            _ => format!("Invalid credit amount `{amount}`"),
+        },
+        ["research", "complete", "all"] => {
+            game.completed_research = game.content_registry.research_order.clone();
+            game.completed_research.sort();
+            game.completed_research.dedup();
+            game.active_research = None;
+            game.save_dirty = true;
+            format!("Completed {} research nodes", game.completed_research.len())
+        }
+        ["research", "complete", research_id] => {
+            let Some(research_id) =
+                resolve_console_content_id(&game.content_registry.research, research_id)
+            else {
+                return format!("Unknown research `{research_id}`");
+            };
+            if !game
+                .completed_research
+                .iter()
+                .any(|done| done == &research_id)
+            {
+                game.completed_research.push(research_id.clone());
+                game.completed_research.sort();
+                game.completed_research.dedup();
+            }
+            if game
+                .active_research
+                .as_ref()
+                .is_some_and(|active| active.research == research_id)
+            {
+                game.active_research = None;
+            }
+            game.save_dirty = true;
+            format!(
+                "Completed research {}",
+                research_display_name(&game.content_registry, &research_id)
+            )
+        }
+        ["recipes", "unlock", "all"] => {
+            let mut unlocked = 0_u32;
+            for research_id in &game.content_registry.research_order {
+                let Some(research) = game.content_registry.research.get(research_id) else {
+                    continue;
+                };
+                if research
+                    .rewards
+                    .iter()
+                    .any(|reward| reward.kind == "recipe_unlock")
+                    && !game
+                        .completed_research
+                        .iter()
+                        .any(|done| done == research_id)
+                {
+                    game.completed_research.push(research_id.clone());
+                    unlocked += 1;
+                }
+            }
+            game.completed_research.sort();
+            game.completed_research.dedup();
+            game.save_dirty = true;
+            format!("Unlocked recipes from {unlocked} research nodes")
+        }
+        ["warp", system_id] => {
+            let Some(system_id) =
+                resolve_console_content_id(&game.content_registry.systems, system_id)
+            else {
+                return format!("Unknown system `{system_id}`");
+            };
+            switch_current_system(game, &system_id);
+            game.pending_warp = None;
+            game.scene_transition = None;
+            game.save_dirty = true;
+            format!(
+                "Warped to {}",
+                system_display_name(&game.content_registry, &system_id)
+            )
+        }
+        [unknown, ..] => format!("Unknown command `{unknown}`. Try `help`."),
+    }
+}
+
+fn debug_console_give(game: &mut GameState, item_id: &str, count: u32) -> String {
+    let Some(item_id) = resolve_console_content_id(&game.content_registry.items, item_id) else {
+        return format!("Unknown item `{item_id}`");
+    };
+    let Some(item) = registry_item(&game.content_registry, &item_id) else {
+        return format!("Unknown item `{item_id}`");
+    };
+    game.inventory.add_item(item.clone(), count);
+    game.save_dirty = true;
+    format!("Gave {} x{count}", item.name)
+}
+
+fn resolve_console_content_id<T>(registry: &HashMap<String, T>, input: &str) -> Option<String> {
+    if registry.contains_key(input) {
+        return Some(input.to_string());
+    }
+    if let Some((pack, local)) = input.split_once('.') {
+        let candidate = format!("{pack}:{local}");
+        if registry.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn debug_console_help() -> &'static str {
+    "Commands: give <item> [count], credits <amount>, credits set <amount>, research complete <id|all>, recipes unlock all, warp <system>"
+}
+
+fn debug_console_height(game: &GameState) -> f32 {
+    clamp_debug_console_height(
+        game.debug_console
+            .height_override
+            .unwrap_or(DEBUG_CONSOLE_DEFAULT_HEIGHT),
+    )
+}
+
+fn clamp_debug_console_height(height: f32) -> f32 {
+    height.clamp(
+        DEBUG_CONSOLE_MIN_HEIGHT,
+        (screen_height() * DEBUG_CONSOLE_MAX_SCREEN_FRACTION)
+            .max(DEBUG_CONSOLE_MIN_HEIGHT)
+            .min(screen_height() - 42.0),
+    )
+}
+
+fn debug_console_rect(game: &GameState) -> Rect {
+    let width = (screen_width() * 0.72).clamp(520.0, 920.0);
+    let height = debug_console_height(game);
+    Rect::new(28.0, screen_height() - height - 28.0, width, height)
+}
+
+fn debug_console_resize_handle_rect(console: Rect) -> Rect {
+    Rect::new(
+        console.x + 8.0,
+        console.y - DEBUG_CONSOLE_RESIZE_HITBOX_HEIGHT * 0.5,
+        console.w - 16.0,
+        DEBUG_CONSOLE_RESIZE_HITBOX_HEIGHT,
+    )
+}
+
+fn debug_console_input_rect(console: Rect) -> Rect {
+    Rect::new(
+        console.x + 14.0,
+        console.y + console.h - 48.0,
+        console.w - 28.0,
+        34.0,
+    )
 }
 
 impl Default for TitleMenu {
@@ -6247,6 +6539,10 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_window_size_memory(game, dt);
     update_save_state(game, dt);
     clamp_inventory_scrolls(game);
+    if handle_debug_console_toggle(game) || game.debug_console.open {
+        handle_debug_console_input(game);
+        return;
+    }
     if game.escape_dialog_open {
         handle_escape_dialog_input(game);
         return;
@@ -9784,8 +10080,184 @@ fn draw_scene(
     if game.save_status_timer > 0.0 {
         draw_save_confirmation(game.save_status_timer, game.save_status_manual);
     }
+    if game.runtime_flags.debug {
+        draw_debug_console(game);
+    }
     if let Some(transition) = &game.scene_transition {
         draw_scene_transition_overlay(transition);
+    }
+}
+
+fn draw_debug_console(game: &GameState) {
+    let hint_color = Color::from_rgba(150, 221, 226, 210);
+    if !game.debug_console.open {
+        draw_rectangle(
+            18.0,
+            screen_height() - 46.0,
+            210.0,
+            28.0,
+            Color::from_rgba(5, 10, 16, 160),
+        );
+        draw_rectangle_lines(
+            18.0,
+            screen_height() - 46.0,
+            210.0,
+            28.0,
+            1.0,
+            Color::from_rgba(95, 137, 155, 120),
+        );
+        draw_text(
+            "Debug console ` or F12",
+            30.0,
+            screen_height() - 27.0,
+            16.0,
+            hint_color,
+        );
+        return;
+    }
+
+    let console = debug_console_rect(game);
+    let x = console.x;
+    let y = console.y;
+    let width = console.w;
+    let height = console.h;
+    draw_rectangle(x, y, width, height, Color::from_rgba(5, 10, 16, 235));
+    draw_rectangle_lines(
+        x,
+        y,
+        width,
+        height,
+        1.0,
+        Color::from_rgba(150, 221, 226, 180),
+    );
+    draw_text(
+        "Debug Console",
+        x + 14.0,
+        y + 28.0,
+        20.0,
+        Color::from_rgba(235, 242, 226, 255),
+    );
+    draw_text(
+        "Esc closes",
+        x + width - 94.0,
+        y + 28.0,
+        15.0,
+        Color::from_rgba(126, 156, 164, 210),
+    );
+    draw_debug_console_resize_handle(console);
+
+    let mut line_y = y + 58.0;
+    let max_history_rows = ((height - 104.0) / 22.0).floor().max(1.0) as usize;
+    if game.debug_console.history.is_empty() {
+        draw_text(
+            debug_console_help(),
+            x + 14.0,
+            line_y,
+            14.0,
+            Color::from_rgba(126, 156, 164, 220),
+        );
+    } else {
+        for line in game
+            .debug_console
+            .history
+            .iter()
+            .rev()
+            .take(max_history_rows)
+        {
+            draw_text(
+                &fit_debug_text(line, width - 28.0, 14),
+                x + 14.0,
+                line_y,
+                14.0,
+                Color::from_rgba(178, 197, 203, 235),
+            );
+            line_y += 22.0;
+        }
+    }
+
+    let input_rect = debug_console_input_rect(console);
+    let input_line = if game.debug_console.input_active {
+        Color::from_rgba(150, 221, 226, 220)
+    } else if input_rect.contains(mouse_vec2()) {
+        Color::from_rgba(150, 221, 226, 150)
+    } else {
+        Color::from_rgba(95, 137, 155, 120)
+    };
+    draw_rectangle(
+        input_rect.x,
+        input_rect.y,
+        input_rect.w,
+        input_rect.h,
+        if game.debug_console.input_active {
+            Color::from_rgba(10, 30, 38, 170)
+        } else {
+            Color::from_rgba(5, 10, 16, 90)
+        },
+    );
+    draw_rectangle_lines(
+        input_rect.x,
+        input_rect.y,
+        input_rect.w,
+        input_rect.h,
+        1.0,
+        input_line,
+    );
+    let input_y = input_rect.y + 23.0;
+    draw_line(
+        input_rect.x,
+        input_y - 22.0,
+        input_rect.x + input_rect.w,
+        input_y - 22.0,
+        1.0,
+        input_line,
+    );
+    let input_text = if game.debug_console.input_active || !game.debug_console.input.is_empty() {
+        format!("> {}", game.debug_console.input)
+    } else {
+        "> click to type".to_string()
+    };
+    draw_text(
+        &fit_debug_text(&input_text, input_rect.w - 12.0, 18),
+        input_rect.x + 8.0,
+        input_y,
+        18.0,
+        if game.debug_console.input_active {
+            Color::from_rgba(150, 221, 226, 255)
+        } else {
+            Color::from_rgba(126, 156, 164, 210)
+        },
+    );
+}
+
+fn draw_debug_console_resize_handle(console: Rect) {
+    let handle = debug_console_resize_handle_rect(console);
+    let hovered = handle.contains(mouse_vec2());
+    let color = if hovered {
+        Color::from_rgba(150, 221, 226, 220)
+    } else {
+        Color::from_rgba(96, 137, 150, 130)
+    };
+    let y = console.y;
+    draw_line(
+        console.x + 18.0,
+        y,
+        console.x + console.w - 18.0,
+        y,
+        1.0,
+        color,
+    );
+    for index in 0..18 {
+        let x = console.x + console.w * 0.5 - 54.0 + index as f32 * 6.0;
+        draw_line(x, y - 5.0, x + 3.0, y - 5.0, 1.0, color);
+    }
+    if hovered {
+        draw_rectangle(
+            handle.x,
+            handle.y,
+            handle.w,
+            handle.h,
+            Color::from_rgba(150, 221, 226, 24),
+        );
     }
 }
 
@@ -17783,6 +18255,22 @@ mod tests {
     }
 
     #[test]
+    fn runtime_flags_parse_debug_cli_flag() {
+        assert!(RuntimeFlags::from_args(["--debug".to_string()]).debug);
+        assert!(RuntimeFlags::from_args(["--fast".to_string(), "--debug".to_string()]).debug);
+        assert!(!RuntimeFlags::from_args(["debug".to_string()]).debug);
+        assert!(!RuntimeFlags::from_args(Vec::<String>::new()).debug);
+    }
+
+    #[test]
+    fn debug_console_input_starts_inactive() {
+        let console = DebugConsole::default();
+
+        assert!(!console.open);
+        assert!(!console.input_active);
+    }
+
+    #[test]
     fn title_save_row_double_click_requires_same_row_within_threshold() {
         assert!(title_save_row_double_clicked(Some(2), 10.0, 2, 10.2));
         assert!(!title_save_row_double_clicked(Some(1), 10.0, 2, 10.2));
@@ -19466,6 +19954,46 @@ mod tests {
     }
 
     #[test]
+    fn debug_console_give_adds_items_by_content_id() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        assert_eq!(
+            execute_debug_console_command(&mut game, "give core:iron_ore 7"),
+            "Gave Iron ore x7"
+        );
+        assert_eq!(game.inventory.count(&iron), 7);
+        assert!(game.save_dirty);
+
+        assert_eq!(
+            execute_debug_console_command(&mut game, "give core.iron_ore"),
+            "Gave Iron ore x1"
+        );
+        assert_eq!(game.inventory.count(&iron), 8);
+    }
+
+    #[test]
+    fn debug_console_updates_credits() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        assert_eq!(
+            execute_debug_console_command(&mut game, "credits 250"),
+            "Added 250 credits"
+        );
+        assert_eq!(game.credits, default_credits() + 250);
+
+        assert_eq!(
+            execute_debug_console_command(&mut game, "credits set 42"),
+            "Credits set to 42"
+        );
+        assert_eq!(game.credits, 42);
+    }
+
+    #[test]
     fn recipe_vendor_unlock_purchase_gates_production_recipe() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -19558,6 +20086,41 @@ mod tests {
             ),
             ResearchNodeState::Completed
         );
+    }
+
+    #[test]
+    fn debug_console_completes_research_nodes() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        let result =
+            execute_debug_console_command(&mut game, "research complete core:mining_calibration_i");
+
+        assert!(result.contains("Completed research"));
+        assert!(game
+            .completed_research
+            .contains(&"core:mining_calibration_i".to_string()));
+
+        let result = execute_debug_console_command(&mut game, "research complete all");
+
+        assert!(result.contains("Completed"));
+        assert_eq!(
+            game.completed_research.len(),
+            game.content_registry.research_order.len()
+        );
+    }
+
+    #[test]
+    fn debug_console_unlocks_recipe_research() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        let result = execute_debug_console_command(&mut game, "recipes unlock all");
+
+        assert!(result.contains("Unlocked recipes"));
+        assert!(recipe_is_unlocked(&game, "core:advanced_scanner_core"));
     }
 
     #[test]
@@ -20803,6 +21366,7 @@ mod tests {
         planets: Vec<Planet>,
     ) -> GameState {
         GameState {
+            runtime_flags: RuntimeFlags::default(),
             content_registry,
             content_pack_options: Vec::new(),
             transition_assets: Vec::new(),
@@ -20874,6 +21438,7 @@ mod tests {
             save_status_timer: 0.0,
             save_status_manual: false,
             operation_feedback: Vec::new(),
+            debug_console: DebugConsole::default(),
         }
     }
 }

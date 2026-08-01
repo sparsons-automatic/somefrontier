@@ -31,6 +31,16 @@ For an optimized build:
 cargo run --release
 ```
 
+For local debugging, enable the in-game console:
+
+```sh
+cargo run -- --debug
+```
+
+Press `` ` `` or `F12` in-game to open it. Current commands include
+`give <item_id> [count]`, `credits <amount>`, `credits set <amount>`,
+`research complete <id|all>`, `recipes unlock all`, and `warp <system_id>`.
+
 ## Controls
 
 For the full current gameplay reference, see
