@@ -646,9 +646,33 @@ struct StationService {
     name: String,
     kind: String,
     description: Option<String>,
+    vendor: Option<StationVendor>,
     trade: Vec<TradeOffer>,
     research: Vec<ResearchLead>,
     recipe_unlocks: Vec<RecipeUnlockOffer>,
+}
+
+#[derive(Clone)]
+struct StationVendor {
+    id: String,
+    name: String,
+    faction: Option<String>,
+    specialties: Vec<String>,
+    rotation_days: f32,
+    slots: usize,
+    price_variance: f32,
+    offers: Vec<VendorOffer>,
+    rotation: u64,
+}
+
+#[derive(Clone)]
+struct VendorOffer {
+    item: ItemRef,
+    buy_price: u32,
+    sell_price: u32,
+    min_stock: u32,
+    max_stock: u32,
+    weight: f32,
 }
 
 #[derive(Clone)]
@@ -666,6 +690,7 @@ struct TradeOffer {
     max_stock: Option<u32>,
     restock_days: Option<f32>,
     next_restock_day: Option<f32>,
+    catalog_rotation: Option<u64>,
     unavailable: bool,
 }
 
@@ -820,6 +845,8 @@ struct SaveMarketOffer {
     stock: Option<u32>,
     #[serde(default)]
     next_restock_day: Option<f32>,
+    #[serde(default)]
+    catalog_rotation: Option<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1033,6 +1060,10 @@ impl GameState {
             .unwrap_or(STARTER_SYSTEM_ID);
         let startup_preferred_transition_id =
             preferred_transition_asset_id_for_system(&content_registry, startup_system_id);
+        let startup_world_elapsed_days = save_data
+            .as_ref()
+            .map(|save| finite_nonnegative_or(save.world_elapsed_days, 0.0))
+            .unwrap_or(0.0);
 
         draw_startup_transition_assets(
             &transition_assets,
@@ -1064,6 +1095,8 @@ impl GameState {
             &content_registry,
             &transition_assets,
             startup_preferred_transition_id,
+            world_seed,
+            startup_world_elapsed_days,
         )
         .await;
         let npc_ships = make_npc_ships(
@@ -1592,6 +1625,8 @@ async fn make_station_destinations(
     content_registry: &content::ContentRegistry,
     transition_assets: &[TransitionAsset],
     preferred_transition_id: Option<&str>,
+    world_seed: u64,
+    world_elapsed_days: f32,
 ) -> Vec<StationDestination> {
     let mut stations = Vec::new();
     for station_id in &content_registry.station_order {
@@ -1631,52 +1666,169 @@ async fn make_station_destinations(
             services: station_def
                 .services
                 .iter()
-                .map(|service| StationService {
-                    id: service.id.clone(),
-                    name: service.name.clone(),
-                    kind: service.kind.clone(),
-                    description: service.description.clone(),
-                    trade: service
-                        .trade
-                        .iter()
-                        .filter_map(|offer| {
-                            registry_item(content_registry, &offer.item).map(|item| TradeOffer {
-                                item,
-                                buy_price: offer.buy_price,
-                                sell_price: offer.sell_price,
-                                stock: offer.stock,
-                                max_stock: offer.stock,
-                                restock_days: offer.restock_days,
-                                next_restock_day: offer
-                                    .stock
-                                    .zip(offer.restock_days)
-                                    .map(|(_, days)| days),
-                                unavailable: offer.unavailable,
+                .map(|service| {
+                    let vendor = content_registry.vendors.values().find(|vendor| {
+                        vendor.station == station_def.id && vendor.service == service.id
+                    });
+                    let runtime_vendor = vendor.map(|vendor| {
+                        runtime_vendor_from_def(
+                            content_registry,
+                            vendor,
+                            world_seed,
+                            world_elapsed_days,
+                        )
+                    });
+                    let trade = runtime_vendor
+                        .as_ref()
+                        .map(|(_, trade)| trade.clone())
+                        .unwrap_or_else(|| {
+                            service
+                                .trade
+                                .iter()
+                                .filter_map(|offer| {
+                                    registry_item(content_registry, &offer.item).map(|item| {
+                                        TradeOffer {
+                                            item,
+                                            buy_price: offer.buy_price,
+                                            sell_price: offer.sell_price,
+                                            stock: offer.stock,
+                                            max_stock: offer.stock,
+                                            restock_days: offer.restock_days,
+                                            next_restock_day: offer
+                                                .stock
+                                                .zip(offer.restock_days)
+                                                .map(|(_, days)| days),
+                                            catalog_rotation: None,
+                                            unavailable: offer.unavailable,
+                                        }
+                                    })
+                                })
+                                .collect()
+                        });
+                    StationService {
+                        id: service.id.clone(),
+                        name: service.name.clone(),
+                        kind: service.kind.clone(),
+                        description: service.description.clone(),
+                        vendor: runtime_vendor.map(|(vendor, _)| vendor),
+                        trade,
+                        research: service
+                            .research
+                            .iter()
+                            .map(|lead| ResearchLead {
+                                research: lead.research.clone(),
+                                unavailable: lead.unavailable,
                             })
-                        })
-                        .collect(),
-                    research: service
-                        .research
-                        .iter()
-                        .map(|lead| ResearchLead {
-                            research: lead.research.clone(),
-                            unavailable: lead.unavailable,
-                        })
-                        .collect(),
-                    recipe_unlocks: service
-                        .recipe_unlocks
-                        .iter()
-                        .map(|unlock| RecipeUnlockOffer {
-                            recipe: unlock.recipe.clone(),
-                            price: unlock.price,
-                            unavailable: unlock.unavailable,
-                        })
-                        .collect(),
+                            .collect(),
+                        recipe_unlocks: service
+                            .recipe_unlocks
+                            .iter()
+                            .map(|unlock| RecipeUnlockOffer {
+                                recipe: unlock.recipe.clone(),
+                                price: unlock.price,
+                                unavailable: unlock.unavailable,
+                            })
+                            .collect(),
+                    }
                 })
                 .collect(),
         });
     }
     stations
+}
+
+fn runtime_vendor_from_def(
+    content_registry: &content::ContentRegistry,
+    vendor: &content::VendorDef,
+    world_seed: u64,
+    world_elapsed_days: f32,
+) -> (StationVendor, Vec<TradeOffer>) {
+    let offers = vendor
+        .offers
+        .iter()
+        .filter_map(|offer| {
+            registry_item(content_registry, &offer.item).map(|item| VendorOffer {
+                item,
+                buy_price: offer.buy_price,
+                sell_price: offer.sell_price,
+                min_stock: offer.min_stock,
+                max_stock: offer.max_stock,
+                weight: offer.weight,
+            })
+        })
+        .collect::<Vec<_>>();
+    let rotation = vendor_rotation(vendor.rotation_days, world_elapsed_days);
+    let runtime = StationVendor {
+        id: vendor.id.clone(),
+        name: vendor.name.clone(),
+        faction: vendor.faction.clone(),
+        specialties: vendor.specialties.clone(),
+        rotation_days: vendor.rotation_days,
+        slots: vendor.slots,
+        price_variance: vendor.price_variance,
+        offers,
+        rotation,
+    };
+    let trade = vendor_trade_offers(&runtime, world_seed);
+    (runtime, trade)
+}
+
+fn vendor_rotation(rotation_days: f32, world_elapsed_days: f32) -> u64 {
+    (world_elapsed_days.max(0.0) / rotation_days.max(0.001)).floor() as u64
+}
+
+fn vendor_trade_offers(vendor: &StationVendor, world_seed: u64) -> Vec<TradeOffer> {
+    let mut ranked = vendor
+        .offers
+        .iter()
+        .enumerate()
+        .map(|(index, offer)| {
+            let seed = hash_seeded_id(
+                world_seed ^ vendor.rotation.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+                &format!("{}:{index}", vendor.id),
+            );
+            let random = seeded_unit(seed).max(0.0001);
+            (random.powf(1.0 / offer.weight.max(0.001)), index)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.0.total_cmp(&left.0));
+    let rotation_end = (vendor.rotation + 1) as f32 * vendor.rotation_days;
+    ranked
+        .into_iter()
+        .take(vendor.slots.min(vendor.offers.len()))
+        .map(|(_, index)| {
+            let offer = &vendor.offers[index];
+            let price_seed = hash_seeded_id(
+                world_seed ^ vendor.rotation.wrapping_mul(0x5177_5eed_cafe_babe),
+                &format!("{}:price:{index}", vendor.id),
+            );
+            let variance = (seeded_unit(price_seed) * 2.0 - 1.0) * vendor.price_variance;
+            let buy_price = varied_price(offer.buy_price, variance);
+            let sell_price = varied_price(
+                offer.sell_price,
+                (seeded_unit(price_seed ^ 0xa5a5_a5a5_a5a5_a5a5) * 2.0 - 1.0)
+                    * vendor.price_variance,
+            );
+            let stock_seed = hash_seeded_id(price_seed, "stock");
+            let stock_range = offer.max_stock.saturating_sub(offer.min_stock) as u64 + 1;
+            let stock = offer.min_stock + (stock_seed % stock_range) as u32;
+            TradeOffer {
+                item: offer.item.clone(),
+                buy_price,
+                sell_price,
+                stock: Some(stock),
+                max_stock: Some(offer.max_stock),
+                restock_days: Some(vendor.rotation_days),
+                next_restock_day: Some(rotation_end),
+                catalog_rotation: Some(vendor.rotation),
+                unavailable: false,
+            }
+        })
+        .collect()
+}
+
+fn varied_price(base: u32, variance: f32) -> u32 {
+    ((base as f32 * (1.0 + variance)).round() as u32).max(1)
 }
 
 fn save_market_offers(stations: &[StationDestination]) -> Vec<SaveMarketOffer> {
@@ -1693,6 +1845,7 @@ fn save_market_offers(stations: &[StationDestination]) -> Vec<SaveMarketOffer> {
                         next_restock_day: offer
                             .next_restock_day
                             .filter(|day| day.is_finite() && *day >= 0.0),
+                        catalog_rotation: offer.catalog_rotation,
                     })
                 })
             })
@@ -1725,6 +1878,9 @@ fn apply_market_save(
             continue;
         };
 
+        if offer.catalog_rotation != saved.catalog_rotation {
+            continue;
+        }
         if let Some(max_stock) = offer.max_stock {
             offer.stock = saved.stock.map(|stock| stock.min(max_stock));
         } else {
@@ -3934,6 +4090,14 @@ fn update_station_restock(game: &mut GameState) {
     let mut changed = false;
     for station in &mut game.stations {
         for service in &mut station.services {
+            if let Some(vendor) = service.vendor.as_mut() {
+                let rotation = vendor_rotation(vendor.rotation_days, current_day);
+                if rotation != vendor.rotation {
+                    vendor.rotation = rotation;
+                    service.trade = vendor_trade_offers(vendor, game.world_seed);
+                    changed = true;
+                }
+            }
             for offer in &mut service.trade {
                 let (Some(stock), Some(max_stock), Some(restock_days), Some(next_restock_day)) = (
                     offer.stock.as_mut(),
@@ -16130,8 +16294,20 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
                 Color::from_rgba(205, 226, 230, 255)
             },
         );
+        let service_context = service
+            .vendor
+            .as_ref()
+            .map(|vendor| {
+                let specialties = vendor.specialties.join(", ");
+                if specialties.is_empty() {
+                    vendor.name.clone()
+                } else {
+                    format!("{} · {}", vendor.name, specialties)
+                }
+            })
+            .unwrap_or_else(|| service.kind.clone());
         draw_text(
-            &fit_debug_text(&service.kind, row.w - 14.0, 13),
+            &fit_debug_text(&service_context, row.w - 14.0, 13),
             row.x + 7.0,
             row.y + 31.0,
             13.0,
@@ -16149,8 +16325,20 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
         } else {
             "Approach to trade"
         };
+        let service_title = service
+            .vendor
+            .as_ref()
+            .map(|vendor| {
+                let faction = vendor
+                    .faction
+                    .as_deref()
+                    .map(|faction| format!(" · {}", faction))
+                    .unwrap_or_default();
+                format!("{}{} / {} / {}", vendor.name, faction, service.name, status)
+            })
+            .unwrap_or_else(|| format!("{} / {}", service.name, status));
         draw_text(
-            &fit_debug_text(&format!("{} / {}", service.name, status), detail.w, 16),
+            &fit_debug_text(&service_title, detail.w, 16),
             detail.x,
             detail.y + 48.0,
             16.0,
@@ -20069,6 +20257,7 @@ mod tests {
             max_stock: Some(2),
             restock_days: Some(3.0),
             next_restock_day: Some(3.0),
+            catalog_rotation: None,
             unavailable: false,
         }];
         game.ship.position = vec2(120.0, 0.0);
@@ -20094,6 +20283,41 @@ mod tests {
     }
 
     #[test]
+    fn vendor_catalogs_are_deterministic_and_rotate_by_world_day() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let vendor = registry
+            .vendors
+            .get("core:frontier_exchange_juno")
+            .expect("core vendor should load");
+        let (_, first) = runtime_vendor_from_def(&registry, vendor, 42, 0.0);
+        let (_, repeated) = runtime_vendor_from_def(&registry, vendor, 42, 0.0);
+        assert_eq!(first.len(), 4);
+        assert_eq!(
+            first
+                .iter()
+                .map(|offer| (&offer.item.id, offer.buy_price, offer.stock))
+                .collect::<Vec<_>>(),
+            repeated
+                .iter()
+                .map(|offer| (&offer.item.id, offer.buy_price, offer.stock))
+                .collect::<Vec<_>>()
+        );
+
+        let (rotated_vendor, rotated) = runtime_vendor_from_def(&registry, vendor, 42, 5.0);
+        assert_eq!(rotated_vendor.rotation, 1);
+        assert!(rotated
+            .iter()
+            .all(|offer| offer.catalog_rotation == Some(1)));
+        assert!(first
+            .iter()
+            .zip(rotated.iter())
+            .any(|(before, after)| before.buy_price != after.buy_price
+                || before.stock != after.stock
+                || before.item.id != after.item.id));
+    }
+
+    #[test]
     fn station_market_restock_refills_after_world_time_advances() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -20112,6 +20336,7 @@ mod tests {
             max_stock: Some(4),
             restock_days: Some(1.0),
             next_restock_day: Some(1.0),
+            catalog_rotation: None,
             unavailable: false,
         }];
 
@@ -20142,6 +20367,7 @@ mod tests {
             max_stock: Some(4),
             restock_days: Some(3.0),
             next_restock_day: Some(7.5),
+            catalog_rotation: None,
             unavailable: false,
         }];
 
@@ -20167,6 +20393,7 @@ mod tests {
             max_stock: Some(4),
             restock_days: Some(3.0),
             next_restock_day: Some(3.0),
+            catalog_rotation: None,
             unavailable: false,
         }];
         restored.apply_save(restored_save);
@@ -20530,6 +20757,7 @@ mod tests {
             max_stock: Some(2),
             restock_days: Some(3.0),
             next_restock_day: Some(3.0),
+            catalog_rotation: None,
             unavailable: false,
         };
 
@@ -20718,6 +20946,7 @@ mod tests {
             max_stock: Some(4),
             restock_days: Some(5.0),
             next_restock_day: Some(5.0),
+            catalog_rotation: None,
             unavailable: false,
         }];
 
@@ -21501,6 +21730,7 @@ mod tests {
                     name: "Test Market".to_string(),
                     kind: "shop".to_string(),
                     description: Some("A test shop service.".to_string()),
+                    vendor: None,
                     trade: Vec::new(),
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
@@ -21510,6 +21740,7 @@ mod tests {
                     name: "Test Garage".to_string(),
                     kind: "garage".to_string(),
                     description: Some("A test garage service.".to_string()),
+                    vendor: None,
                     trade: Vec::new(),
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),

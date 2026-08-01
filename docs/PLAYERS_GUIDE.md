@@ -209,6 +209,11 @@ time until its next restock. Selling cargo back to a station restores stock up
 to that offer's configured capacity. Research leads point to progression-tree
 nodes that can expose additional production recipes after completion.
 
+Some shops have named vendors. Their specialties appear below the service name,
+and their available catalog, prices, and stock can change when the vendor's
+rotation period advances. Catalogs are deterministic for a save's world seed,
+so loading the same save preserves the same rotation until the next period.
+
 Core stations have distinct practical roles:
 
 - Frontier Exchange: broad starter commerce and common early cargo.

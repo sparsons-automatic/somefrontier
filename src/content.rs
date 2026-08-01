@@ -49,6 +49,8 @@ pub struct ContentRegistry {
     pub planet_order: Vec<String>,
     pub stations: HashMap<String, StationDef>,
     pub station_order: Vec<String>,
+    pub vendors: HashMap<String, VendorDef>,
+    pub vendor_order: Vec<String>,
     pub upgrades: HashMap<String, UpgradeDef>,
     pub upgrade_order: Vec<String>,
     pub starter_inventory: Vec<StackDef>,
@@ -429,6 +431,30 @@ pub struct StationServiceDef {
     pub trade: Vec<TradeStockDef>,
     pub research: Vec<ResearchLeadDef>,
     pub recipe_unlocks: Vec<RecipeUnlockDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VendorDef {
+    pub id: String,
+    pub name: String,
+    pub station: String,
+    pub service: String,
+    pub faction: Option<String>,
+    pub specialties: Vec<String>,
+    pub rotation_days: f32,
+    pub slots: usize,
+    pub price_variance: f32,
+    pub offers: Vec<VendorOfferDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VendorOfferDef {
+    pub item: String,
+    pub buy_price: u32,
+    pub sell_price: u32,
+    pub min_stock: u32,
+    pub max_stock: u32,
+    pub weight: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -850,6 +876,40 @@ struct PlanetsFile {
 struct StationsFile {
     #[serde(default)]
     stations: Vec<StationFileDef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VendorsFile {
+    #[serde(default)]
+    vendors: Vec<VendorFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VendorFileDef {
+    id: String,
+    name: String,
+    station: String,
+    service: String,
+    faction: Option<String>,
+    #[serde(default)]
+    specialties: Vec<String>,
+    rotation_days: f32,
+    slots: usize,
+    #[serde(default)]
+    price_variance: f32,
+    #[serde(default)]
+    offers: Vec<VendorOfferFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VendorOfferFileDef {
+    item: String,
+    buy_price: u32,
+    sell_price: u32,
+    min_stock: u32,
+    max_stock: u32,
+    #[serde(default = "default_vendor_offer_weight")]
+    weight: f32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2085,6 +2145,82 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         }
     }
 
+    let vendors = read_optional_toml::<VendorsFile>(&raw_pack.path.join("vendors.toml"), errors);
+    for vendor in vendors.vendors {
+        let id = namespaced_id(&pack_id, &vendor.id);
+        validate_local_content_id(&id, "vendor", errors);
+        if vendor.name.trim().is_empty() {
+            errors.push(format!("Vendor `{id}` has an empty name"));
+        }
+        if vendor.rotation_days <= 0.0 || !vendor.rotation_days.is_finite() {
+            errors.push(format!("Vendor `{id}` has non-positive rotation days"));
+        }
+        if vendor.slots == 0 {
+            errors.push(format!(
+                "Vendor `{id}` must define at least one catalog slot"
+            ));
+        }
+        if !(0.0..=1.0).contains(&vendor.price_variance) || !vendor.price_variance.is_finite() {
+            errors.push(format!(
+                "Vendor `{id}` price variance must be between 0.0 and 1.0"
+            ));
+        }
+        let offers = vendor
+            .offers
+            .into_iter()
+            .map(|offer| {
+                if offer.buy_price == 0 || offer.sell_price == 0 {
+                    errors.push(format!(
+                        "Vendor `{id}` offer `{}` must have positive prices",
+                        offer.item
+                    ));
+                }
+                if offer.min_stock > offer.max_stock {
+                    errors.push(format!(
+                        "Vendor `{id}` offer `{}` has min_stock above max_stock",
+                        offer.item
+                    ));
+                }
+                if offer.weight <= 0.0 || !offer.weight.is_finite() {
+                    errors.push(format!(
+                        "Vendor `{id}` offer `{}` has non-positive weight",
+                        offer.item
+                    ));
+                }
+                VendorOfferDef {
+                    item: namespaced_id(&pack_id, &offer.item),
+                    buy_price: offer.buy_price,
+                    sell_price: offer.sell_price,
+                    min_stock: offer.min_stock,
+                    max_stock: offer.max_stock,
+                    weight: offer.weight,
+                }
+            })
+            .collect();
+        let inserted = registry.vendors.insert(
+            id.clone(),
+            VendorDef {
+                id: id.clone(),
+                name: vendor.name,
+                station: namespaced_id(&pack_id, &vendor.station),
+                service: namespaced_id(&pack_id, &vendor.service),
+                faction: vendor
+                    .faction
+                    .map(|faction| namespaced_id(&pack_id, &faction)),
+                specialties: vendor.specialties,
+                rotation_days: vendor.rotation_days,
+                slots: vendor.slots,
+                price_variance: vendor.price_variance,
+                offers,
+            },
+        );
+        if inserted.is_none() {
+            registry.vendor_order.push(id);
+        } else {
+            errors.push(format!("Duplicate vendor id `{id}`"));
+        }
+    }
+
     let upgrades = read_optional_toml::<UpgradesFile>(&raw_pack.path.join("upgrades.toml"), errors);
     for upgrade in upgrades.upgrades {
         let id = namespaced_id(&pack_id, &upgrade.id);
@@ -2647,6 +2783,55 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         }
     }
 
+    for vendor in registry.vendors.values() {
+        validate_reference(
+            registry.stations.contains_key(&vendor.station),
+            "Vendor",
+            &vendor.id,
+            "station",
+            &vendor.station,
+            errors,
+        );
+        let service_exists = registry
+            .stations
+            .get(&vendor.station)
+            .is_some_and(|station| {
+                station.services.iter().any(|service| {
+                    format!("{}:{}", vendor.station, service.id)
+                        .ends_with(&format!(":{}", vendor.service))
+                        || service.id == vendor.service
+                })
+            });
+        validate_reference(
+            service_exists,
+            "Vendor",
+            &vendor.id,
+            "service",
+            &vendor.service,
+            errors,
+        );
+        if let Some(faction) = &vendor.faction {
+            validate_reference(
+                registry.factions.contains_key(faction),
+                "Vendor",
+                &vendor.id,
+                "faction",
+                faction,
+                errors,
+            );
+        }
+        for offer in &vendor.offers {
+            validate_reference(
+                registry.items.contains_key(&offer.item),
+                "Vendor",
+                &vendor.id,
+                "offer item",
+                &offer.item,
+                errors,
+            );
+        }
+    }
+
     for group in registry.galaxy_groups.values() {
         if let Some(universe) = &group.universe {
             validate_reference(
@@ -3200,6 +3385,10 @@ fn default_one() -> u32 {
     1
 }
 
+fn default_vendor_offer_weight() -> f32 {
+    1.0
+}
+
 fn default_station_radius() -> f32 {
     54.0
 }
@@ -3533,6 +3722,17 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(core_destination_stations.len(), 6);
+        assert_eq!(registry.vendor_order.len(), 4);
+        assert!(registry
+            .vendors
+            .get("core:frontier_exchange_juno")
+            .is_some_and(|vendor| {
+                vendor.station == "core:frontier_exchange"
+                    && vendor.service == "core:market"
+                    && vendor.rotation_days == 5.0
+                    && vendor.slots == 4
+                    && vendor.offers.len() == 5
+            }));
         assert!(registry
             .stations
             .get("core:frontier_exchange")

@@ -34,6 +34,7 @@ Core pack responsibilities:
 - Default starting inventory.
 - Default station list.
 - Default station destinations, service groups, vendor stock, and research leads.
+- Default named vendors and rotating vendor catalogs.
 - Default research progression definitions.
 - Default upgrade cost definitions.
 - Default scan requirements, such as the starter survey drone.
@@ -83,6 +84,7 @@ content/packs/core/
   systems.toml
   planets.toml
   stations.toml
+  vendors.toml
   upgrades.toml
   starter.toml
   assets/
@@ -106,6 +108,7 @@ content/packs/icy-frontier/
   systems.toml
   planets.toml
   stations.toml
+  vendors.toml
   upgrades.toml
   starter.toml
   assets/
@@ -531,6 +534,52 @@ Rules:
   unlocks as known but not currently usable.
 - Defining a station does not automatically create new UI or behavior. The base
   game must support the station or service mechanic.
+
+## `vendors.toml`
+
+Vendors provide named, data-driven catalogs for station services. A vendor is
+attached to one station and one service, then selects a weighted subset of its
+offers for each deterministic world-seed rotation.
+
+```toml
+[[vendors]]
+id = "frontier_exchange_juno"
+name = "Juno Vale"
+station = "frontier_exchange"
+service = "market"
+faction = "cinder_cooperative"
+specialties = ["starter ore", "survey supplies"]
+rotation_days = 5.0
+slots = 4
+price_variance = 0.10
+
+[[vendors.offers]]
+item = "iron_ore"
+buy_price = 18
+sell_price = 7
+min_stock = 45
+max_stock = 90
+weight = 5.0
+```
+
+Rules:
+
+- `id` resolves to a namespaced vendor ID and must be unique.
+- `station` and `service` must reference an existing station service.
+- `name` must not be empty.
+- `faction` is optional and must reference a loaded faction when present.
+- `specialties` is player-facing descriptive metadata.
+- `rotation_days` and `slots` must be positive.
+- `price_variance` must be between `0.0` and `1.0`.
+- Each offer's `item` must reference an existing item.
+- `buy_price`, `sell_price`, and `weight` must be positive.
+- `min_stock` must not exceed `max_stock`.
+- The runtime chooses up to `slots` weighted offers, varies their prices from
+  the configured base values, and chooses stock between the configured bounds.
+- Catalog selection and pricing use the world seed, vendor ID, and rotation
+  period, so the same save produces stable results.
+- Vendor catalog state uses the same station market save persistence; old saves
+  without vendor state fall back to the catalog generated from saved world time.
 
 ## `power.toml`
 

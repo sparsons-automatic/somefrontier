@@ -126,7 +126,9 @@ stock and the remaining time until the next restock. The game advances one day
 every 120 seconds of play, and finite offers refill to their configured stock
 capacity when their restock interval expires. Selling an item back to a station
 restores one unit of stock up to that capacity. Market stock and restock timing
-are preserved when the game saves and loads.
+are preserved when the game saves and loads. Some station services are managed
+by named vendors whose catalogs rotate by world day; their specialties, current
+catalog, prices, and stock are shown in the station panel.
 
 ## Ship Upgrades
 
