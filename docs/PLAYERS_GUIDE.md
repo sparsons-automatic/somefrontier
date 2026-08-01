@@ -115,10 +115,11 @@ fabrication skill.
 ## Inventory And Cargo
 
 Inventory stores item stacks from mining, production, starter cargo, trading,
-and module swaps. Items have unit mass in kilograms. The inventory table shows
-`Item`, `Qty`, and `Mass` columns for each stack. Total cargo load and capacity
-are shown in the ship detail panel below the ship image; cargo mass is currently
-informational and does not change flight handling.
+and module swaps. Starter cargo includes survey drones and reactor pellets for
+the armed starter ship. Items have unit mass in kilograms. The inventory table
+shows `Item`, `Qty`, and `Mass` columns for each stack. Total cargo load and
+capacity are shown in the ship detail panel below the ship image; cargo mass is
+currently informational and does not change flight handling.
 
 Some crafted items are installable modules. Shield and weapon install items can
 be swapped through ship detail surfaces when a matching slot exists.
@@ -168,9 +169,19 @@ strength, recharge state, and resistance values.
 
 Ships can also mount weapon modules through weapon slots. The current weapon
 type is automatic turret defense. Turrets scan for valid hostile threats in
-range, fire when ready, and spend ship energy. They ignore neutral, owned, and
-environmental threats. There is no manual targeting or fire button in the
-current build.
+range, including hostile NPC ships, fire when ready, and spend ship energy.
+They ignore neutral, owned, and environmental threats. There is no manual
+targeting or fire button in the current build. The Defense rail beside the ship
+pane lists configured turret slots, installed turrets, range, damage, energy
+cost, cooldown state, and available crafted turrets that can be swapped into a
+slot. Ships can support multiple turret slots when their ship content
+configuration declares them.
+NPC ships can also mount active turrets from their content configuration:
+non-hostile patrol ships engage hostile threats, while hostile ships can fire on
+the player when in range. The starter Frontier system includes a Redwake probe
+that begins PvE pressure with automatic turret fire. Destroyed NPC ships are
+removed from local space, and their cargo is automatically moved into your
+inventory when the full cargo stack fits within your cargo rating.
 
 Hostile probes in remote space can create light pressure when they get close,
 draining shields and causing limited hull spillover if shields are down. The HUD
