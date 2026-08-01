@@ -663,7 +663,9 @@ struct TradeOffer {
     buy_price: u32,
     sell_price: u32,
     stock: Option<u32>,
+    max_stock: Option<u32>,
     restock_days: Option<f32>,
+    next_restock_day: Option<f32>,
     unavailable: bool,
 }
 
@@ -762,6 +764,8 @@ struct SaveData {
     #[serde(default)]
     weapon_slots: Vec<String>,
     #[serde(default)]
+    market_offers: Vec<SaveMarketOffer>,
+    #[serde(default)]
     system_destinations: Vec<SaveSystemDestination>,
     #[serde(default)]
     content_pack_options: Vec<PackOptionSelection>,
@@ -806,6 +810,16 @@ struct SaveResource {
 struct SaveStack {
     item: String,
     count: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveMarketOffer {
+    station: String,
+    service: String,
+    item: String,
+    stock: Option<u32>,
+    #[serde(default)]
+    next_restock_day: Option<f32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1221,6 +1235,12 @@ impl GameState {
             equipped_weapons_from_ids(&self.content_registry, &save.weapon_slots)
         };
 
+        apply_market_save(
+            &mut self.stations,
+            &save.market_offers,
+            self.world_elapsed_days,
+        );
+
         self.inventory = Inventory::from_save(&self.content_registry, &save.inventory);
         apply_upgrade_save(&mut self.ship_upgrades, &save.upgrades);
         self.rebuild_ship_from_upgrades();
@@ -1344,6 +1364,7 @@ impl GameState {
                 .iter()
                 .map(|weapon| weapon.id.clone())
                 .collect(),
+            market_offers: save_market_offers(&self.stations),
             system_destinations: save_system_destinations(self),
             content_pack_options: self.content_pack_options.clone(),
             completed_research: self.completed_research.clone(),
@@ -1624,7 +1645,12 @@ async fn make_station_destinations(
                                 buy_price: offer.buy_price,
                                 sell_price: offer.sell_price,
                                 stock: offer.stock,
+                                max_stock: offer.stock,
                                 restock_days: offer.restock_days,
+                                next_restock_day: offer
+                                    .stock
+                                    .zip(offer.restock_days)
+                                    .map(|(_, days)| days),
                                 unavailable: offer.unavailable,
                             })
                         })
@@ -1651,6 +1677,69 @@ async fn make_station_destinations(
         });
     }
     stations
+}
+
+fn save_market_offers(stations: &[StationDestination]) -> Vec<SaveMarketOffer> {
+    stations
+        .iter()
+        .flat_map(|station| {
+            station.services.iter().flat_map(move |service| {
+                service.trade.iter().filter_map(move |offer| {
+                    offer.restock_days.map(|_| SaveMarketOffer {
+                        station: station.id.clone(),
+                        service: service.id.clone(),
+                        item: offer.item.id.clone(),
+                        stock: offer.stock,
+                        next_restock_day: offer
+                            .next_restock_day
+                            .filter(|day| day.is_finite() && *day >= 0.0),
+                    })
+                })
+            })
+        })
+        .collect()
+}
+
+fn apply_market_save(
+    stations: &mut [StationDestination],
+    saved_offers: &[SaveMarketOffer],
+    world_elapsed_days: f32,
+) {
+    for saved in saved_offers {
+        let Some(offer) = stations
+            .iter_mut()
+            .find(|station| station.id == saved.station)
+            .and_then(|station| {
+                station
+                    .services
+                    .iter_mut()
+                    .find(|service| service.id == saved.service)
+            })
+            .and_then(|service| {
+                service
+                    .trade
+                    .iter_mut()
+                    .find(|offer| offer.item.id == saved.item)
+            })
+        else {
+            continue;
+        };
+
+        if let Some(max_stock) = offer.max_stock {
+            offer.stock = saved.stock.map(|stock| stock.min(max_stock));
+        } else {
+            offer.stock = saved.stock;
+        }
+        offer.next_restock_day = saved
+            .next_restock_day
+            .filter(|day| day.is_finite() && *day >= world_elapsed_days)
+            .or_else(|| {
+                offer
+                    .restock_days
+                    .filter(|days| days.is_finite() && *days > 0.0)
+                    .map(|days| world_elapsed_days + days)
+            });
+    }
 }
 
 async fn make_npc_ships(
@@ -3831,8 +3920,47 @@ fn runtime_planet_position_at(
 }
 
 fn advance_world_time_and_planets(game: &mut GameState, dt: f32) {
+    let previous_days = game.world_elapsed_days;
     game.world_elapsed_days = (game.world_elapsed_days + dt / GAME_DAY_SECONDS).max(0.0);
     update_planet_runtime_positions(&mut game.planets, game.world_elapsed_days);
+    if game.world_elapsed_days > previous_days {
+        game.save_dirty = true;
+    }
+    update_station_restock(game);
+}
+
+fn update_station_restock(game: &mut GameState) {
+    let current_day = game.world_elapsed_days;
+    let mut changed = false;
+    for station in &mut game.stations {
+        for service in &mut station.services {
+            for offer in &mut service.trade {
+                let (Some(stock), Some(max_stock), Some(restock_days), Some(next_restock_day)) = (
+                    offer.stock.as_mut(),
+                    offer.max_stock,
+                    offer.restock_days,
+                    offer.next_restock_day,
+                ) else {
+                    continue;
+                };
+                if !restock_days.is_finite()
+                    || restock_days <= 0.0
+                    || !next_restock_day.is_finite()
+                    || current_day < next_restock_day
+                {
+                    continue;
+                }
+
+                *stock = max_stock;
+                let intervals = ((current_day - next_restock_day) / restock_days).floor() + 1.0;
+                offer.next_restock_day = Some(next_restock_day + intervals * restock_days);
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        game.save_dirty = true;
+    }
 }
 
 fn orbit_position(orbit: OrbitMotion, elapsed_days: f32) -> Vec2 {
@@ -7147,6 +7275,7 @@ struct PlanetActionRailRender<'a> {
 struct StationActionRailRender<'a> {
     content_registry: &'a content::ContentRegistry,
     station: &'a StationDestination,
+    world_elapsed_days: f32,
     selected_service: Option<usize>,
     in_range: bool,
     credits: u32,
@@ -7158,6 +7287,7 @@ struct StationActionRailRender<'a> {
 struct StationTradeTableRender<'a> {
     station: &'a StationDestination,
     service: &'a StationService,
+    world_elapsed_days: f32,
     in_range: bool,
     credits: u32,
     inventory: &'a Inventory,
@@ -8425,6 +8555,9 @@ fn sell_station_trade_offer(
     game.credits = game.credits.saturating_add(sell_price);
     if let Some(stock) = offer.stock.as_mut() {
         *stock = stock.saturating_add(1);
+        if let Some(max_stock) = offer.max_stock {
+            *stock = (*stock).min(max_stock);
+        }
     }
 
     game.save_dirty = true;
@@ -13002,6 +13135,7 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
             draw_station_service_list(StationActionRailRender {
                 content_registry: &game.content_registry,
                 station,
+                world_elapsed_days: game.world_elapsed_days,
                 selected_service: game.selected_station_service,
                 in_range: station_in_interaction_range(&game.ship, station),
                 credits: game.credits,
@@ -15900,6 +16034,7 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
     let StationActionRailRender {
         content_registry,
         station,
+        world_elapsed_days,
         selected_service,
         in_range,
         credits,
@@ -16024,6 +16159,7 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
         draw_station_trade_table(StationTradeTableRender {
             station,
             service,
+            world_elapsed_days,
             in_range,
             credits,
             inventory,
@@ -16062,6 +16198,7 @@ fn draw_station_trade_table(render: StationTradeTableRender<'_>) {
     let StationTradeTableRender {
         station,
         service,
+        world_elapsed_days,
         in_range,
         credits,
         inventory,
@@ -16149,8 +16286,8 @@ fn draw_station_trade_table(render: StationTradeTableRender<'_>) {
             Color::from_rgba(205, 226, 230, 255),
         );
         let detail = format!(
-            "Station {}  Cargo {}  Buy {} / Sell {}",
-            format_trade_stock(offer),
+            "{}  Cargo {}  Buy {} / Sell {}",
+            format_trade_stock(offer, world_elapsed_days),
             cargo_count,
             offer.buy_price,
             offer.sell_price
@@ -16241,7 +16378,7 @@ fn station_trade_table_y(station: &StationDestination, action_rail_width: f32) -
     layout.detail.y + 70.0
 }
 
-fn format_trade_stock(offer: &TradeOffer) -> String {
+fn format_trade_stock(offer: &TradeOffer, world_elapsed_days: f32) -> String {
     if offer.unavailable {
         return "unavail".to_string();
     }
@@ -16249,8 +16386,9 @@ fn format_trade_stock(offer: &TradeOffer) -> String {
         .stock
         .map(|stock| stock.to_string())
         .unwrap_or_else(|| "open".to_string());
-    if let Some(restock_days) = offer.restock_days {
-        format!("{stock}/{restock_days:.0}d")
+    if let (Some(max_stock), Some(next_restock_day)) = (offer.max_stock, offer.next_restock_day) {
+        let remaining = (next_restock_day - world_elapsed_days).max(0.0);
+        format!("Stock {stock}/{max_stock} · Restock {remaining:.1}d")
     } else {
         stock
     }
@@ -19928,7 +20066,9 @@ mod tests {
             buy_price: 25,
             sell_price: 10,
             stock: Some(2),
+            max_stock: Some(2),
             restock_days: Some(3.0),
+            next_restock_day: Some(3.0),
             unavailable: false,
         }];
         game.ship.position = vec2(120.0, 0.0);
@@ -19951,6 +20091,89 @@ mod tests {
             latest_operation_feedback(&game),
             Some(("Trade", "Sold Iron ore to Test Station for 10 cr"))
         );
+    }
+
+    #[test]
+    fn station_market_restock_refills_after_world_time_advances() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].trade = vec![TradeOffer {
+            item: iron,
+            buy_price: 25,
+            sell_price: 10,
+            stock: Some(0),
+            max_stock: Some(4),
+            restock_days: Some(1.0),
+            next_restock_day: Some(1.0),
+            unavailable: false,
+        }];
+
+        advance_world_time_and_planets(&mut game, GAME_DAY_SECONDS * 1.1);
+
+        let offer = &game.stations[0].services[0].trade[0];
+        assert_eq!(offer.stock, Some(4));
+        assert_eq!(offer.next_restock_day, Some(2.0));
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn station_market_state_round_trips_through_save_data() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].trade = vec![TradeOffer {
+            item: iron,
+            buy_price: 25,
+            sell_price: 10,
+            stock: Some(1),
+            max_stock: Some(4),
+            restock_days: Some(3.0),
+            next_restock_day: Some(7.5),
+            unavailable: false,
+        }];
+
+        let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
+        let restored_save =
+            toml::from_str::<SaveData>(&serialized).expect("save should deserialize");
+        let mut restored = test_game_with_systems(
+            content::load_content_packs(Path::new("content/packs"))
+                .expect("content packs should load and validate"),
+            Vec::new(),
+        );
+        let restored_iron = required_item(&restored.content_registry, "core:iron_ore");
+        restored.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        restored.stations[0].services[0].trade = vec![TradeOffer {
+            item: restored_iron,
+            buy_price: 25,
+            sell_price: 10,
+            stock: Some(4),
+            max_stock: Some(4),
+            restock_days: Some(3.0),
+            next_restock_day: Some(3.0),
+            unavailable: false,
+        }];
+        restored.apply_save(restored_save);
+
+        let offer = &restored.stations[0].services[0].trade[0];
+        assert_eq!(offer.stock, Some(1));
+        assert_eq!(offer.next_restock_day, Some(7.5));
     }
 
     #[test]
@@ -20304,7 +20527,9 @@ mod tests {
             buy_price: 25,
             sell_price: 10,
             stock: Some(2),
+            max_stock: Some(2),
             restock_days: Some(3.0),
+            next_restock_day: Some(3.0),
             unavailable: false,
         };
 
@@ -20490,7 +20715,9 @@ mod tests {
             buy_price: 190,
             sell_price: 64,
             stock: Some(4),
+            max_stock: Some(4),
             restock_days: Some(5.0),
+            next_restock_day: Some(5.0),
             unavailable: false,
         }];
 

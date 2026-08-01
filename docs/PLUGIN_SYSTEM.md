@@ -519,7 +519,10 @@ Rules:
   without adding behavior.
 - Trade `item` values must reference existing items. `buy_price` and
   `sell_price` must be positive. `stock` and `restock_days` are optional, and
-  `restock_days` must be positive when present.
+  `restock_days` must be positive when present. When both are present, `stock`
+  is the station's initial and maximum finite stock; the runtime persists the
+  current stock and replenishes it after each elapsed restock interval. Offers
+  without `stock` remain unlimited and do not restock.
 - Research lead `research` values must reference existing research nodes.
 - Legacy recipe unlock `recipe` values must reference existing recipes, and
   `price` must be positive. Prefer research leads for new content so the
