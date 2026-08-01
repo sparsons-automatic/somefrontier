@@ -41,7 +41,7 @@ For the full current gameplay reference, see
 - `A` / `D` or left / right arrows: turn the ship
 - `Tab` or `E`: toggle inventory and crafting
 - `M`: toggle map view
-- `K`: toggle skills view
+- `K`: toggle research
 - `C`: toggle content browser
 - Mouse wheel in flight view: zoom camera in/out
 - `PageUp` / `PageDown`: zoom camera in/out
@@ -59,9 +59,9 @@ The game remembers the last window size after resizing. Window size is saved to
 
 Game progress autosaves to `$XDG_CONFIG_HOME/some-frontier/save.toml`, or
 `~/.config/some-frontier/save.toml` when `XDG_CONFIG_HOME` is not set. The save
-stores the world seed, ship state, inventory, skills, upgrades, active
-destination, equipped shield and weapon slots, production settings, scanned
-planets, and mining quotas.
+stores the world seed, ship state, inventory, completed and active research,
+upgrades, active destination, equipped shield and weapon slots, production
+settings, scanned planets, and mining quotas.
 
 New games generate a world seed that lightly rotates and offsets content-defined
 planet positions. Loading a save reuses its seed so the same world layout comes
@@ -97,17 +97,16 @@ mass is currently informational and does not affect flight handling yet.
 The starter ship has an 85 tonne dry mass. Thruster force is scaled around that
 mass so flight feel remains tuned while the displayed mass is more believable.
 
-## Skills
+## Research
 
-Mining, smelting, and crafting actions award XP to their related skills. As a
-skill level rises, low-value actions grant less XP. Open the skills view with
-`K`, then click `+` to spend XP on skill levels. Unaffordable upgrades are
-greyed out.
+Research replaces the old skill-level progression. Open research with `K` to
+inspect a horizontal tiered tree. Click a node to inspect its cost, duration,
+requirements, and rewards, then use the research button to spend credits and
+start it. Only one project can run at a time, and the active project completes
+in the background while you keep flying, mining, trading, or producing.
 
-Skill tiers:
-
-- Levels 1-10: +1% to +10% speed for the related activity.
-- Levels 11-20: +0.05% to +0.50% chance for free extra output.
+Completed research can unlock production recipes and grant passive effects such
+as faster mining, faster smelting, faster fabrication, and bonus output chance.
 
 ## Ship Upgrades
 

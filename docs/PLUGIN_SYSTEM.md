@@ -1,9 +1,9 @@
 # Plugin System
 
 Some Frontier plugins should start as local data packs. A pack can add items,
-recipes, ships, NPC ships, factions, power modules, weapons, shields, planets,
-stations, systems, upgrades, assets, and eventually events without compiling
-new Rust code.
+recipes, research, ships, NPC ships, factions, power modules, weapons, shields,
+planets, stations, systems, upgrades, assets, and eventually events without
+compiling new Rust code.
 
 The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
@@ -19,7 +19,7 @@ Base game responsibilities:
 - Flight physics and camera behavior.
 - Inventory rules and item stack behavior.
 - Mining, smelting, crafting, and future processing execution.
-- Skill XP rules, bonus calculations, and progression math.
+- Research purchase rules, reward application, and progression math.
 - Scan/drone mechanics and reveal behavior.
 - UI layout and interaction patterns.
 - Save/load format and migration rules.
@@ -28,19 +28,20 @@ Base game responsibilities:
 Core pack responsibilities:
 
 - Default items.
-- Default recipes.
+- Default recipes and research nodes.
 - Default ship, NPC ship, faction, power-module, weapon, and shield definitions.
 - Default planets and planet assets.
 - Default starting inventory.
 - Default station list.
-- Default station destinations, service groups, vendor stock, and recipe unlocks.
+- Default station destinations, service groups, vendor stock, and research leads.
+- Default research progression definitions.
 - Default upgrade cost definitions.
 - Default scan requirements, such as the starter survey drone.
 
 Plugin pack responsibilities:
 
-- Add new items, recipes, ships, NPC ships, factions, power modules, weapons,
-  shields, planets, stations, systems, and assets.
+- Add new items, recipes, research nodes, ships, NPC ships, factions, power
+  modules, weapons, shields, planets, stations, systems, and assets.
 - Add compatibility recipes between packs.
 - Add alternate resource branches that use existing mechanics.
 - Add upgrade cost branches for base-game upgrade mechanics.
@@ -77,6 +78,7 @@ content/packs/core/
   npc_ships.toml
   factions.toml
   recipes.toml
+  research.toml
   universe.toml
   systems.toml
   planets.toml
@@ -99,6 +101,7 @@ content/packs/icy-frontier/
   npc_ships.toml
   factions.toml
   recipes.toml
+  research.toml
   universe.toml
   systems.toml
   planets.toml
@@ -142,12 +145,15 @@ content/packs/remote-duskfall/
   systems.toml
   items.toml
   recipes.toml
+  research.toml
+  npc_ships.toml
   planets.toml
 ```
 
 On startup, the loader discovers `remote-duskfall`, loads it after `core`
 because `pack.toml` declares `depends_on = ["core"]`, validates all references,
-and makes `remote-duskfall:duskfall_reach` available as a remote system.
+loads plugin research such as `remote-duskfall:duskfall_vanadium_frames`, and
+makes `remote-duskfall:duskfall_reach` available as a remote system.
 
 To remove the remote destination pack, move or delete the whole directory:
 
@@ -280,14 +286,12 @@ Rules:
 id = "water_ice"
 name = "Water ice"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 10.0
 
 [[items]]
 id = "hydrogen_fuel"
 name = "Hydrogen fuel"
 tier = "fuel"
-xp_value = 2.5
 unit_mass = 4.0
 ```
 
@@ -378,6 +382,74 @@ Rules:
 - `allow_duplicate_output = true` suppresses duplicate-output warnings only when
   every recipe for that station/output pair opts in.
 
+## `research.toml`
+
+Research nodes define the progression tree that spends credits on knowledge,
+recipe access, visibility, and passive production effects. Runtime purchase UI,
+serial research timing, and reward application are base-game behavior, but packs
+can contribute nodes to the loaded research registry.
+
+```toml
+[[research]]
+id = "frontier_survey_methods"
+name = "Frontier Survey Methods"
+tier = 0
+column = 0
+row = 0
+price = 450
+duration_seconds = 5.0
+requires = []
+revealed_by = []
+summary = "Basic archive methods for turning scan records into useful frontier knowledge."
+
+[[research.rewards]]
+kind = "mining_speed_percent"
+amount = 5.0
+
+[[research]]
+id = "advanced_scanner_core"
+name = "Advanced Scanner Core"
+tier = 1
+column = 1
+row = 0
+price = 850
+duration_seconds = 15.0
+requires = ["frontier_survey_methods"]
+revealed_by = ["frontier_survey_methods"]
+summary = "Unlocks the advanced scanner core recipe."
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "advanced_scanner_core"
+```
+
+Rules:
+
+- `id`, `requires`, `revealed_by`, and reward `target` values resolve to
+  namespaced IDs.
+- `name` must not be empty.
+- `tier` is a non-negative progression tier used for grouping, labels, and
+  author intent.
+- `column` and `row` place the node in a horizontal tree layout. Keep `column`
+  aligned with `tier` for ordinary tiered progression so the research screen's
+  vertical bands and labels stay clear; rows can branch related choices
+  vertically.
+- `price` must be positive and is paid in credits.
+- `duration_seconds` must be positive and controls how long the research takes
+  after purchase. Research runs asynchronously during flight, but only one node
+  can be active at a time.
+- `requires` gates purchase until the referenced research nodes are complete.
+- `revealed_by` gates visibility until the referenced research nodes are
+  complete. Leave it empty for starting-visible research.
+- Every node must define at least one reward.
+- `recipe_unlock` rewards require a `target` that references an existing recipe.
+- `item_visibility` rewards require a `target` that references an existing item.
+- `station_visibility` rewards require a `target` that references an existing
+  station.
+- `mining_speed_percent`, `smelting_speed_percent`,
+  `fabrication_speed_percent`, and `bonus_output_chance` rewards require a
+  positive `amount`.
+
 ## `stations.toml`
 
 Stations define both world content categories used by recipes and physical
@@ -388,7 +460,6 @@ execution mechanics and UI behavior for each station or service kind.
 [[stations]]
 id = "smelting"
 name = "Smelting"
-skill = "smelting"
 base_seconds = 2.0
 
 [[stations]]
@@ -416,16 +487,14 @@ sell_price = 7
 stock = 80
 restock_days = 3.0
 
-[[stations.services.recipe_unlocks]]
-recipe = "advanced_scanner_core"
-price = 850
+[[stations.services.research]]
+research = "advanced_scanner_core"
 ```
 
 Rules:
 
 - `id` resolves to a namespaced station ID.
 - `name` is the player-facing label.
-- `skill` is optional and should match a base-game skill hook when present.
 - `base_seconds` is optional and must be positive when present.
 - `system` and `position` must be provided together. A station with both fields
   becomes a local-space destination; a station with neither can still be used as
@@ -444,16 +513,19 @@ Rules:
   station.
 - Service `name` and `kind` must not be empty.
 - Service `kind` is player-facing context unless the base game has specific
-  behavior for it. Supported mechanics currently include trade stock and recipe
-  unlocks; other concise kinds such as `garage`, `cargo`, `navigation`,
-  `signals`, or `contracts` can label future hooks without adding behavior.
+  behavior for it. Supported mechanics currently include trade stock, research
+  leads, and legacy recipe unlock rows; other concise kinds such as `garage`,
+  `cargo`, `navigation`, `signals`, or `contracts` can label future hooks
+  without adding behavior.
 - Trade `item` values must reference existing items. `buy_price` and
   `sell_price` must be positive. `stock` and `restock_days` are optional, and
   `restock_days` must be positive when present.
-- Recipe unlock `recipe` values must reference existing recipes, and `price`
-  must be positive.
-- `unavailable = true` can mark trade stock or recipe unlocks as known but not
-  currently purchasable.
+- Research lead `research` values must reference existing research nodes.
+- Legacy recipe unlock `recipe` values must reference existing recipes, and
+  `price` must be positive. Prefer research leads for new content so the
+  research tree remains the progression purchase surface.
+- `unavailable = true` can mark trade stock, research leads, or legacy recipe
+  unlocks as known but not currently usable.
 - Defining a station does not automatically create new UI or behavior. The base
   game must support the station or service mechanic.
 
@@ -632,6 +704,8 @@ cargo_capacity = 12000.0
 cargo_defaults = [
   { item = "fuel_canister", count = 1 },
 ]
+credit_reward_min = 0
+credit_reward_max = 0
 hull_capacity = 82.0
 shield_capacity = 80.0
 energy_capacity = 90.0
@@ -668,6 +742,9 @@ Rules:
   runtime, destroyed NPC ships use these entries as automatic loot, adding each
   full stack to the player inventory only when it fits within the player's cargo
   rating.
+- `credit_reward_min` and `credit_reward_max` default to 0. Hostile NPC ships
+  award a random credit payout in this inclusive range when destroyed; ships
+  with `credit_reward_max = 0` do not award credits.
 - `shield_slots` and `weapon_slots` default to empty lists and must reference
   loaded shields and weapons when present. NPC `weapon_slots` create live turret
   systems from the same weapon definitions used by player ships.
@@ -1003,17 +1080,18 @@ validation as ordinary pack content.
 11. Load ship definitions.
 12. Load NPC ship definitions.
 13. Load recipe definitions.
-14. Load faction definitions.
-15. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
+14. Load research definitions.
+15. Load faction definitions.
+16. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
     star metadata.
-16. Load planet definitions.
-17. Load station definitions and station services.
-18. Load upgrade cost definitions.
-19. Load starter inventory definitions.
-20. Validate cross-references.
-21. Record duplicate recipe-output warnings.
-22. Build runtime registries.
-23. Start the game only if validation succeeds.
+17. Load planet definitions.
+18. Load station definitions and station services.
+19. Load upgrade cost definitions.
+20. Load starter inventory definitions.
+21. Validate cross-references.
+22. Record duplicate recipe-output warnings.
+23. Build runtime registries.
+24. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -1034,6 +1112,10 @@ Reject startup when:
 - A recipe references a missing item.
 - A recipe references a missing station.
 - A recipe has no ingredients, zero output count, or a zero-count ingredient.
+- A research node has an empty name, zero price, no rewards, missing required or
+  revealing research, or a self-reference.
+- A research reward has an unsupported kind, is missing a required target or
+  amount, or references missing recipe, item, or station content.
 - A power module references a missing install item or fuel item.
 - A power module has an empty name or family, non-positive generation or mass,
   or negative fuel use, heat, or risk.
@@ -1053,7 +1135,8 @@ Reject startup when:
   weapon.
 - An NPC ship has an empty name, archetype, or role; non-positive radius,
   spawn weight, mass, cargo capacity, hull, shield, or energy capacity; zero
-  spawn count; or a zero-count cargo default.
+  spawn count; a zero-count cargo default; or a credit reward minimum greater
+  than its maximum.
 - A system references a missing region, galaxy, universe, or faction.
 - A system primary star is missing or belongs to another system.
 - A star references a missing system.
@@ -1067,8 +1150,8 @@ Reject startup when:
 - A station has an empty name, non-positive base seconds, or non-positive
   radius.
 - A station service has an empty name, empty kind, duplicate ID within a station,
-  invalid trade item, invalid recipe unlock, zero prices, or non-positive
-  restock days.
+  invalid trade item, invalid research lead, invalid legacy recipe unlock, zero
+  prices, or non-positive restock days.
 - An upgrade has no costs, a missing cost item, a zero-count cost, or a
   non-positive `per_levels` interval.
 - Starter inventory references a missing item.
@@ -1090,7 +1173,7 @@ Warnings are acceptable for:
 ## Runtime Registry
 
 The runtime uses registry-backed item IDs for inventory, recipes, mining, and
-UI labels. Item names and XP values come from loaded content definitions.
+UI labels. Item names and unit mass values come from loaded content definitions.
 
 Runtime shape:
 
@@ -1108,7 +1191,6 @@ struct ItemDef {
     id: String,
     name: String,
     tier: String,
-    xp_value: f32,
     unit_mass: f32,
 }
 
@@ -1119,6 +1201,26 @@ struct RecipeDef {
     ingredients: Vec<StackDef>,
     purpose: Option<String>,
     allow_duplicate_output: bool,
+}
+
+struct ResearchDef {
+    id: String,
+    name: String,
+    tier: u32,
+    column: i32,
+    row: i32,
+    price: u32,
+    duration_seconds: f32,
+    requires: Vec<String>,
+    revealed_by: Vec<String>,
+    rewards: Vec<ResearchRewardDef>,
+    summary: Option<String>,
+}
+
+struct ResearchRewardDef {
+    kind: String,
+    target: Option<String>,
+    amount: Option<f32>,
 }
 
 struct ShipDef {
@@ -1155,6 +1257,8 @@ struct NpcShipDef {
     mass: f32,
     cargo_capacity: f32,
     cargo_defaults: Vec<StackDef>,
+    credit_reward_min: u32,
+    credit_reward_max: u32,
     hull_capacity: f32,
     shield_capacity: f32,
     energy_capacity: f32,
@@ -1263,7 +1367,6 @@ struct StarDef {
 struct StationDef {
     id: String,
     name: String,
-    skill: Option<String>,
     base_seconds: Option<f32>,
     system: Option<String>,
     position: Option<[f32; 2]>,
@@ -1280,7 +1383,6 @@ Inventory stores item IDs through runtime item references:
 struct ItemRef {
     id: String,
     name: String,
-    xp_value: f32,
     unit_mass: f32,
 }
 
@@ -1347,21 +1449,18 @@ depends_on = ["core"]
 id = "nickel_ore"
 name = "Nickel ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 13.0
 
 [[items]]
 id = "nickel_plate"
 name = "Nickel plate"
 tier = "refined_material"
-xp_value = 2.5
 unit_mass = 19.0
 
 [[items]]
 id = "structural_alloy"
 name = "Structural alloy"
 tier = "refined_material"
-xp_value = 4.0
 unit_mass = 28.0
 ```
 

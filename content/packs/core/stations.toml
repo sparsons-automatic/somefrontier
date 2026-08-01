@@ -1,19 +1,16 @@
 [[stations]]
 id = "smelting"
 name = "Smelting"
-skill = "smelting"
 base_seconds = 2.0
 
 [[stations]]
 id = "crafting"
 name = "Crafting"
-skill = "fabrication"
 base_seconds = 1.5
 
 [[stations]]
 id = "processing"
 name = "Processing"
-skill = "fabrication"
 base_seconds = 2.0
 
 [[stations]]
@@ -218,21 +215,18 @@ description = "Survey record review, scan-data context, and future discovery tur
 
 [[stations.services]]
 id = "pale_archive_recipes"
-name = "Recipe Archive"
-kind = "recipe_vendor"
-description = "Purchasable scanner, drive, and jump-system recipe unlocks."
+name = "Research Archive"
+kind = "research"
+description = "Scanner, drive, and jump-system research leads for the progression tree."
 
-[[stations.services.recipe_unlocks]]
-recipe = "advanced_scanner_core"
-price = 850
+[[stations.services.research]]
+research = "advanced_scanner_core"
 
-[[stations.services.recipe_unlocks]]
-recipe = "fusion_drive_core"
-price = 1250
+[[stations.services.research]]
+research = "fusion_drive_core"
 
-[[stations.services.recipe_unlocks]]
-recipe = "jump_core"
-price = 1800
+[[stations.services.research]]
+research = "jump_core"
 
 [[stations]]
 id = "freebelt_commissary"

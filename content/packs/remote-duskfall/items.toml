@@ -2,19 +2,16 @@
 id = "vanadium_ore"
 name = "Vanadium ore"
 tier = "raw_resource"
-xp_value = 2.5
 unit_mass = 14.0
 
 [[items]]
 id = "vanadium_plate"
 name = "Vanadium plate"
 tier = "refined_material"
-xp_value = 3.0
 unit_mass = 8.0
 
 [[items]]
 id = "vanadium_frame"
 name = "Vanadium frame"
 tier = "component"
-xp_value = 5.0
 unit_mass = 12.0

@@ -2,390 +2,334 @@
 id = "iron_ore"
 name = "Iron ore"
 tier = "raw_resource"
-xp_value = 1.0
 unit_mass = 12.0
 
 [[items]]
 id = "copper_ore"
 name = "Copper ore"
 tier = "raw_resource"
-xp_value = 1.0
 unit_mass = 12.0
 
 [[items]]
 id = "nickel_ore"
 name = "Nickel ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 13.0
 
 [[items]]
 id = "silicon_ore"
 name = "Silicon ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 9.0
 
 [[items]]
 id = "aluminum_ore"
 name = "Aluminum ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 8.0
 
 [[items]]
 id = "magnesium_ore"
 name = "Magnesium ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 7.0
 
 [[items]]
 id = "lithium_ore"
 name = "Lithium ore"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 5.0
 
 [[items]]
 id = "titanium_ore"
 name = "Titanium ore"
 tier = "raw_resource"
-xp_value = 2.0
 unit_mass = 12.0
 
 [[items]]
 id = "cobalt_ore"
 name = "Cobalt ore"
 tier = "raw_resource"
-xp_value = 2.0
 unit_mass = 13.0
 
 [[items]]
 id = "silver_ore"
 name = "Silver ore"
 tier = "raw_resource"
-xp_value = 2.0
 unit_mass = 16.0
 
 [[items]]
 id = "gold_ore"
 name = "Gold ore"
 tier = "raw_resource"
-xp_value = 2.0
 unit_mass = 20.0
 
 [[items]]
 id = "platinum_group_metals"
 name = "Platinum group metals"
 tier = "raw_resource"
-xp_value = 3.0
 unit_mass = 21.0
 
 [[items]]
 id = "rare_earths"
 name = "Rare earths"
 tier = "raw_resource"
-xp_value = 3.0
 unit_mass = 10.0
 
 [[items]]
 id = "uranium_ore"
 name = "Uranium ore"
 tier = "raw_resource"
-xp_value = 3.0
 unit_mass = 22.0
 
 [[items]]
 id = "thorium_ore"
 name = "Thorium ore"
 tier = "raw_resource"
-xp_value = 3.0
 unit_mass = 18.0
 
 [[items]]
 id = "helium_3"
 name = "Helium-3"
 tier = "raw_resource"
-xp_value = 3.0
 unit_mass = 1.0
 
 [[items]]
 id = "exotic_matter"
 name = "Exotic matter"
 tier = "exotic"
-xp_value = 8.0
 unit_mass = 4.0
 
 [[items]]
 id = "water_ice"
 name = "Water ice"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 10.0
 
 [[items]]
 id = "carbon"
 name = "Carbon"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 6.0
 
 [[items]]
 id = "sulfur"
 name = "Sulfur"
 tier = "raw_resource"
-xp_value = 1.5
 unit_mass = 8.0
 
 [[items]]
 id = "azurite_ore"
 name = "Azurite ore"
 tier = "raw_resource"
-xp_value = 4.0
 unit_mass = 11.0
 
 [[items]]
 id = "vitrine_crystal"
 name = "Vitrine crystal"
 tier = "raw_resource"
-xp_value = 6.0
 unit_mass = 5.0
 
 [[items]]
 id = "eldridium_nodule"
 name = "Eldridium nodule"
 tier = "raw_resource"
-xp_value = 8.0
 unit_mass = 9.0
 
 [[items]]
 id = "iron_plate"
 name = "Iron plate"
 tier = "refined_material"
-xp_value = 2.0
 unit_mass = 18.0
 
 [[items]]
 id = "copper_plate"
 name = "Copper plate"
 tier = "refined_material"
-xp_value = 2.0
 unit_mass = 16.0
 
 [[items]]
 id = "nickel_plate"
 name = "Nickel plate"
 tier = "refined_material"
-xp_value = 2.5
 unit_mass = 19.0
 
 [[items]]
 id = "silicon_wafer"
 name = "Silicon wafer"
 tier = "refined_material"
-xp_value = 2.5
 unit_mass = 3.0
 
 [[items]]
 id = "hydrogen_fuel"
 name = "Hydrogen fuel"
 tier = "fuel"
-xp_value = 2.5
 unit_mass = 4.0
 
 [[items]]
 id = "coolant"
 name = "Coolant"
 tier = "fuel"
-xp_value = 2.5
 unit_mass = 6.0
 
 [[items]]
 id = "fuel_canister"
 name = "Fuel canister"
 tier = "fuel"
-xp_value = 4.0
 unit_mass = 18.0
 
 [[items]]
 id = "structural_alloy"
 name = "Structural alloy"
 tier = "refined_material"
-xp_value = 4.0
 unit_mass = 28.0
 
 [[items]]
 id = "electronics"
 name = "Electronics"
 tier = "component"
-xp_value = 4.0
 unit_mass = 2.0
 
 [[items]]
 id = "aluminum_plate"
 name = "Aluminum plate"
 tier = "refined_material"
-xp_value = 2.5
 unit_mass = 8.0
 
 [[items]]
 id = "lithium_cell"
 name = "Lithium cell"
 tier = "component"
-xp_value = 4.0
 unit_mass = 5.0
 
 [[items]]
 id = "titanium_plate"
 name = "Titanium plate"
 tier = "refined_material"
-xp_value = 5.0
 unit_mass = 14.0
 
 [[items]]
 id = "cobalt_alloy"
 name = "Cobalt alloy"
 tier = "refined_material"
-xp_value = 5.0
 unit_mass = 25.0
 
 [[items]]
 id = "silver_contact"
 name = "Silver contact"
 tier = "component"
-xp_value = 4.5
 unit_mass = 1.0
 
 [[items]]
 id = "gold_conductor"
 name = "Gold conductor"
 tier = "component"
-xp_value = 4.5
 unit_mass = 1.5
 
 [[items]]
 id = "rare_earth_magnet"
 name = "Rare earth magnet"
 tier = "component"
-xp_value = 6.0
 unit_mass = 3.5
 
 [[items]]
 id = "reactor_pellet"
 name = "Reactor pellet"
 tier = "fuel"
-xp_value = 6.0
 unit_mass = 8.0
 
 [[items]]
 id = "helium_3_cell"
 name = "Helium-3 cell"
 tier = "fuel"
-xp_value = 7.0
 unit_mass = 6.0
 
 [[items]]
 id = "exotic_matter_capsule"
 name = "Exotic matter capsule"
 tier = "exotic"
-xp_value = 12.0
 unit_mass = 12.0
 
 [[items]]
 id = "advanced_scanner_core"
 name = "Advanced scanner core"
 tier = "component"
-xp_value = 7.0
 unit_mass = 7.0
 
 [[items]]
 id = "fusion_drive_core"
 name = "Fusion drive core"
 tier = "component"
-xp_value = 10.0
 unit_mass = 45.0
 
 [[items]]
 id = "jump_core"
 name = "Jump core"
 tier = "exotic"
-xp_value = 16.0
 unit_mass = 35.0
 
 [[items]]
 id = "film_solar_sail"
 name = "Film solar sail"
 tier = "power_module"
-xp_value = 6.0
 unit_mass = 850.0
 
 [[items]]
 id = "plasma_torch_cell"
 name = "Plasma torch cell"
 tier = "power_module"
-xp_value = 10.0
 unit_mass = 2100.0
 
 [[items]]
 id = "compact_fission_cell"
 name = "Compact fission cell"
 tier = "power_module"
-xp_value = 9.0
 unit_mass = 3200.0
 
 [[items]]
 id = "copper_wire"
 name = "Copper wire"
 tier = "component"
-xp_value = 2.0
 unit_mass = 1.0
 
 [[items]]
 id = "gear"
 name = "Gear"
 tier = "component"
-xp_value = 4.0
 unit_mass = 6.0
 
 [[items]]
 id = "circuit"
 name = "Circuit"
 tier = "component"
-xp_value = 7.0
 unit_mass = 1.5
 
 [[items]]
 id = "survey_drone"
 name = "Survey drone"
 tier = "utility"
-xp_value = 9.0
 unit_mass = 35.0
 
 [[items]]
 id = "improved_survey_drone"
 name = "Improved survey drone"
 tier = "utility"
-xp_value = 12.0
 unit_mass = 48.0
 
 [[items]]
 id = "point_defense_turret"
 name = "Point defense turret"
 tier = "weapon"
-xp_value = 14.0
 unit_mass = 180.0
 
 [[items]]
 id = "balanced_shield_matrix"
 name = "Balanced shield matrix"
 tier = "shield_module"
-xp_value = 10.0
 unit_mass = 650.0
 
 [[items]]
 id = "hazard_shield_matrix"
 name = "Hazard shield matrix"
 tier = "shield_module"
-xp_value = 14.0
 unit_mass = 720.0
