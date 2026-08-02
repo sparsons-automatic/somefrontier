@@ -218,6 +218,15 @@ the named planet, then return to the archive. The station panel shows contract
 progress, completion, expiry, and rewards. Up to three contracts can be active,
 and active contracts survive save/load.
 
+Faction reputation is separate from station ownership, culture, and default
+disposition. Contract completion increases the reputation of the sponsoring
+faction, and repairing your ship can improve the owning faction's standing.
+Some vendors, services, and contracts require a minimum reputation; a locked
+entry explains the requirement in the station panel. Vendor reputation can also
+change buy and sell prices, so better standing may make a faction's goods more
+favorable. Reputation is saved with the rest of the game and starts from each
+faction's content-defined value.
+
 Some shops have named vendors. Their specialties appear below the service name,
 and their available catalog, prices, and stock can change when the vendor's
 rotation period advances. Catalogs are deterministic for a save's world seed,

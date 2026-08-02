@@ -198,6 +198,7 @@ struct GameState {
     selected_npc_ship: Option<usize>,
     selected_station_service: Option<usize>,
     active_contracts: Vec<ActiveContract>,
+    faction_reputation: HashMap<String, i32>,
     selected_research: Option<String>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
@@ -652,6 +653,7 @@ struct StationService {
     research: Vec<ResearchLead>,
     recipe_unlocks: Vec<RecipeUnlockOffer>,
     contracts: Vec<ContractOffer>,
+    reputation_required: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -668,6 +670,9 @@ struct ContractOffer {
     amount: u32,
     reward: u32,
     duration_days: f32,
+    reputation_faction: Option<String>,
+    reputation_required: i32,
+    reputation_reward: i32,
 }
 
 #[derive(Clone)]
@@ -690,6 +695,8 @@ struct StationVendor {
     price_variance: f32,
     offers: Vec<VendorOffer>,
     rotation: u64,
+    reputation_required: i32,
+    price_reputation_scale: f32,
 }
 
 #[derive(Clone)]
@@ -827,6 +834,8 @@ struct SaveData {
     active_research: Vec<SaveActiveResearch>,
     #[serde(default)]
     active_contracts: Vec<SaveActiveContract>,
+    #[serde(default)]
+    faction_reputation: Vec<SaveFactionReputation>,
     #[serde(default, skip_serializing)]
     purchased_recipe_unlocks: Vec<String>,
     production_mode: String,
@@ -892,6 +901,12 @@ struct SaveActiveContract {
     expires_day: f32,
     #[serde(default)]
     target_reached: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SaveFactionReputation {
+    faction: String,
+    value: i32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1103,6 +1118,12 @@ impl GameState {
             .as_ref()
             .map(|save| finite_nonnegative_or(save.world_elapsed_days, 0.0))
             .unwrap_or(0.0);
+        let startup_faction_reputation = faction_reputation_from_save(
+            &content_registry,
+            save_data
+                .as_ref()
+                .map(|save| save.faction_reputation.as_slice()),
+        );
 
         draw_startup_transition_assets(
             &transition_assets,
@@ -1136,6 +1157,7 @@ impl GameState {
             startup_preferred_transition_id,
             world_seed,
             startup_world_elapsed_days,
+            &startup_faction_reputation,
         )
         .await;
         let npc_ships = make_npc_ships(
@@ -1193,6 +1215,7 @@ impl GameState {
             selected_npc_ship: None,
             selected_station_service: None,
             active_contracts: Vec::new(),
+            faction_reputation: startup_faction_reputation,
             selected_research: None,
             destination_planet: Some(1),
             orbiting_planet: None,
@@ -1255,6 +1278,10 @@ impl GameState {
         self.world_seed = save.world_seed;
         self.world_elapsed_days = finite_nonnegative_or(save.world_elapsed_days, 0.0);
         self.credits = save.credits;
+        self.faction_reputation = faction_reputation_from_save(
+            &self.content_registry,
+            Some(save.faction_reputation.as_slice()),
+        );
         self.completed_research = completed_research_from_save(
             &self.content_registry,
             save.completed_research,
@@ -1475,6 +1502,14 @@ impl GameState {
                     target_reached: active.target_reached,
                 })
                 .collect(),
+            faction_reputation: self
+                .faction_reputation
+                .iter()
+                .map(|(faction, value)| SaveFactionReputation {
+                    faction: faction.clone(),
+                    value: *value,
+                })
+                .collect(),
             purchased_recipe_unlocks: Vec::new(),
             production_mode: self.production_mode.id().to_string(),
             smelt_settings: save_work_settings(
@@ -1692,6 +1727,7 @@ async fn make_station_destinations(
     preferred_transition_id: Option<&str>,
     world_seed: u64,
     world_elapsed_days: f32,
+    faction_reputation: &HashMap<String, i32>,
 ) -> Vec<StationDestination> {
     let mut stations = Vec::new();
     for station_id in &content_registry.station_order {
@@ -1741,6 +1777,7 @@ async fn make_station_destinations(
                             vendor,
                             world_seed,
                             world_elapsed_days,
+                            faction_reputation,
                         )
                     });
                     let trade = runtime_vendor
@@ -1785,6 +1822,8 @@ async fn make_station_destinations(
                                 unavailable: lead.unavailable,
                             })
                             .collect(),
+                        reputation_required: service.reputation_required,
+
                         recipe_unlocks: service
                             .recipe_unlocks
                             .iter()
@@ -1813,6 +1852,11 @@ async fn make_station_destinations(
                                 amount: contract.amount,
                                 reward: contract.reward,
                                 duration_days: contract.duration_days,
+                                reputation_faction: vendor
+                                    .and_then(|vendor| vendor.faction.clone())
+                                    .or_else(|| station_def.faction.clone()),
+                                reputation_required: contract.reputation_required,
+                                reputation_reward: contract.reputation_reward,
                             })
                             .collect(),
                     }
@@ -1828,6 +1872,7 @@ fn runtime_vendor_from_def(
     vendor: &content::VendorDef,
     world_seed: u64,
     world_elapsed_days: f32,
+    faction_reputation: &HashMap<String, i32>,
 ) -> (StationVendor, Vec<TradeOffer>) {
     let offers = vendor
         .offers
@@ -1854,8 +1899,10 @@ fn runtime_vendor_from_def(
         price_variance: vendor.price_variance,
         offers,
         rotation,
+        reputation_required: vendor.reputation_required,
+        price_reputation_scale: vendor.price_reputation_scale,
     };
-    let trade = vendor_trade_offers(&runtime, world_seed);
+    let trade = vendor_trade_offers(&runtime, world_seed, faction_reputation);
     (runtime, trade)
 }
 
@@ -1863,7 +1910,11 @@ fn vendor_rotation(rotation_days: f32, world_elapsed_days: f32) -> u64 {
     (world_elapsed_days.max(0.0) / rotation_days.max(0.001)).floor() as u64
 }
 
-fn vendor_trade_offers(vendor: &StationVendor, world_seed: u64) -> Vec<TradeOffer> {
+fn vendor_trade_offers(
+    vendor: &StationVendor,
+    world_seed: u64,
+    faction_reputation: &HashMap<String, i32>,
+) -> Vec<TradeOffer> {
     let mut ranked = vendor
         .offers
         .iter()
@@ -1889,12 +1940,27 @@ fn vendor_trade_offers(vendor: &StationVendor, world_seed: u64) -> Vec<TradeOffe
                 &format!("{}:price:{index}", vendor.id),
             );
             let variance = (seeded_unit(price_seed) * 2.0 - 1.0) * vendor.price_variance;
-            let buy_price = varied_price(offer.buy_price, variance);
-            let sell_price = varied_price(
+            let reputation = vendor
+                .faction
+                .as_ref()
+                .and_then(|faction| faction_reputation.get(faction))
+                .copied()
+                .unwrap_or_default();
+            let reputation_multiplier =
+                (1.0 + vendor.price_reputation_scale * reputation as f32 / 100.0).clamp(0.5, 1.5);
+            let sell_multiplier = (2.0 - reputation_multiplier).clamp(0.5, 1.5);
+            let buy_price = ((varied_price(offer.buy_price, variance) as f32
+                * reputation_multiplier)
+                .round() as u32)
+                .max(1);
+            let sell_price = ((varied_price(
                 offer.sell_price,
                 (seeded_unit(price_seed ^ 0xa5a5_a5a5_a5a5_a5a5) * 2.0 - 1.0)
                     * vendor.price_variance,
-            );
+            ) as f32
+                * sell_multiplier)
+                .round() as u32)
+                .max(1);
             let stock_seed = hash_seeded_id(price_seed, "stock");
             let stock_range = offer.max_stock.saturating_sub(offer.min_stock) as u64 + 1;
             let stock = offer.min_stock + (stock_seed % stock_range) as u32;
@@ -1907,7 +1973,7 @@ fn vendor_trade_offers(vendor: &StationVendor, world_seed: u64) -> Vec<TradeOffe
                 restock_days: Some(vendor.rotation_days),
                 next_restock_day: Some(rotation_end),
                 catalog_rotation: Some(vendor.rotation),
-                unavailable: false,
+                unavailable: reputation < vendor.reputation_required,
             }
         })
         .collect()
@@ -1915,6 +1981,102 @@ fn vendor_trade_offers(vendor: &StationVendor, world_seed: u64) -> Vec<TradeOffe
 
 fn varied_price(base: u32, variance: f32) -> u32 {
     ((base as f32 * (1.0 + variance)).round() as u32).max(1)
+}
+
+fn faction_reputation_from_save(
+    registry: &content::ContentRegistry,
+    saved: Option<&[SaveFactionReputation]>,
+) -> HashMap<String, i32> {
+    registry
+        .factions
+        .iter()
+        .map(|(id, faction)| {
+            let saved_value = saved
+                .and_then(|entries| entries.iter().find(|entry| entry.faction == *id))
+                .map(|entry| entry.value)
+                .unwrap_or(faction.reputation_start);
+            (
+                id.clone(),
+                saved_value.clamp(faction.reputation_min, faction.reputation_max),
+            )
+        })
+        .collect()
+}
+
+fn faction_reputation(game: &GameState, faction: Option<&str>) -> i32 {
+    faction
+        .and_then(|faction| game.faction_reputation.get(faction))
+        .copied()
+        .unwrap_or_default()
+}
+
+fn adjust_faction_reputation(game: &mut GameState, faction: Option<&str>, delta: i32) {
+    let Some(faction_id) = faction else {
+        return;
+    };
+    let Some(faction_def) = game.content_registry.factions.get(faction_id) else {
+        return;
+    };
+    let current = faction_reputation(game, Some(faction_id));
+    let next = current
+        .saturating_add(delta)
+        .clamp(faction_def.reputation_min, faction_def.reputation_max);
+    if next == current {
+        return;
+    }
+    game.faction_reputation.insert(faction_id.to_string(), next);
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Reputation",
+        format!("{} standing {:+}", faction_def.name, next - current),
+    );
+    refresh_station_economy(game);
+}
+
+fn refresh_station_economy(game: &mut GameState) {
+    for station in &mut game.stations {
+        for service in &mut station.services {
+            if let Some(vendor) = service.vendor.clone() {
+                let previous = service.trade.clone();
+                let mut refreshed =
+                    vendor_trade_offers(&vendor, game.world_seed, &game.faction_reputation);
+                for offer in &mut refreshed {
+                    if let Some(old) = previous.iter().find(|old| {
+                        old.item.id == offer.item.id
+                            && old.catalog_rotation == offer.catalog_rotation
+                    }) {
+                        offer.stock = old.stock;
+                        offer.next_restock_day = old.next_restock_day;
+                    }
+                }
+                service.trade = refreshed;
+            }
+        }
+    }
+}
+
+fn service_reputation_faction<'a>(
+    station: &'a StationDestination,
+    service: &'a StationService,
+) -> Option<&'a str> {
+    service
+        .vendor
+        .as_ref()
+        .and_then(|vendor| vendor.faction.as_deref())
+        .or(station.faction.as_deref())
+}
+
+fn station_service_is_available(
+    game: &GameState,
+    station: &StationDestination,
+    service: &StationService,
+) -> bool {
+    service.reputation_required.is_none_or(|required| {
+        faction_reputation(game, service_reputation_faction(station, service)) >= required
+    }) && service.vendor.as_ref().is_none_or(|vendor| {
+        faction_reputation(game, vendor.faction.as_deref()) >= vendor.reputation_required
+    })
 }
 
 fn save_market_offers(stations: &[StationDestination]) -> Vec<SaveMarketOffer> {
@@ -4228,7 +4390,8 @@ fn update_station_restock(game: &mut GameState) {
                 let rotation = vendor_rotation(vendor.rotation_days, current_day);
                 if rotation != vendor.rotation {
                     vendor.rotation = rotation;
-                    service.trade = vendor_trade_offers(vendor, game.world_seed);
+                    service.trade =
+                        vendor_trade_offers(vendor, game.world_seed, &game.faction_reputation);
                     changed = true;
                 }
             }
@@ -7580,6 +7743,7 @@ struct StationActionRailRender<'a> {
     inventory: &'a Inventory,
     completed_research: &'a [String],
     active_contracts: &'a [ActiveContract],
+    faction_reputation: &'a HashMap<String, i32>,
     action_rail_width: f32,
 }
 
@@ -7599,6 +7763,7 @@ struct StationContractTableRender<'a> {
     station: &'a StationDestination,
     service: &'a StationService,
     active_contracts: &'a [ActiveContract],
+    faction_reputation: &'a HashMap<String, i32>,
     world_elapsed_days: f32,
     in_range: bool,
     action_rail_width: f32,
@@ -8519,6 +8684,9 @@ fn handle_station_repair_input(game: &mut GameState, station_index: usize, mouse
     let Some(service) = station.services.get(service_index) else {
         return false;
     };
+    if !station_service_is_available(game, station, service) {
+        return true;
+    }
     if service.kind != "garage" {
         return false;
     }
@@ -8535,6 +8703,19 @@ fn repair_ship_at_station(game: &mut GameState, station_index: usize) -> bool {
         .get(station_index)
         .is_some_and(|station| station_in_interaction_range(&game.ship, station));
     if !in_range {
+        return true;
+    }
+    let service_available = game.stations.get(station_index).and_then(|station| {
+        game.selected_station_service
+            .and_then(|index| station.services.get(index))
+            .map(|service| station_service_is_available(game, station, service))
+    });
+    if service_available != Some(true) {
+        push_operation_feedback(
+            game,
+            "Repair",
+            "Repair service locked by faction standing".to_string(),
+        );
         return true;
     }
     let missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).ceil();
@@ -8566,6 +8747,11 @@ fn repair_ship_at_station(game: &mut GameState, station_index: usize) -> bool {
         "Repair",
         format!("Hull and shields restored for {cost} cr"),
     );
+    let station_faction = game
+        .stations
+        .get(station_index)
+        .and_then(|station| station.faction.clone());
+    adjust_faction_reputation(game, station_faction.as_deref(), 1);
     true
 }
 
@@ -8582,6 +8768,9 @@ fn handle_station_contract_input(game: &mut GameState, station_index: usize, mou
     let Some(service) = station.services.get(service_index) else {
         return false;
     };
+    if !station_service_is_available(game, station, service) {
+        return true;
+    }
     let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
     let Some(contract_index) = hovered_station_contract_index(station, service, mouse, rail_width)
     else {
@@ -8613,6 +8802,20 @@ fn accept_or_complete_contract(
     else {
         return false;
     };
+    if !station_service_is_available(
+        game,
+        &game.stations[station_index],
+        &game.stations[station_index].services[service_index],
+    ) || faction_reputation(game, contract.reputation_faction.as_deref())
+        < contract.reputation_required
+    {
+        push_operation_feedback(
+            game,
+            "Contract",
+            "Contract locked by faction standing".to_string(),
+        );
+        return true;
+    }
     let active_index = game.active_contracts.iter().position(|active| {
         active.id == contract.id
             && active.origin_station == contract.origin_station
@@ -8632,6 +8835,8 @@ fn accept_or_complete_contract(
         if let Some(item) = &contract.item {
             game.inventory.remove_item(item, contract.amount);
         }
+        let reputation_faction = contract.reputation_faction.clone();
+        let reputation_reward = contract.reputation_reward;
         game.credits = game.credits.saturating_add(contract.reward);
         game.active_contracts.remove(active_index);
         game.save_dirty = true;
@@ -8640,6 +8845,7 @@ fn accept_or_complete_contract(
             "Contract",
             format!("Completed {} for {} cr", contract.name, contract.reward),
         );
+        adjust_faction_reputation(game, reputation_faction.as_deref(), reputation_reward);
         return true;
     }
     if game.active_contracts.len() >= 3 {
@@ -8997,6 +9203,18 @@ fn buy_station_trade_offer(
     if !in_range {
         return true;
     }
+    if !game
+        .stations
+        .get(station_index)
+        .and_then(|station| station.services.get(service_index))
+        .is_some_and(|service| {
+            game.stations
+                .get(station_index)
+                .is_some_and(|station| station_service_is_available(game, station, service))
+        })
+    {
+        return true;
+    }
     let Some(station) = game.stations.get_mut(station_index) else {
         return false;
     };
@@ -9044,6 +9262,18 @@ fn sell_station_trade_offer(
         .get(station_index)
         .is_some_and(|station| station_in_interaction_range(&game.ship, station));
     if !in_range {
+        return true;
+    }
+    if !game
+        .stations
+        .get(station_index)
+        .and_then(|station| station.services.get(service_index))
+        .is_some_and(|service| {
+            game.stations
+                .get(station_index)
+                .is_some_and(|station| station_service_is_available(game, station, service))
+        })
+    {
         return true;
     }
     let Some(station) = game.stations.get_mut(station_index) else {
@@ -13669,6 +13899,7 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
                 inventory: &game.inventory,
                 completed_research: &game.completed_research,
                 active_contracts: &game.active_contracts,
+                faction_reputation: &game.faction_reputation,
                 action_rail_width: rail.w,
             });
         }
@@ -16569,6 +16800,7 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
         inventory,
         completed_research,
         active_contracts,
+        faction_reputation,
         action_rail_width,
     } = render;
     let layout = station_action_layout(station, action_rail_width);
@@ -16671,6 +16903,16 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
                 }
             })
             .unwrap_or_else(|| service.kind.clone());
+        let service_context = if let Some(required) = service.reputation_required {
+            let faction = service_reputation_faction(station, service);
+            let standing = faction
+                .and_then(|faction| faction_reputation.get(faction))
+                .copied()
+                .unwrap_or_default();
+            format!("{service_context} · rep {standing}/{required}")
+        } else {
+            service_context
+        };
         draw_text(
             &fit_debug_text(&service_context, row.w - 14.0, 13),
             row.x + 7.0,
@@ -16685,7 +16927,24 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
     }
 
     if let Some(service) = selected_service.and_then(|index| station.services.get(index)) {
-        let status = if in_range {
+        let service_available = service_reputation_faction(station, service)
+            .and_then(|faction| faction_reputation.get(faction))
+            .copied()
+            .unwrap_or_default();
+        let vendor_locked = service.vendor.as_ref().is_some_and(|vendor| {
+            faction_reputation
+                .get(vendor.faction.as_deref().unwrap_or_default())
+                .copied()
+                .unwrap_or_default()
+                < vendor.reputation_required
+        });
+        let status = if vendor_locked
+            || service
+                .reputation_required
+                .is_some_and(|required| service_available < required)
+        {
+            "Need reputation"
+        } else if in_range {
             "Ready"
         } else {
             "Approach to trade"
@@ -16733,6 +16992,7 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
             station,
             service,
             active_contracts,
+            faction_reputation,
             world_elapsed_days,
             in_range,
             action_rail_width,
@@ -16993,6 +17253,7 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
         station,
         service,
         active_contracts,
+        faction_reputation,
         world_elapsed_days,
         in_range,
         action_rail_width,
@@ -17038,7 +17299,15 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
                 && active.origin_station == contract.origin_station
                 && active.origin_service == contract.origin_service
         });
-        let status = if let Some(active) = active {
+        let standing = contract
+            .reputation_faction
+            .as_deref()
+            .and_then(|faction| faction_reputation.get(faction))
+            .copied()
+            .unwrap_or_default();
+        let status = if standing < contract.reputation_required {
+            "Need reputation"
+        } else if let Some(active) = active {
             if world_elapsed_days > active.expires_day {
                 "Expired"
             } else if in_range && active.target_reached && station.id == contract.origin_station {
@@ -20841,6 +21110,8 @@ mod tests {
             STARTER_SYSTEM_ID,
             vec2(100.0, 0.0),
         )];
+        game.stations[0].faction = Some("core:helioforge_yard_union".to_string());
+        game.selected_station_service = Some(1);
         game.credits = 1_000;
         game.ship.position = vec2(120.0, 0.0);
         game.ship.systems.hull.current = 80.0;
@@ -20855,6 +21126,7 @@ mod tests {
             game.ship.systems.shields.max
         );
         assert_eq!(game.credits, 1_000 - expected_cost);
+        assert_eq!(game.faction_reputation["core:helioforge_yard_union"], 1);
     }
 
     #[test]
@@ -20890,6 +21162,9 @@ mod tests {
             amount: 1,
             reward: 240,
             duration_days: 10.0,
+            reputation_faction: Some("core:frontier_cartographers".to_string()),
+            reputation_required: 0,
+            reputation_reward: 5,
         }];
 
         assert!(accept_or_complete_contract(&mut game, 0, 0, 0));
@@ -20905,6 +21180,7 @@ mod tests {
         assert!(accept_or_complete_contract(&mut game, 0, 0, 0));
         assert!(game.active_contracts.is_empty());
         assert_eq!(game.credits, default_credits() + 240);
+        assert_eq!(game.faction_reputation["core:frontier_cartographers"], 5);
     }
 
     #[test]
@@ -20915,8 +21191,9 @@ mod tests {
             .vendors
             .get("core:frontier_exchange_juno")
             .expect("core vendor should load");
-        let (_, first) = runtime_vendor_from_def(&registry, vendor, 42, 0.0);
-        let (_, repeated) = runtime_vendor_from_def(&registry, vendor, 42, 0.0);
+        let reputation = faction_reputation_from_save(&registry, None);
+        let (_, first) = runtime_vendor_from_def(&registry, vendor, 42, 0.0, &reputation);
+        let (_, repeated) = runtime_vendor_from_def(&registry, vendor, 42, 0.0, &reputation);
         assert_eq!(first.len(), 4);
         assert_eq!(
             first
@@ -20929,7 +21206,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let (rotated_vendor, rotated) = runtime_vendor_from_def(&registry, vendor, 42, 5.0);
+        let (rotated_vendor, rotated) =
+            runtime_vendor_from_def(&registry, vendor, 42, 5.0, &reputation);
         assert_eq!(rotated_vendor.rotation, 1);
         assert!(rotated
             .iter()
@@ -20940,6 +21218,50 @@ mod tests {
             .any(|(before, after)| before.buy_price != after.buy_price
                 || before.stock != after.stock
                 || before.item.id != after.item.id));
+    }
+
+    #[test]
+    fn reputation_changes_vendor_access_and_prices() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let vendor = registry
+            .vendors
+            .get("core:cinder_yard_mara")
+            .expect("repair vendor should exist");
+        let neutral = faction_reputation_from_save(&registry, None);
+        let (_, locked) = runtime_vendor_from_def(&registry, vendor, 7, 0.0, &neutral);
+        assert!(locked.iter().all(|offer| offer.unavailable));
+
+        let mut trusted = neutral.clone();
+        trusted.insert("core:helioforge_yard_union".to_string(), 100);
+        let (_, open) = runtime_vendor_from_def(&registry, vendor, 7, 0.0, &trusted);
+        assert!(open.iter().all(|offer| !offer.unavailable));
+        assert!(open
+            .iter()
+            .zip(locked.iter())
+            .all(|(trusted, locked)| trusted.buy_price <= locked.buy_price));
+    }
+
+    #[test]
+    fn faction_reputation_round_trips_and_clamps_to_content_bounds() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.faction_reputation
+            .insert("core:cinder_cooperative".to_string(), 100);
+        let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
+        let mut restored_save = toml::from_str::<SaveData>(&serialized).expect("save should load");
+        restored_save
+            .faction_reputation
+            .iter_mut()
+            .find(|entry| entry.faction == "core:cinder_cooperative")
+            .expect("cinder reputation should be saved")
+            .value = 999;
+        let restored = faction_reputation_from_save(
+            &game.content_registry,
+            Some(restored_save.faction_reputation.as_slice()),
+        );
+        assert_eq!(restored["core:cinder_cooperative"], 100);
     }
 
     #[test]
@@ -22360,6 +22682,7 @@ mod tests {
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                     contracts: Vec::new(),
+                    reputation_required: None,
                 },
                 StationService {
                     id: "core:test_garage".to_string(),
@@ -22371,6 +22694,7 @@ mod tests {
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                     contracts: Vec::new(),
+                    reputation_required: None,
                 },
             ],
         }
@@ -22481,6 +22805,7 @@ mod tests {
             selected_npc_ship: None,
             selected_station_service: None,
             active_contracts: Vec::new(),
+            faction_reputation: HashMap::new(),
             selected_research: None,
             destination_planet: None,
             orbiting_planet: None,

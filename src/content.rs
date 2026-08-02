@@ -271,6 +271,17 @@ pub struct FactionDef {
     pub color: [u8; 3],
     pub tags: Vec<String>,
     pub summary: Option<String>,
+    pub reputation_start: i32,
+    pub reputation_min: i32,
+    pub reputation_max: i32,
+    pub reputation_tiers: Vec<ReputationTierDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReputationTierDef {
+    pub id: String,
+    pub name: String,
+    pub minimum: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,6 +443,7 @@ pub struct StationServiceDef {
     pub research: Vec<ResearchLeadDef>,
     pub recipe_unlocks: Vec<RecipeUnlockDef>,
     pub contracts: Vec<StationContractDef>,
+    pub reputation_required: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +458,8 @@ pub struct StationContractDef {
     pub amount: u32,
     pub reward: u32,
     pub duration_days: f32,
+    pub reputation_required: i32,
+    pub reputation_reward: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -460,6 +474,8 @@ pub struct VendorDef {
     pub slots: usize,
     pub price_variance: f32,
     pub offers: Vec<VendorOfferDef>,
+    pub reputation_required: i32,
+    pub price_reputation_scale: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -786,6 +802,21 @@ struct FactionFileDef {
     #[serde(default)]
     tags: Vec<String>,
     summary: Option<String>,
+    #[serde(default)]
+    reputation_start: i32,
+    #[serde(default = "default_reputation_min")]
+    reputation_min: i32,
+    #[serde(default = "default_reputation_max")]
+    reputation_max: i32,
+    #[serde(default)]
+    reputation_tiers: Vec<ReputationTierFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReputationTierFileDef {
+    id: String,
+    name: String,
+    minimum: i32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -914,6 +945,10 @@ struct VendorFileDef {
     price_variance: f32,
     #[serde(default)]
     offers: Vec<VendorOfferFileDef>,
+    #[serde(default)]
+    reputation_required: i32,
+    #[serde(default)]
+    price_reputation_scale: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -966,6 +1001,8 @@ struct StationServiceFileDef {
     recipe_unlocks: Vec<RecipeUnlockFileDef>,
     #[serde(default)]
     contracts: Vec<StationContractFileDef>,
+    #[serde(default)]
+    reputation_required: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -980,6 +1017,10 @@ struct StationContractFileDef {
     amount: u32,
     reward: u32,
     duration_days: f32,
+    #[serde(default)]
+    reputation_required: i32,
+    #[serde(default)]
+    reputation_reward: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1808,6 +1849,32 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 FactionDisposition::Neutral
             }
         };
+        if faction.reputation_min > faction.reputation_max {
+            errors.push(format!("Faction `{id}` has inverted reputation bounds"));
+        }
+        if faction.reputation_start < faction.reputation_min
+            || faction.reputation_start > faction.reputation_max
+        {
+            errors.push(format!(
+                "Faction `{id}` has reputation start outside its bounds"
+            ));
+        }
+        let mut reputation_tiers = Vec::new();
+        for tier in faction.reputation_tiers {
+            if tier.id.trim().is_empty() || tier.name.trim().is_empty() {
+                errors.push(format!("Faction `{id}` has an empty reputation tier"));
+            }
+            if tier.minimum < faction.reputation_min || tier.minimum > faction.reputation_max {
+                errors.push(format!(
+                    "Faction `{id}` has a reputation tier outside its bounds"
+                ));
+            }
+            reputation_tiers.push(ReputationTierDef {
+                id: tier.id,
+                name: tier.name,
+                minimum: tier.minimum,
+            });
+        }
         let inserted = registry
             .factions
             .insert(
@@ -1820,6 +1887,10 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     color: faction.color,
                     tags: faction.tags,
                     summary: faction.summary,
+                    reputation_start: faction.reputation_start,
+                    reputation_min: faction.reputation_min,
+                    reputation_max: faction.reputation_max,
+                    reputation_tiers,
                 },
             )
             .is_none();
@@ -2196,6 +2267,13 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 "Vendor `{id}` price variance must be between 0.0 and 1.0"
             ));
         }
+        if !vendor.price_reputation_scale.is_finite()
+            || !(-1.0..=1.0).contains(&vendor.price_reputation_scale)
+        {
+            errors.push(format!(
+                "Vendor `{id}` price reputation scale must be between -1.0 and 1.0"
+            ));
+        }
         let offers = vendor
             .offers
             .into_iter()
@@ -2243,6 +2321,8 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                 slots: vendor.slots,
                 price_variance: vendor.price_variance,
                 offers,
+                reputation_required: vendor.reputation_required,
+                price_reputation_scale: vendor.price_reputation_scale,
             },
         );
         if inserted.is_none() {
@@ -2447,6 +2527,8 @@ fn resolve_station_services(
                     amount: contract.amount,
                     reward: contract.reward,
                     duration_days: contract.duration_days,
+                    reputation_required: contract.reputation_required,
+                    reputation_reward: contract.reputation_reward,
                 }
             })
             .collect();
@@ -2459,6 +2541,7 @@ fn resolve_station_services(
             research,
             recipe_unlocks,
             contracts,
+            reputation_required: service.reputation_required,
         });
     }
     resolved
@@ -3534,6 +3617,14 @@ fn default_faction_color() -> [u8; 3] {
     [150, 221, 226]
 }
 
+fn default_reputation_min() -> i32 {
+    -100
+}
+
+fn default_reputation_max() -> i32 {
+    100
+}
+
 fn default_spawn_weight() -> f32 {
     1.0
 }
@@ -3586,6 +3677,20 @@ mod tests {
         assert!(registry.items.contains_key("core:point_defense_turret"));
         assert!(registry.items.contains_key("core:balanced_shield_matrix"));
         assert!(registry.items.contains_key("core:hazard_shield_matrix"));
+        assert!(registry
+            .factions
+            .get("core:cinder_cooperative")
+            .is_some_and(|faction| {
+                faction.reputation_start == 0
+                    && faction.reputation_min == -100
+                    && faction.reputation_max == 100
+            }));
+        assert!(registry
+            .vendors
+            .get("core:cinder_yard_mara")
+            .is_some_and(|vendor| {
+                vendor.reputation_required == 5 && vendor.price_reputation_scale < 0.0
+            }));
         assert!(registry
             .stations
             .get("core:ore_lattice_depot")
