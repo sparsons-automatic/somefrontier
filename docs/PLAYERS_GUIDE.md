@@ -38,6 +38,7 @@ confirmation for removing the selected save without leaving the menu.
 | Open map | `M` |
 | Open research | `K` |
 | Open content browser | `C` |
+| Open contracts | `J` |
 | Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
 | Inspect nearby planet or station | `Space` |
 | Select a visible planet | Left click the planet |
@@ -209,6 +210,10 @@ time until its next restock. Selling cargo back to a station restores stock up
 to that offer's configured capacity. Research leads point to progression-tree
 nodes that can expose additional production recipes after completion.
 
+The actions rail opens at its wider default size so service names, objectives,
+and contract details are easier to read. Drag its left resize handle if you
+want a different width for a particular screen size.
+
 Garage services provide a Maintenance action. When docked and carrying enough
 credits, repair restores damaged hull and shields; the price is based on the
 amount of damage. Freight Lock services provide hauling contracts: accept one,
@@ -217,6 +222,13 @@ desk to collect the reward. Archive scan desks provide survey contracts: scan
 the named planet, then return to the archive. The station panel shows contract
 progress, completion, expiry, and rewards. Up to three contracts can be active,
 and active contracts survive save/load.
+
+Press `J` at any time to open the Contracts menu. It lists every active contract
+with its objective, progress, origin, destination, deadline, reward, and current
+status. Click a contract to focus its originating station when that station is
+in the current system; remote contracts remain visible with their origin shown.
+Contract cards wrap long text instead of shortening it, and the station board
+uses the same readable card layout for accepting and completing work.
 
 Faction reputation is separate from station ownership, culture, and default
 disposition. Contract completion increases the reputation of the sponsoring
