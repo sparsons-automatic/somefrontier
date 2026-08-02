@@ -431,6 +431,21 @@ pub struct StationServiceDef {
     pub trade: Vec<TradeStockDef>,
     pub research: Vec<ResearchLeadDef>,
     pub recipe_unlocks: Vec<RecipeUnlockDef>,
+    pub contracts: Vec<StationContractDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StationContractDef {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub description: Option<String>,
+    pub target_station: Option<String>,
+    pub target_planet: Option<String>,
+    pub item: Option<String>,
+    pub amount: u32,
+    pub reward: u32,
+    pub duration_days: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -949,6 +964,22 @@ struct StationServiceFileDef {
     research: Vec<ResearchLeadFileDef>,
     #[serde(default)]
     recipe_unlocks: Vec<RecipeUnlockFileDef>,
+    #[serde(default)]
+    contracts: Vec<StationContractFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StationContractFileDef {
+    id: String,
+    name: String,
+    kind: String,
+    description: Option<String>,
+    target_station: Option<String>,
+    target_planet: Option<String>,
+    item: Option<String>,
+    amount: u32,
+    reward: u32,
+    duration_days: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2358,6 +2389,67 @@ fn resolve_station_services(
                 unavailable: lead.unavailable,
             })
             .collect();
+        let contracts = service
+            .contracts
+            .into_iter()
+            .map(|contract| {
+                let contract_id = namespaced_id(pack_id, &contract.id);
+                if contract.name.trim().is_empty() {
+                    errors.push(format!(
+                        "Station service contract `{contract_id}` has an empty name"
+                    ));
+                }
+                if !matches!(contract.kind.as_str(), "hauling" | "survey") {
+                    errors.push(format!(
+                        "Station service contract `{contract_id}` has unsupported kind `{}`",
+                        contract.kind
+                    ));
+                }
+                if contract.amount == 0 || contract.reward == 0 {
+                    errors.push(format!(
+                        "Station service contract `{contract_id}` has zero amount or reward"
+                    ));
+                }
+                if contract.duration_days <= 0.0 || !contract.duration_days.is_finite() {
+                    errors.push(format!(
+                        "Station service contract `{contract_id}` has non-positive duration"
+                    ));
+                }
+                if contract.target_station.is_some() == contract.target_planet.is_some() {
+                    errors.push(format!(
+                        "Station service contract `{contract_id}` must have exactly one target"
+                    ));
+                }
+                if contract.kind == "hauling"
+                    && (contract.item.is_none() || contract.target_station.is_none())
+                {
+                    errors.push(format!(
+                        "Hauling contract `{contract_id}` needs an item and target station"
+                    ));
+                }
+                if contract.kind == "survey" && contract.target_planet.is_none() {
+                    errors.push(format!(
+                        "Survey contract `{contract_id}` needs a target planet"
+                    ));
+                }
+                StationContractDef {
+                    id: contract_id,
+                    name: contract.name,
+                    kind: contract.kind,
+                    description: contract.description,
+                    target_station: contract
+                        .target_station
+                        .map(|target| namespaced_id(pack_id, &target)),
+                    target_planet: contract
+                        .target_planet
+                        .map(|target| namespaced_id(pack_id, &target)),
+                    item: contract.item.map(|item| namespaced_id(pack_id, &item)),
+                    amount: contract.amount,
+                    reward: contract.reward,
+                    duration_days: contract.duration_days,
+                }
+            })
+            .collect();
         resolved.push(StationServiceDef {
             id,
             name: service.name,
@@ -2366,6 +2458,7 @@ fn resolve_station_services(
             trade,
             research,
             recipe_unlocks,
+            contracts,
         });
     }
     resolved
@@ -2779,6 +2872,38 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                     &lead.research,
                     errors,
                 );
+            }
+            for contract in &service.contracts {
+                if let Some(item) = &contract.item {
+                    validate_reference(
+                        registry.items.contains_key(item),
+                        "Station service contract",
+                        &contract.id,
+                        "item",
+                        item,
+                        errors,
+                    );
+                }
+                if let Some(target_station) = &contract.target_station {
+                    validate_reference(
+                        registry.stations.contains_key(target_station),
+                        "Station service contract",
+                        &contract.id,
+                        "target station",
+                        target_station,
+                        errors,
+                    );
+                }
+                if let Some(target_planet) = &contract.target_planet {
+                    validate_reference(
+                        registry.planets.contains_key(target_planet),
+                        "Station service contract",
+                        &contract.id,
+                        "target planet",
+                        target_planet,
+                        errors,
+                    );
+                }
             }
         }
     }
@@ -3461,6 +3586,31 @@ mod tests {
         assert!(registry.items.contains_key("core:point_defense_turret"));
         assert!(registry.items.contains_key("core:balanced_shield_matrix"));
         assert!(registry.items.contains_key("core:hazard_shield_matrix"));
+        assert!(registry
+            .stations
+            .get("core:ore_lattice_depot")
+            .is_some_and(|station| {
+                station.services.iter().any(|service| {
+                    service.id == "core:ore_lattice_freight_lock"
+                        && service.contracts.iter().any(|contract| {
+                            contract.kind == "hauling"
+                                && contract.target_station
+                                    == Some("core:frontier_exchange".to_string())
+                        })
+                })
+            }));
+        assert!(registry
+            .stations
+            .get("core:pale_orbit_archive")
+            .is_some_and(|station| {
+                station.services.iter().any(|service| {
+                    service.id == "core:pale_archive_data"
+                        && service
+                            .contracts
+                            .iter()
+                            .any(|contract| contract.kind == "survey")
+                })
+            }));
         assert_eq!(registry.factions.len(), 6);
         assert!(registry
             .factions

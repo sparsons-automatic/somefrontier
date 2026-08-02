@@ -209,6 +209,15 @@ time until its next restock. Selling cargo back to a station restores stock up
 to that offer's configured capacity. Research leads point to progression-tree
 nodes that can expose additional production recipes after completion.
 
+Garage services provide a Maintenance action. When docked and carrying enough
+credits, repair restores damaged hull and shields; the price is based on the
+amount of damage. Freight Lock services provide hauling contracts: accept one,
+carry the requested cargo to its target station, and return to the contract
+desk to collect the reward. Archive scan desks provide survey contracts: scan
+the named planet, then return to the archive. The station panel shows contract
+progress, completion, expiry, and rewards. Up to three contracts can be active,
+and active contracts survive save/load.
+
 Some shops have named vendors. Their specialties appear below the service name,
 and their available catalog, prices, and stock can change when the vendor's
 rotation period advances. Catalogs are deterministic for a save's world seed,
@@ -217,13 +226,13 @@ so loading the same save preserves the same rotation until the next period.
 Core stations have distinct practical roles:
 
 - Frontier Exchange: broad starter commerce and common early cargo.
-- Ore Lattice Depot: bulk ore stock, freight staging, and future contracts.
-- Cinder Repair Yard: repairs, refits, shield and turret parts, and upgrade support.
-- Pale Orbit Archive: scan data, route knowledge, and research leads.
+- Ore Lattice Depot: bulk ore stock, freight staging, and hauling contracts.
+- Cinder Repair Yard: hull and shield repairs, refits, parts, and upgrade support.
+- Pale Orbit Archive: scan data, survey contracts, route knowledge, and research leads.
 - Freebelt Commissary: drones, fuel, coolant, and independent-hauler supplies.
 - Ember Watch Array: navigation, route intel, signal logs, and remote warnings.
 
-Some service groups are present as player-facing station context before their
+Some other service groups remain player-facing station context before their
 full mechanics exist.
 
 ## NPC Ships And Factions

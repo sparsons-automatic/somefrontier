@@ -197,6 +197,7 @@ struct GameState {
     selected_station: Option<usize>,
     selected_npc_ship: Option<usize>,
     selected_station_service: Option<usize>,
+    active_contracts: Vec<ActiveContract>,
     selected_research: Option<String>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
@@ -650,6 +651,32 @@ struct StationService {
     trade: Vec<TradeOffer>,
     research: Vec<ResearchLead>,
     recipe_unlocks: Vec<RecipeUnlockOffer>,
+    contracts: Vec<ContractOffer>,
+}
+
+#[derive(Clone)]
+struct ContractOffer {
+    id: String,
+    name: String,
+    kind: String,
+    description: Option<String>,
+    origin_station: String,
+    origin_service: String,
+    target_station: Option<String>,
+    target_planet: Option<String>,
+    item: Option<ItemRef>,
+    amount: u32,
+    reward: u32,
+    duration_days: f32,
+}
+
+#[derive(Clone)]
+struct ActiveContract {
+    id: String,
+    origin_station: String,
+    origin_service: String,
+    expires_day: f32,
+    target_reached: bool,
 }
 
 #[derive(Clone)]
@@ -798,6 +825,8 @@ struct SaveData {
     completed_research: Vec<String>,
     #[serde(default)]
     active_research: Vec<SaveActiveResearch>,
+    #[serde(default)]
+    active_contracts: Vec<SaveActiveContract>,
     #[serde(default, skip_serializing)]
     purchased_recipe_unlocks: Vec<String>,
     production_mode: String,
@@ -853,6 +882,16 @@ struct SaveMarketOffer {
 struct SaveActiveResearch {
     research: String,
     remaining_seconds: f32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SaveActiveContract {
+    id: String,
+    origin_station: String,
+    origin_service: String,
+    expires_day: f32,
+    #[serde(default)]
+    target_reached: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1153,6 +1192,7 @@ impl GameState {
             selected_station: None,
             selected_npc_ship: None,
             selected_station_service: None,
+            active_contracts: Vec::new(),
             selected_research: None,
             destination_planet: Some(1),
             orbiting_planet: None,
@@ -1225,6 +1265,20 @@ impl GameState {
             save.active_research,
             &self.completed_research,
         );
+        self.active_contracts = save
+            .active_contracts
+            .into_iter()
+            .filter(|contract| {
+                contract.expires_day.is_finite() && contract.expires_day >= self.world_elapsed_days
+            })
+            .map(|contract| ActiveContract {
+                id: contract.id,
+                origin_station: contract.origin_station,
+                origin_service: contract.origin_service,
+                expires_day: contract.expires_day,
+                target_reached: contract.target_reached,
+            })
+            .collect();
         update_planet_runtime_positions(&mut self.planets, self.world_elapsed_days);
         self.current_system_id = if self
             .content_registry
@@ -1409,6 +1463,17 @@ impl GameState {
                     remaining_seconds: finite_nonnegative_or(active.remaining_seconds, 0.0),
                 })
                 .filter(|active| active.remaining_seconds > 0.0)
+                .collect(),
+            active_contracts: self
+                .active_contracts
+                .iter()
+                .map(|active| SaveActiveContract {
+                    id: active.id.clone(),
+                    origin_station: active.origin_station.clone(),
+                    origin_service: active.origin_service.clone(),
+                    expires_day: finite_nonnegative_or(active.expires_day, 0.0),
+                    target_reached: active.target_reached,
+                })
                 .collect(),
             purchased_recipe_unlocks: Vec::new(),
             production_mode: self.production_mode.id().to_string(),
@@ -1727,6 +1792,27 @@ async fn make_station_destinations(
                                 recipe: unlock.recipe.clone(),
                                 price: unlock.price,
                                 unavailable: unlock.unavailable,
+                            })
+                            .collect(),
+                        contracts: service
+                            .contracts
+                            .iter()
+                            .map(|contract| ContractOffer {
+                                id: contract.id.clone(),
+                                name: contract.name.clone(),
+                                kind: contract.kind.clone(),
+                                description: contract.description.clone(),
+                                origin_station: station_def.id.clone(),
+                                origin_service: service.id.clone(),
+                                target_station: contract.target_station.clone(),
+                                target_planet: contract.target_planet.clone(),
+                                item: contract
+                                    .item
+                                    .as_deref()
+                                    .and_then(|item| registry_item(content_registry, item)),
+                                amount: contract.amount,
+                                reward: contract.reward,
+                                duration_days: contract.duration_days,
                             })
                             .collect(),
                     }
@@ -4082,7 +4168,55 @@ fn advance_world_time_and_planets(game: &mut GameState, dt: f32) {
     if game.world_elapsed_days > previous_days {
         game.save_dirty = true;
     }
+    update_contract_progress(game);
     update_station_restock(game);
+}
+
+fn update_contract_progress(game: &mut GameState) {
+    let mut reached_names = Vec::new();
+    for active in &mut game.active_contracts {
+        let Some(contract) = game
+            .stations
+            .iter()
+            .flat_map(|station| station.services.iter())
+            .flat_map(|service| service.contracts.iter())
+            .find(|contract| {
+                contract.id == active.id
+                    && contract.origin_station == active.origin_station
+                    && contract.origin_service == active.origin_service
+            })
+        else {
+            continue;
+        };
+        let reached = if contract.kind == "hauling" {
+            contract.target_station.as_deref().is_some_and(|target| {
+                game.selected_station
+                    .and_then(|index| game.stations.get(index))
+                    .is_some_and(|station| {
+                        station.id == target && station_in_interaction_range(&game.ship, station)
+                    })
+                    && contract
+                        .item
+                        .as_ref()
+                        .is_some_and(|item| game.inventory.count(item) >= contract.amount)
+            })
+        } else {
+            contract.target_planet.as_deref().is_some_and(|target| {
+                game.planets
+                    .iter()
+                    .find(|planet| planet.id == target)
+                    .is_some_and(|planet| planet.scan_level >= contract.amount as u8)
+            })
+        };
+        if reached && !active.target_reached {
+            active.target_reached = true;
+            game.save_dirty = true;
+            reached_names.push(contract.name.clone());
+        }
+    }
+    for name in reached_names {
+        push_operation_feedback(game, "Contract", format!("Target reached: {name}"));
+    }
 }
 
 fn update_station_restock(game: &mut GameState) {
@@ -7445,6 +7579,7 @@ struct StationActionRailRender<'a> {
     credits: u32,
     inventory: &'a Inventory,
     completed_research: &'a [String],
+    active_contracts: &'a [ActiveContract],
     action_rail_width: f32,
 }
 
@@ -7455,6 +7590,17 @@ struct StationTradeTableRender<'a> {
     in_range: bool,
     credits: u32,
     inventory: &'a Inventory,
+    action_rail_width: f32,
+    x: f32,
+    width: f32,
+}
+
+struct StationContractTableRender<'a> {
+    station: &'a StationDestination,
+    service: &'a StationService,
+    active_contracts: &'a [ActiveContract],
+    world_elapsed_days: f32,
+    in_range: bool,
     action_rail_width: f32,
     x: f32,
     width: f32,
@@ -8331,6 +8477,12 @@ fn handle_planet_orbit_input(game: &mut GameState, planet_index: usize, mouse: V
 }
 
 fn handle_station_service_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
+    if handle_station_contract_input(game, station_index, mouse) {
+        return true;
+    }
+    if handle_station_repair_input(game, station_index, mouse) {
+        return true;
+    }
     if handle_station_recipe_unlock_input(game, station_index, mouse) {
         return true;
     }
@@ -8352,6 +8504,202 @@ fn handle_station_service_input(game: &mut GameState, station_index: usize, mous
     };
 
     select_station_service(game, station_index, service_index)
+}
+
+fn handle_station_repair_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+    let Some(station) = game.stations.get(station_index) else {
+        return false;
+    };
+    let Some(service_index) = game.selected_station_service else {
+        return false;
+    };
+    let Some(service) = station.services.get(service_index) else {
+        return false;
+    };
+    if service.kind != "garage" {
+        return false;
+    }
+    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
+    if !repair_button_rect(station, rail_width).contains(mouse) {
+        return false;
+    }
+    repair_ship_at_station(game, station_index)
+}
+
+fn repair_ship_at_station(game: &mut GameState, station_index: usize) -> bool {
+    let in_range = game
+        .stations
+        .get(station_index)
+        .is_some_and(|station| station_in_interaction_range(&game.ship, station));
+    if !in_range {
+        return true;
+    }
+    let missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).ceil();
+    let missing_shields =
+        (game.ship.systems.shields.max - game.ship.systems.shields.current).ceil();
+    let cost = (missing_hull * 3.0) as u32 + missing_shields as u32;
+    if cost == 0 {
+        push_operation_feedback(
+            game,
+            "Repair",
+            "Ship systems are already nominal".to_string(),
+        );
+        return true;
+    }
+    if game.credits < cost {
+        push_operation_feedback(
+            game,
+            "Repair",
+            format!("Need {} more credits for repairs", cost - game.credits),
+        );
+        return true;
+    }
+    game.credits -= cost;
+    game.ship.systems.hull.current = game.ship.systems.hull.max;
+    game.ship.systems.shields.current = game.ship.systems.shields.max;
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Repair",
+        format!("Hull and shields restored for {cost} cr"),
+    );
+    true
+}
+
+fn handle_station_contract_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+    let Some(service_index) = game.selected_station_service else {
+        return false;
+    };
+    let Some(station) = game.stations.get(station_index) else {
+        return false;
+    };
+    let Some(service) = station.services.get(service_index) else {
+        return false;
+    };
+    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
+    let Some(contract_index) = hovered_station_contract_index(station, service, mouse, rail_width)
+    else {
+        return false;
+    };
+    accept_or_complete_contract(game, station_index, service_index, contract_index)
+}
+
+fn accept_or_complete_contract(
+    game: &mut GameState,
+    station_index: usize,
+    service_index: usize,
+    contract_index: usize,
+) -> bool {
+    let in_range = game
+        .stations
+        .get(station_index)
+        .is_some_and(|station| station_in_interaction_range(&game.ship, station));
+    if !in_range {
+        return true;
+    }
+    update_contract_progress(game);
+    let Some(contract) = game
+        .stations
+        .get(station_index)
+        .and_then(|station| station.services.get(service_index))
+        .and_then(|service| service.contracts.get(contract_index))
+        .cloned()
+    else {
+        return false;
+    };
+    let active_index = game.active_contracts.iter().position(|active| {
+        active.id == contract.id
+            && active.origin_station == contract.origin_station
+            && active.origin_service == contract.origin_service
+    });
+    if let Some(active_index) = active_index {
+        if game.world_elapsed_days > game.active_contracts[active_index].expires_day {
+            game.active_contracts.remove(active_index);
+            game.save_dirty = true;
+            push_operation_feedback(game, "Contract", format!("{} expired", contract.name));
+            return true;
+        }
+        if !contract_is_complete(game, &contract) {
+            push_operation_feedback(game, "Contract", contract_progress_text(game, &contract));
+            return true;
+        }
+        if let Some(item) = &contract.item {
+            game.inventory.remove_item(item, contract.amount);
+        }
+        game.credits = game.credits.saturating_add(contract.reward);
+        game.active_contracts.remove(active_index);
+        game.save_dirty = true;
+        push_operation_feedback(
+            game,
+            "Contract",
+            format!("Completed {} for {} cr", contract.name, contract.reward),
+        );
+        return true;
+    }
+    if game.active_contracts.len() >= 3 {
+        push_operation_feedback(
+            game,
+            "Contract",
+            "Active contract limit reached".to_string(),
+        );
+        return true;
+    }
+    game.active_contracts.push(ActiveContract {
+        id: contract.id.clone(),
+        origin_station: contract.origin_station.clone(),
+        origin_service: contract.origin_service.clone(),
+        expires_day: game.world_elapsed_days + contract.duration_days,
+        target_reached: false,
+    });
+    game.save_dirty = true;
+    push_operation_feedback(game, "Contract", format!("Accepted {}", contract.name));
+    true
+}
+
+fn contract_is_complete(game: &GameState, contract: &ContractOffer) -> bool {
+    let target_reached = game.active_contracts.iter().any(|active| {
+        active.id == contract.id
+            && active.origin_station == contract.origin_station
+            && active.origin_service == contract.origin_service
+            && active.target_reached
+    });
+    let at_origin = game
+        .selected_station
+        .and_then(|index| game.stations.get(index))
+        .is_some_and(|station| station.id == contract.origin_station);
+    if !at_origin || !target_reached {
+        return false;
+    }
+    if contract.kind == "hauling" {
+        contract
+            .item
+            .as_ref()
+            .is_some_and(|item| game.inventory.count(item) >= contract.amount)
+    } else {
+        true
+    }
+}
+
+fn contract_progress_text(game: &GameState, contract: &ContractOffer) -> String {
+    if contract.kind == "hauling" {
+        let count = contract
+            .item
+            .as_ref()
+            .map(|item| game.inventory.count(item))
+            .unwrap_or_default();
+        format!(
+            "Cargo {count}/{}; deliver at target station",
+            contract.amount
+        )
+    } else {
+        format!("Scan target planet to level {}", contract.amount)
+    }
 }
 
 fn handle_npc_ship_interaction_input(
@@ -8795,6 +9143,21 @@ fn hovered_recipe_unlock_index(
 
     let table = recipe_unlock_table_layout(layout.detail.x, y, layout.detail.w);
     ui_hovered_table_cell(mouse, &table, service.recipe_unlocks.len(), 0.0).map(|cell| cell.row)
+}
+
+fn hovered_station_contract_index(
+    station: &StationDestination,
+    service: &StationService,
+    mouse: Vec2,
+    action_rail_width: f32,
+) -> Option<usize> {
+    let layout = station_action_layout(station, action_rail_width);
+    let y = contract_table_y(station, service, action_rail_width);
+    if layout.detail.w <= 0.0 {
+        return None;
+    }
+    let table = recipe_unlock_table_layout(layout.detail.x, y, layout.detail.w);
+    ui_hovered_table_cell(mouse, &table, service.contracts.len(), 0.0).map(|cell| cell.row)
 }
 
 fn launch_planet_scan(game: &mut GameState, planet_index: usize) -> bool {
@@ -13305,6 +13668,7 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
                 credits: game.credits,
                 inventory: &game.inventory,
                 completed_research: &game.completed_research,
+                active_contracts: &game.active_contracts,
                 action_rail_width: rail.w,
             });
         }
@@ -16204,6 +16568,7 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
         credits,
         inventory,
         completed_research,
+        active_contracts,
         action_rail_width,
     } = render;
     let layout = station_action_layout(station, action_rail_width);
@@ -16344,6 +16709,15 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
             16.0,
             if in_range { accent } else { warning },
         );
+        draw_station_repair_panel(
+            station,
+            service,
+            detail.x,
+            detail.y + 70.0,
+            detail.w,
+            in_range,
+            credits,
+        );
         draw_station_trade_table(StationTradeTableRender {
             station,
             service,
@@ -16351,6 +16725,16 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
             in_range,
             credits,
             inventory,
+            action_rail_width,
+            x: detail.x,
+            width: detail.w,
+        });
+        draw_station_contract_table(StationContractTableRender {
+            station,
+            service,
+            active_contracts,
+            world_elapsed_days,
+            in_range,
             action_rail_width,
             x: detail.x,
             width: detail.w,
@@ -16561,9 +16945,172 @@ fn draw_trade_action_button(rect: Rect, label: &str, enabled: bool, hovered: boo
     );
 }
 
+fn repair_button_rect(station: &StationDestination, action_rail_width: f32) -> Rect {
+    let layout = station_action_layout(station, action_rail_width);
+    Rect::new(
+        layout.detail.x,
+        layout.detail.y + 88.0,
+        layout.detail.w,
+        30.0,
+    )
+}
+
+fn draw_station_repair_panel(
+    _station: &StationDestination,
+    service: &StationService,
+    x: f32,
+    y: f32,
+    width: f32,
+    in_range: bool,
+    _credits: u32,
+) {
+    if service.kind != "garage" {
+        return;
+    }
+    draw_text(
+        "Maintenance",
+        x,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    let button = Rect::new(x, y + 18.0, width, 30.0);
+    let hovered = button.contains(mouse_vec2());
+    draw_trade_action_button(
+        button,
+        if !in_range {
+            "Approach to repair"
+        } else {
+            "Repair hull + shields (credit cost)"
+        },
+        in_range,
+        hovered,
+    );
+}
+
+fn draw_station_contract_table(render: StationContractTableRender<'_>) {
+    let StationContractTableRender {
+        station,
+        service,
+        active_contracts,
+        world_elapsed_days,
+        in_range,
+        action_rail_width,
+        x,
+        width,
+    } = render;
+    if service.contracts.is_empty() {
+        return;
+    }
+    let y = contract_table_y(station, service, action_rail_width);
+    let layout = recipe_unlock_table_layout(x, y, width);
+    let contract_column = layout.columns[0];
+    let action_column = layout.columns[1];
+    draw_text(
+        "Contracts",
+        contract_column.x,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    draw_text(
+        "Action",
+        action_column.x,
+        y + 16.0,
+        14.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    draw_line(
+        x,
+        y + 24.0,
+        x + width,
+        y + 24.0,
+        1.0,
+        Color::from_rgba(96, 137, 150, 220),
+    );
+    for (index, contract) in service.contracts.iter().enumerate() {
+        let row = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row) {
+            continue;
+        }
+        let active = active_contracts.iter().find(|active| {
+            active.id == contract.id
+                && active.origin_station == contract.origin_station
+                && active.origin_service == contract.origin_service
+        });
+        let status = if let Some(active) = active {
+            if world_elapsed_days > active.expires_day {
+                "Expired"
+            } else if in_range && active.target_reached && station.id == contract.origin_station {
+                "Complete"
+            } else {
+                "Active"
+            }
+        } else {
+            "Accept"
+        };
+        draw_rectangle(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            if row.contains(mouse_vec2()) {
+                Color::from_rgba(13, 32, 40, 210)
+            } else if index % 2 == 0 {
+                Color::from_rgba(8, 18, 24, 118)
+            } else {
+                Color::from_rgba(6, 12, 18, 82)
+            },
+        );
+        draw_text(
+            &fit_debug_text(&contract.name, contract_column.w, 14),
+            contract_column.x,
+            row.y + 17.0,
+            14.0,
+            Color::from_rgba(205, 226, 230, 255),
+        );
+        let detail = contract
+            .description
+            .as_deref()
+            .unwrap_or(match contract.kind.as_str() {
+                "hauling" => "Deliver cargo to the listed station",
+                _ => "Complete the requested survey",
+            });
+        draw_text(
+            &fit_debug_text(detail, contract_column.w, 11),
+            contract_column.x,
+            row.y + 31.0,
+            11.0,
+            Color::from_rgba(126, 156, 164, 220),
+        );
+        draw_text(
+            &fit_debug_text(status, action_column.w, 14),
+            action_column.x,
+            row.y + 20.0,
+            14.0,
+            if status == "Accept" || status == "Complete" {
+                Color::from_rgba(150, 221, 226, 255)
+            } else {
+                Color::from_rgba(226, 190, 150, 255)
+            },
+        );
+    }
+}
+
+fn contract_table_y(
+    station: &StationDestination,
+    service: &StationService,
+    action_rail_width: f32,
+) -> f32 {
+    station_trade_table_y(station, action_rail_width)
+        + 28.0
+        + service.trade.len() as f32 * 40.0
+        + if service.trade.is_empty() { 42.0 } else { 20.0 }
+}
+
 fn station_trade_table_y(station: &StationDestination, action_rail_width: f32) -> f32 {
     let layout = station_action_layout(station, action_rail_width);
-    layout.detail.y + 70.0
+    layout.detail.y + 140.0
 }
 
 fn format_trade_stock(offer: &TradeOffer, world_elapsed_days: f32) -> String {
@@ -16785,10 +17332,12 @@ fn recipe_unlock_table_y(
     service: &StationService,
     action_rail_width: f32,
 ) -> f32 {
-    station_trade_table_y(station, action_rail_width)
-        + 28.0
-        + service.trade.len() as f32 * 40.0
-        + if service.trade.is_empty() { 42.0 } else { 20.0 }
+    contract_table_y(station, service, action_rail_width)
+        + if service.contracts.is_empty() {
+            0.0
+        } else {
+            28.0 + service.contracts.len() as f32 * 40.0 + 20.0
+        }
 }
 
 fn research_lead_table_y(
@@ -20283,6 +20832,82 @@ mod tests {
     }
 
     #[test]
+    fn garage_repairs_hull_and_shields_for_credits() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.credits = 1_000;
+        game.ship.position = vec2(120.0, 0.0);
+        game.ship.systems.hull.current = 80.0;
+        game.ship.systems.shields.current = 90.0;
+        let expected_cost = (game.ship.systems.hull.max - 80.0).ceil() as u32 * 3
+            + (game.ship.systems.shields.max - 90.0).ceil() as u32;
+
+        assert!(repair_ship_at_station(&mut game, 0));
+        assert_eq!(game.ship.systems.hull.current, game.ship.systems.hull.max);
+        assert_eq!(
+            game.ship.systems.shields.current,
+            game.ship.systems.shields.max
+        );
+        assert_eq!(game.credits, 1_000 - expected_cost);
+    }
+
+    #[test]
+    fn survey_contract_accepts_tracks_scan_and_pays_at_origin() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![test_planet(
+                "core:test_target",
+                STARTER_SYSTEM_ID,
+                vec2(400.0, 0.0),
+                true,
+            )],
+        );
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.selected_station = Some(0);
+        game.ship.position = vec2(120.0, 0.0);
+        game.stations[0].services[0].contracts = vec![ContractOffer {
+            id: "core:test_survey".to_string(),
+            name: "Test Survey".to_string(),
+            kind: "survey".to_string(),
+            description: None,
+            origin_station: "core:test_station".to_string(),
+            origin_service: "core:test_market".to_string(),
+            target_station: None,
+            target_planet: Some("core:test_target".to_string()),
+            item: None,
+            amount: 1,
+            reward: 240,
+            duration_days: 10.0,
+        }];
+
+        assert!(accept_or_complete_contract(&mut game, 0, 0, 0));
+        assert_eq!(game.active_contracts.len(), 1);
+        let serialized = toml::to_string(&game.to_save()).expect("contract save should serialize");
+        let restored_save =
+            toml::from_str::<SaveData>(&serialized).expect("contract save should load");
+        assert_eq!(restored_save.active_contracts.len(), 1);
+        assert_eq!(restored_save.active_contracts[0].id, "core:test_survey");
+        game.planets[0].scan_level = 1;
+        update_contract_progress(&mut game);
+        assert!(game.active_contracts[0].target_reached);
+        assert!(accept_or_complete_contract(&mut game, 0, 0, 0));
+        assert!(game.active_contracts.is_empty());
+        assert_eq!(game.credits, default_credits() + 240);
+    }
+
+    #[test]
     fn vendor_catalogs_are_deterministic_and_rotate_by_world_day() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -21734,6 +22359,7 @@ mod tests {
                     trade: Vec::new(),
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
+                    contracts: Vec::new(),
                 },
                 StationService {
                     id: "core:test_garage".to_string(),
@@ -21744,6 +22370,7 @@ mod tests {
                     trade: Vec::new(),
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
+                    contracts: Vec::new(),
                 },
             ],
         }
@@ -21853,6 +22480,7 @@ mod tests {
             selected_station: None,
             selected_npc_ship: None,
             selected_station_service: None,
+            active_contracts: Vec::new(),
             selected_research: None,
             destination_planet: None,
             orbiting_planet: None,
