@@ -23,6 +23,7 @@ const GAME_PANEL_CONTENT_PAD_X: f32 = 56.0;
 const GAME_PANEL_HEADER_PAD_X: f32 = 92.0;
 const GAME_PANEL_HEADER_BASELINE: f32 = 62.0;
 const GAME_PANEL_BODY_TOP: f32 = 94.0;
+const CONTRACT_CARD_GAP: f32 = 10.0;
 const RESEARCH_TIER_LABEL_HEIGHT: f32 = 28.0;
 const RESEARCH_DETAIL_HEIGHT: f32 = 150.0;
 const RESEARCH_TREE_INSET: f32 = 18.0;
@@ -224,12 +225,15 @@ struct GameState {
     research_open: bool,
     upgrades_open: bool,
     content_open: bool,
+    contracts_open: bool,
     content_browser: ContentBrowserState,
     escape_dialog_open: bool,
     quit_to_title_requested: bool,
     starmap_filter: StarmapFilter,
     starmap_resource_filter_index: usize,
     work_scroll: f32,
+    contract_menu_scroll: f32,
+    selected_contract_index: Option<usize>,
     inventory_scroll: f32,
     upgrades_scroll: f32,
     shield_recharge_delay_remaining: f32,
@@ -1241,12 +1245,15 @@ impl GameState {
             research_open: false,
             upgrades_open: false,
             content_open: false,
+            contracts_open: false,
             content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
             starmap_filter: StarmapFilter::All,
             starmap_resource_filter_index: 0,
             work_scroll: 0.0,
+            contract_menu_scroll: 0.0,
+            selected_contract_index: None,
             inventory_scroll: 0.0,
             upgrades_scroll: 0.0,
             shield_recharge_delay_remaining: 0.0,
@@ -7173,6 +7180,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.research_open = false;
             game.upgrades_open = false;
             game.content_open = false;
+            game.contracts_open = false;
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -7196,6 +7204,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         game.research_open = false;
         game.upgrades_open = false;
         game.content_open = false;
+        game.contracts_open = false;
         game.selected_planet = None;
         game.selected_station = None;
         game.selected_npc_ship = None;
@@ -7209,6 +7218,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.inventory_open = false;
             game.upgrades_open = false;
             game.content_open = false;
+            game.contracts_open = false;
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -7222,6 +7232,23 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.inventory_open = false;
             game.research_open = false;
             game.upgrades_open = false;
+            game.contracts_open = false;
+            game.selected_planet = None;
+            game.selected_station = None;
+            game.selected_npc_ship = None;
+            game.selected_station_service = None;
+        }
+    }
+    if is_key_pressed(KeyCode::J) {
+        game.contracts_open = !game.contracts_open;
+        if game.contracts_open {
+            game.map_open = false;
+            game.inventory_open = false;
+            game.research_open = false;
+            game.upgrades_open = false;
+            game.content_open = false;
+            game.selected_contract_index = None;
+            game.contract_menu_scroll = 0.0;
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -7242,6 +7269,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.research_open
         && !game.upgrades_open
         && !game.content_open
+        && !game.contracts_open
     {
         select_nearby_destination(game);
         identify_selected_npc_ship(game);
@@ -7272,6 +7300,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.research_open
         && !game.upgrades_open
         && !game.content_open
+        && !game.contracts_open
     {
         adjust_camera_zoom(game, wheel.signum() as i32);
     }
@@ -7298,11 +7327,20 @@ fn update_game(game: &mut GameState, dt: f32) {
         click_handled = handle_content_browser_input(game, mouse);
     }
 
+    if game.contracts_open {
+        let mouse = vec2(mouse_position().0, mouse_position().1);
+        if wheel != 0.0 {
+            handle_contracts_overlay_scroll(game, mouse, wheel);
+        }
+        click_handled = handle_contracts_overlay_input(game, mouse);
+    }
+
     if game.inventory_open
         && !game.map_open
         && !game.research_open
         && !game.upgrades_open
         && !game.content_open
+        && !game.contracts_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if wheel != 0.0 {
@@ -7366,6 +7404,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.research_open
         && !game.upgrades_open
         && !game.content_open
+        && !game.contracts_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if clicked_player_ship(mouse) {
@@ -7408,6 +7447,9 @@ fn handle_escape_pressed(game: &mut GameState) {
 fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
     if game.content_open {
         game.content_open = false;
+        true
+    } else if game.contracts_open {
+        game.contracts_open = false;
         true
     } else if game.upgrades_open {
         game.upgrades_open = false;
@@ -7736,6 +7778,8 @@ struct PlanetActionRailRender<'a> {
 struct StationActionRailRender<'a> {
     content_registry: &'a content::ContentRegistry,
     station: &'a StationDestination,
+    stations: &'a [StationDestination],
+    planets: &'a [Planet],
     world_elapsed_days: f32,
     selected_service: Option<usize>,
     in_range: bool,
@@ -7762,6 +7806,8 @@ struct StationTradeTableRender<'a> {
 struct StationContractTableRender<'a> {
     station: &'a StationDestination,
     service: &'a StationService,
+    stations: &'a [StationDestination],
+    planets: &'a [Planet],
     active_contracts: &'a [ActiveContract],
     faction_reputation: &'a HashMap<String, i32>,
     world_elapsed_days: f32,
@@ -7775,6 +7821,8 @@ struct RecipeUnlockTableRender<'a> {
     content_registry: &'a content::ContentRegistry,
     station: &'a StationDestination,
     service: &'a StationService,
+    stations: &'a [StationDestination],
+    planets: &'a [Planet],
     in_range: bool,
     credits: u32,
     completed_research: &'a [String],
@@ -8772,8 +8820,14 @@ fn handle_station_contract_input(game: &mut GameState, station_index: usize, mou
         return true;
     }
     let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    let Some(contract_index) = hovered_station_contract_index(station, service, mouse, rail_width)
-    else {
+    let Some(contract_index) = hovered_station_contract_index(
+        station,
+        service,
+        &game.stations,
+        &game.planets,
+        mouse,
+        rail_width,
+    ) else {
         return false;
     };
     accept_or_complete_contract(game, station_index, service_index, contract_index)
@@ -9067,8 +9121,14 @@ fn handle_station_recipe_unlock_input(
         return false;
     };
     let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    let Some(unlock_index) = hovered_recipe_unlock_index(station, service, mouse, rail_width)
-    else {
+    let Some(unlock_index) = hovered_recipe_unlock_index(
+        station,
+        service,
+        &game.stations,
+        &game.planets,
+        mouse,
+        rail_width,
+    ) else {
         return false;
     };
 
@@ -9362,11 +9422,13 @@ fn hovered_station_trade_action(
 fn hovered_recipe_unlock_index(
     station: &StationDestination,
     service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
     mouse: Vec2,
     action_rail_width: f32,
 ) -> Option<usize> {
     let layout = station_action_layout(station, action_rail_width);
-    let y = recipe_unlock_table_y(station, service, action_rail_width);
+    let y = recipe_unlock_table_y(station, service, stations, planets, action_rail_width);
     if layout.detail.w <= 0.0 {
         return None;
     }
@@ -9378,16 +9440,27 @@ fn hovered_recipe_unlock_index(
 fn hovered_station_contract_index(
     station: &StationDestination,
     service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
     mouse: Vec2,
     action_rail_width: f32,
 ) -> Option<usize> {
-    let layout = station_action_layout(station, action_rail_width);
-    let y = contract_table_y(station, service, action_rail_width);
-    if layout.detail.w <= 0.0 {
-        return None;
-    }
-    let table = recipe_unlock_table_layout(layout.detail.x, y, layout.detail.w);
-    ui_hovered_table_cell(mouse, &table, service.contracts.len(), 0.0).map(|cell| cell.row)
+    service
+        .contracts
+        .iter()
+        .enumerate()
+        .find(|(index, _)| {
+            station_contract_card_rect(
+                station,
+                service,
+                stations,
+                planets,
+                *index,
+                action_rail_width,
+            )
+            .contains(mouse)
+        })
+        .map(|(index, _)| index)
 }
 
 fn launch_planet_scan(game: &mut GameState, planet_index: usize) -> bool {
@@ -10945,6 +11018,7 @@ fn draw_scene(
         game.research_open,
         game.upgrades_open,
         game.content_open,
+        game.contracts_open,
         game.save_status_timer > 0.0,
     );
     draw_interaction_prompt(game);
@@ -10963,6 +11037,9 @@ fn draw_scene(
     }
     if game.content_open {
         draw_content_debug_overlay(game, panel_corner);
+    }
+    if game.contracts_open {
+        draw_contracts_overlay(game, panel_corner);
     }
     if game.escape_dialog_open {
         draw_escape_dialog(game, logo, panel_corner);
@@ -12320,6 +12397,25 @@ fn draw_poi_indicator(
     );
 }
 
+fn wrapped_text_height(text: &str, max_width: f32, font_size: u16) -> f32 {
+    let mut line = String::new();
+    let mut line_count = 1_u32;
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if measure_text(&candidate, None, font_size, 1.0).width <= max_width {
+            line = candidate;
+        } else {
+            line = word.to_string();
+            line_count += 1;
+        }
+    }
+    line_count as f32 * 22.0
+}
+
 fn draw_wrapped_text(
     text: &str,
     x: f32,
@@ -12616,10 +12712,13 @@ fn draw_inventory_hint(
     research_open: bool,
     upgrades_open: bool,
     content_open: bool,
+    contracts_open: bool,
     save_visible: bool,
 ) {
     let mut text = if map_open {
         "M close map"
+    } else if contracts_open {
+        "J close contracts"
     } else if content_open {
         "C close content"
     } else if upgrades_open {
@@ -12627,9 +12726,9 @@ fn draw_inventory_hint(
     } else if research_open {
         "K close research"
     } else if inventory_open {
-        "E/Tab close inventory   M map   K research   C content   Esc close"
+        "E/Tab close inventory   M map   K research   C content   J contracts   Esc close"
     } else {
-        "E/Tab inventory   M map   K research   C content   Esc menu"
+        "E/Tab inventory   M map   K research   C content   J contracts   Esc menu"
     }
     .to_string();
     if save_visible {
@@ -13615,7 +13714,10 @@ fn action_rail_width_with_override(auto_width: f32, game: &GameState) -> f32 {
 }
 
 fn action_rail_width_from_override(auto_width: f32, override_width: Option<f32>) -> f32 {
-    clamp_action_rail_width(action_rail_override_candidate(auto_width, override_width))
+    let width = override_width.map_or_else(action_rail_max_width, |override_width| {
+        action_rail_override_candidate(auto_width, Some(override_width))
+    });
+    clamp_action_rail_width(width)
 }
 
 fn action_rail_override_candidate(auto_width: f32, override_width: Option<f32>) -> f32 {
@@ -13623,12 +13725,15 @@ fn action_rail_override_candidate(auto_width: f32, override_width: Option<f32>) 
 }
 
 fn clamp_action_rail_width(width: f32) -> f32 {
-    let max_width = (screen_width() * OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION)
-        .clamp(OBJECT_ACTION_RAIL_MIN_WIDTH, 540.0);
     width
         .max(OBJECT_ACTION_RAIL_MIN_WIDTH)
-        .min(max_width)
-        .min((screen_width() - 672.0).max(OBJECT_ACTION_RAIL_MIN_WIDTH))
+        .min(action_rail_max_width())
+}
+
+fn action_rail_max_width() -> f32 {
+    let max_width = (screen_width() * OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION)
+        .clamp(OBJECT_ACTION_RAIL_MIN_WIDTH, 590.0);
+    max_width.min((screen_width() - 672.0).max(OBJECT_ACTION_RAIL_MIN_WIDTH))
 }
 
 fn planet_action_rail_width(planet: &Planet) -> f32 {
@@ -13892,6 +13997,8 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
             draw_station_service_list(StationActionRailRender {
                 content_registry: &game.content_registry,
                 station,
+                stations: &game.stations,
+                planets: &game.planets,
                 world_elapsed_days: game.world_elapsed_days,
                 selected_service: game.selected_station_service,
                 in_range: station_in_interaction_range(&game.ship, station),
@@ -14318,6 +14425,485 @@ fn draw_ship_upgrades_overlay(game: &GameState, panel_corner: Option<&Texture2D>
     });
 }
 
+#[derive(Clone)]
+struct ContractMenuEntry {
+    contract: ContractOffer,
+    origin_name: String,
+    target_name: String,
+    status: String,
+    progress: String,
+    deadline: String,
+}
+
+fn contracts_panel_rect() -> Rect {
+    let width = (screen_width() - 48.0).min(1080.0);
+    let height = (screen_height() - 72.0)
+        .max(360.0)
+        .min(screen_height() * 0.84);
+    Rect::new(
+        (screen_width() - width) * 0.5,
+        (screen_height() - height) * 0.5,
+        width,
+        height,
+    )
+}
+
+fn contracts_menu_viewport(panel: Rect) -> Rect {
+    Rect::new(
+        panel.x + GAME_PANEL_CONTENT_PAD_X,
+        panel.y + GAME_PANEL_BODY_TOP + 12.0,
+        (panel.w * 0.42).max(260.0),
+        panel.h - GAME_PANEL_BODY_TOP - 38.0,
+    )
+}
+
+fn contracts_menu_card_height(entry: &ContractMenuEntry, width: f32) -> f32 {
+    (69.0
+        + wrapped_text_height(&entry.contract.name, width - 18.0, 21)
+        + wrapped_text_height(
+            &format!("{} → {}", entry.origin_name, entry.target_name),
+            width - 18.0,
+            15,
+        ))
+    .max(98.0)
+}
+
+fn contracts_menu_card_rect(
+    panel: Rect,
+    entries: &[ContractMenuEntry],
+    index: usize,
+    scroll: f32,
+) -> Rect {
+    let viewport = contracts_menu_viewport(panel);
+    let y_offset = entries
+        .iter()
+        .take(index)
+        .map(|entry| contracts_menu_card_height(entry, viewport.w) + CONTRACT_CARD_GAP)
+        .sum::<f32>();
+    Rect::new(
+        viewport.x,
+        viewport.y + y_offset - scroll,
+        viewport.w,
+        entries
+            .get(index)
+            .map(|entry| contracts_menu_card_height(entry, viewport.w))
+            .unwrap_or(0.0),
+    )
+}
+
+fn active_contract_menu_entries(game: &GameState) -> Vec<ContractMenuEntry> {
+    game.active_contracts
+        .iter()
+        .filter_map(|active| {
+            let station = game
+                .stations
+                .iter()
+                .find(|station| station.id == active.origin_station)?;
+            let contract = station
+                .services
+                .iter()
+                .find(|service| service.id == active.origin_service)
+                .and_then(|service| {
+                    service.contracts.iter().find(|contract| {
+                        contract.id == active.id
+                            && contract.origin_station == active.origin_station
+                            && contract.origin_service == active.origin_service
+                    })
+                })?
+                .clone();
+            let target_name = contract_target_name(game, &contract);
+            let expired = game.world_elapsed_days > active.expires_day;
+            let completion_ready = active.target_reached
+                && (contract.kind != "hauling"
+                    || contract
+                        .item
+                        .as_ref()
+                        .is_some_and(|item| game.inventory.count(item) >= contract.amount));
+            let status = if expired {
+                "Expired"
+            } else if completion_ready {
+                "Ready to complete"
+            } else {
+                "Active"
+            };
+            let remaining_days = (active.expires_day - game.world_elapsed_days).max(0.0);
+            Some(ContractMenuEntry {
+                progress: if contract.kind == "hauling" {
+                    let count = contract
+                        .item
+                        .as_ref()
+                        .map(|item| game.inventory.count(item))
+                        .unwrap_or_default();
+                    format!("Cargo {count}/{}", contract.amount)
+                } else if active.target_reached {
+                    format!("Survey level {}/{}", contract.amount, contract.amount)
+                } else {
+                    let scan_level = contract
+                        .target_planet
+                        .as_deref()
+                        .and_then(|target| {
+                            game.planets
+                                .iter()
+                                .find(|planet| planet.id == target)
+                                .map(|planet| planet.scan_level as u32)
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "Survey level {}/{}",
+                        scan_level.min(contract.amount),
+                        contract.amount
+                    )
+                },
+                deadline: format!("{remaining_days:.1} days remaining"),
+                contract,
+                origin_name: station.name.clone(),
+                target_name,
+                status: status.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn contract_target_name(game: &GameState, contract: &ContractOffer) -> String {
+    if contract.kind == "hauling" {
+        contract
+            .target_station
+            .as_deref()
+            .and_then(|target| game.stations.iter().find(|station| station.id == target))
+            .map(|station| station.name.clone())
+            .or_else(|| contract.target_station.clone())
+            .unwrap_or_else(|| "Target station".to_string())
+    } else {
+        contract
+            .target_planet
+            .as_deref()
+            .and_then(|target| game.planets.iter().find(|planet| planet.id == target))
+            .map(|planet| planet.id.clone())
+            .or_else(|| contract.target_planet.clone())
+            .unwrap_or_else(|| "Target planet".to_string())
+    }
+}
+
+fn handle_contracts_overlay_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
+    let panel = contracts_panel_rect();
+    let viewport = contracts_menu_viewport(panel);
+    if !viewport.contains(mouse) {
+        return;
+    }
+    let entries = active_contract_menu_entries(game);
+    let content_height = entries
+        .iter()
+        .map(|entry| contracts_menu_card_height(entry, viewport.w) + CONTRACT_CARD_GAP)
+        .sum::<f32>()
+        - CONTRACT_CARD_GAP;
+    let max_scroll = (content_height - viewport.h).max(0.0);
+    game.contract_menu_scroll = (game.contract_menu_scroll - wheel * 44.0).clamp(0.0, max_scroll);
+}
+
+fn handle_contracts_overlay_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+    let panel = contracts_panel_rect();
+    let entries = active_contract_menu_entries(game);
+    let Some(index) = entries.iter().enumerate().position(|(index, _)| {
+        contracts_menu_card_rect(panel, &entries, index, game.contract_menu_scroll).contains(mouse)
+    }) else {
+        return false;
+    };
+    game.selected_contract_index = Some(index);
+    focus_active_contract(game, &entries[index]);
+    true
+}
+
+fn focus_active_contract(game: &mut GameState, entry: &ContractMenuEntry) {
+    let Some(station_index) = game
+        .stations
+        .iter()
+        .position(|station| station.id == entry.contract.origin_station)
+    else {
+        push_operation_feedback(
+            game,
+            "Contracts",
+            "Origin station is unavailable".to_string(),
+        );
+        return;
+    };
+    let station = &game.stations[station_index];
+    if station.system != game.current_system_id {
+        push_operation_feedback(game, "Contracts", format!("Origin: {}", entry.origin_name));
+        return;
+    }
+    let Some(service_index) = station
+        .services
+        .iter()
+        .position(|service| service.id == entry.contract.origin_service)
+    else {
+        return;
+    };
+    game.selected_station = Some(station_index);
+    game.selected_station_service = Some(service_index);
+    game.selected_planet = None;
+    game.selected_npc_ship = None;
+    game.contracts_open = false;
+    game.inventory_open = true;
+    push_operation_feedback(
+        game,
+        "Contracts",
+        format!("Focused {} at {}", entry.contract.name, entry.origin_name),
+    );
+}
+
+fn draw_contracts_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
+    let panel = contracts_panel_rect();
+    let viewport = contracts_menu_viewport(panel);
+    let entries = active_contract_menu_entries(game);
+    let mouse = mouse_vec2();
+    let text = Color::from_rgba(235, 242, 226, 255);
+    let detail = Color::from_rgba(178, 197, 203, 255);
+    let accent = Color::from_rgba(150, 221, 226, 255);
+    let warning = Color::from_rgba(226, 190, 150, 255);
+
+    draw_rectangle(
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        Color::from_rgba(6, 12, 18, 238),
+    );
+    draw_rectangle_lines(
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        1.0,
+        Color::from_rgba(112, 151, 163, 180),
+    );
+    draw_panel_corner_art(panel, panel_corner);
+    draw_text(
+        "Contracts",
+        panel.x + GAME_PANEL_HEADER_PAD_X,
+        panel.y + GAME_PANEL_HEADER_BASELINE,
+        28.0,
+        text,
+    );
+    draw_text(
+        "J / Esc close",
+        panel.x + panel.w - 132.0,
+        panel.y + 36.0,
+        17.0,
+        detail,
+    );
+    draw_text(
+        &format!("{}/3 active", entries.len()),
+        panel.x + panel.w - 132.0,
+        panel.y + 62.0,
+        15.0,
+        accent,
+    );
+    draw_vertical_dotted_line(
+        viewport.x + viewport.w + 22.0,
+        viewport.y,
+        viewport.y + viewport.h,
+        0.5,
+        5.0,
+        6.0,
+        Color::from_rgba(96, 137, 150, 100),
+    );
+
+    if entries.is_empty() {
+        draw_text(
+            "No active contracts",
+            viewport.x,
+            viewport.y + 30.0,
+            19.0,
+            detail,
+        );
+        draw_text(
+            "Accept work from a station contract desk.",
+            viewport.x,
+            viewport.y + 58.0,
+            15.0,
+            detail,
+        );
+        return;
+    }
+
+    for (index, entry) in entries.iter().enumerate() {
+        let card = contracts_menu_card_rect(panel, &entries, index, game.contract_menu_scroll);
+        if card.y + card.h < viewport.y || card.y > viewport.y + viewport.h {
+            continue;
+        }
+        let selected = game.selected_contract_index == Some(index);
+        let hovered = card.contains(mouse);
+        draw_rectangle(
+            card.x,
+            card.y,
+            card.w,
+            card.h,
+            if selected {
+                Color::from_rgba(24, 58, 66, 235)
+            } else if hovered {
+                Color::from_rgba(13, 32, 40, 220)
+            } else {
+                Color::from_rgba(8, 18, 24, 150)
+            },
+        );
+        draw_rectangle_lines(
+            card.x,
+            card.y,
+            card.w,
+            card.h,
+            1.0,
+            if selected {
+                accent
+            } else {
+                Color::from_rgba(82, 114, 124, 110)
+            },
+        );
+        let title_bottom = draw_wrapped_text(
+            &entry.contract.name,
+            card.x + 9.0,
+            card.y + 25.0,
+            card.w - 18.0,
+            21,
+            text,
+        );
+        let status_y = title_bottom + 4.0;
+        draw_text(
+            &fit_debug_text(
+                &format!("{} · {}", entry.status, entry.deadline),
+                card.w - 18.0,
+                16,
+            ),
+            card.x + 9.0,
+            status_y,
+            16.0,
+            if entry.status == "Expired" {
+                warning
+            } else {
+                accent
+            },
+        );
+        draw_wrapped_text(
+            &format!("{} → {}", entry.origin_name, entry.target_name),
+            card.x + 9.0,
+            status_y + 28.0,
+            card.w - 18.0,
+            15,
+            detail,
+        );
+    }
+
+    let detail_x = viewport.x + viewport.w + 48.0;
+    let detail_width = panel.x + panel.w - detail_x - 28.0;
+    if let Some(index) = game
+        .selected_contract_index
+        .filter(|index| *index < entries.len())
+    {
+        let entry = &entries[index];
+        draw_text(
+            &fit_debug_text(&entry.contract.name, detail_width, 23),
+            detail_x,
+            viewport.y + 28.0,
+            23.0,
+            text,
+        );
+        draw_text(
+            &format!("{} · {}", entry.status, entry.deadline),
+            detail_x,
+            viewport.y + 54.0,
+            16.0,
+            if entry.status == "Expired" {
+                warning
+            } else {
+                accent
+            },
+        );
+        let mut y = draw_wrapped_text(
+            entry
+                .contract
+                .description
+                .as_deref()
+                .unwrap_or("No description provided."),
+            detail_x,
+            viewport.y + 86.0,
+            detail_width,
+            16,
+            detail,
+        );
+        y += 8.0;
+        draw_text(
+            &format!("Objective: {}", entry.progress),
+            detail_x,
+            y,
+            16.0,
+            text,
+        );
+        y += 28.0;
+        draw_text(
+            &format!("Origin: {}", entry.origin_name),
+            detail_x,
+            y,
+            16.0,
+            detail,
+        );
+        y += 24.0;
+        draw_text(
+            &format!("Destination: {}", entry.target_name),
+            detail_x,
+            y,
+            16.0,
+            detail,
+        );
+        y += 24.0;
+        draw_text(
+            &format!(
+                "Reward: {} credits · +{} reputation",
+                entry.contract.reward, entry.contract.reputation_reward
+            ),
+            detail_x,
+            y,
+            16.0,
+            accent,
+        );
+        y += 24.0;
+        draw_text(
+            &format!(
+                "Requirement: {} reputation",
+                entry.contract.reputation_required
+            ),
+            detail_x,
+            y,
+            15.0,
+            detail,
+        );
+        y += 36.0;
+        draw_text(
+            "Click the card to focus its origin station when nearby.",
+            detail_x,
+            y,
+            14.0,
+            detail,
+        );
+    } else {
+        draw_text(
+            "Select a contract",
+            detail_x,
+            viewport.y + 30.0,
+            19.0,
+            detail,
+        );
+        draw_text(
+            "Click a card to focus its origin station.",
+            detail_x,
+            viewport.y + 58.0,
+            15.0,
+            detail,
+        );
+    }
+}
+
 fn draw_content_debug_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     let layout = content_browser_layout();
     let width = layout.width;
@@ -14667,11 +15253,23 @@ fn draw_content_debug_column(column: ContentColumnRender<'_>) {
 
 fn fit_debug_text(text: &str, width: f32, font_size: u16) -> String {
     let mut fitted = text.to_string();
-    while fitted.len() > 3 && measure_text(&fitted, None, font_size, 1.0).width > width - 12.0 {
+    let original_char_count = text.chars().count();
+    while fitted.chars().count() > 3
+        && measure_text(&fitted, None, font_size, 1.0).width > width - 12.0
+    {
         fitted.pop();
     }
-    if fitted.len() < text.len() && fitted.len() > 3 {
-        fitted.truncate(fitted.len() - 3);
+    append_debug_ellipsis(fitted, original_char_count)
+}
+
+fn append_debug_ellipsis(mut fitted: String, original_char_count: usize) -> String {
+    if fitted.chars().count() < original_char_count && fitted.chars().count() > 3 {
+        for _ in 0..3 {
+            fitted.pop();
+        }
+        while fitted.chars().last().is_some_and(char::is_whitespace) {
+            fitted.pop();
+        }
         fitted.push_str("...");
     }
     fitted
@@ -16793,6 +17391,8 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
     let StationActionRailRender {
         content_registry,
         station,
+        stations,
+        planets,
         world_elapsed_days,
         selected_service,
         in_range,
@@ -16991,6 +17591,8 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
         draw_station_contract_table(StationContractTableRender {
             station,
             service,
+            stations,
+            planets,
             active_contracts,
             faction_reputation,
             world_elapsed_days,
@@ -17003,6 +17605,8 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
             content_registry,
             station,
             service,
+            stations,
+            planets,
             in_range,
             credits,
             completed_research,
@@ -17014,6 +17618,8 @@ fn draw_station_service_list(render: StationActionRailRender<'_>) {
             content_registry,
             station,
             service,
+            stations,
+            planets,
             in_range,
             credits,
             completed_research,
@@ -17252,6 +17858,8 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
     let StationContractTableRender {
         station,
         service,
+        stations,
+        planets,
         active_contracts,
         faction_reputation,
         world_elapsed_days,
@@ -17264,21 +17872,18 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
         return;
     }
     let y = contract_table_y(station, service, action_rail_width);
-    let layout = recipe_unlock_table_layout(x, y, width);
-    let contract_column = layout.columns[0];
-    let action_column = layout.columns[1];
     draw_text(
         "Contracts",
-        contract_column.x,
+        x,
         y + 16.0,
         14.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_text(
-        "Action",
-        action_column.x,
+        "Select a card to accept or complete",
+        x + width - 230.0,
         y + 16.0,
-        14.0,
+        12.0,
         Color::from_rgba(168, 204, 210, 255),
     );
     draw_line(
@@ -17290,10 +17895,14 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
         Color::from_rgba(96, 137, 150, 220),
     );
     for (index, contract) in service.contracts.iter().enumerate() {
-        let row = ui_table_row_rect(&layout, index, 0.0);
-        if !ui_table_row_visible(&layout, row) {
-            continue;
-        }
+        let row = station_contract_card_rect(
+            station,
+            service,
+            stations,
+            planets,
+            index,
+            action_rail_width,
+        );
         let active = active_contracts.iter().find(|active| {
             active.id == contract.id
                 && active.origin_station == contract.origin_station
@@ -17331,11 +17940,20 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
                 Color::from_rgba(6, 12, 18, 82)
             },
         );
-        draw_text(
-            &fit_debug_text(&contract.name, contract_column.w, 14),
-            contract_column.x,
-            row.y + 17.0,
-            14.0,
+        draw_rectangle_lines(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            1.0,
+            Color::from_rgba(82, 114, 124, 100),
+        );
+        let title_bottom = draw_wrapped_text(
+            &contract.name,
+            row.x + 9.0,
+            row.y + 23.0,
+            row.w - 132.0,
+            19,
             Color::from_rgba(205, 226, 230, 255),
         );
         let detail = contract
@@ -17345,24 +17963,188 @@ fn draw_station_contract_table(render: StationContractTableRender<'_>) {
                 "hauling" => "Deliver cargo to the listed station",
                 _ => "Complete the requested survey",
             });
-        draw_text(
-            &fit_debug_text(detail, contract_column.w, 11),
-            contract_column.x,
-            row.y + 31.0,
-            11.0,
+        let detail_bottom = draw_wrapped_text(
+            detail,
+            row.x + 9.0,
+            title_bottom + 2.0,
+            row.w - 18.0,
+            14,
             Color::from_rgba(126, 156, 164, 220),
         );
+        let destination =
+            contract_target_name_from_station_data(station, contract, stations, planets);
+        let objective = if contract.kind == "hauling" {
+            format!(
+                "Deliver {} × {} to {}",
+                contract
+                    .item
+                    .as_ref()
+                    .map(|item| item.name.as_str())
+                    .unwrap_or("cargo"),
+                contract.amount,
+                destination
+            )
+        } else {
+            format!("Scan {} to level {}", destination, contract.amount)
+        };
+        draw_wrapped_text(
+            &format!(
+                "{} · {} cr · {}d",
+                objective, contract.reward, contract.duration_days
+            ),
+            row.x + 9.0,
+            detail_bottom + 2.0,
+            row.w - 18.0,
+            13,
+            Color::from_rgba(178, 197, 203, 230),
+        );
         draw_text(
-            &fit_debug_text(status, action_column.w, 14),
-            action_column.x,
-            row.y + 20.0,
-            14.0,
+            &fit_debug_text(status, 112.0, 16),
+            row.x + row.w - 116.0,
+            row.y + 23.0,
+            16.0,
             if status == "Accept" || status == "Complete" {
                 Color::from_rgba(150, 221, 226, 255)
             } else {
                 Color::from_rgba(226, 190, 150, 255)
             },
         );
+    }
+}
+
+fn station_contract_card_rect(
+    station: &StationDestination,
+    service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
+    index: usize,
+    action_rail_width: f32,
+) -> Rect {
+    let layout = station_action_layout(station, action_rail_width);
+    let card_y = contract_table_y(station, service, action_rail_width)
+        + 32.0
+        + (0..index)
+            .map(|previous_index| {
+                station_contract_card_height(
+                    station,
+                    service,
+                    stations,
+                    planets,
+                    previous_index,
+                    action_rail_width,
+                ) + CONTRACT_CARD_GAP
+            })
+            .sum::<f32>();
+    Rect::new(
+        layout.detail.x,
+        card_y,
+        layout.detail.w,
+        station_contract_card_height(
+            station,
+            service,
+            stations,
+            planets,
+            index,
+            action_rail_width,
+        ),
+    )
+}
+
+fn station_contract_card_height(
+    station: &StationDestination,
+    service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
+    index: usize,
+    action_rail_width: f32,
+) -> f32 {
+    let layout = station_action_layout(station, action_rail_width);
+    let Some(contract) = service.contracts.get(index) else {
+        return 0.0;
+    };
+    let detail = contract
+        .description
+        .as_deref()
+        .unwrap_or(match contract.kind.as_str() {
+            "hauling" => "Deliver cargo to the listed station",
+            _ => "Complete the requested survey",
+        });
+    let destination = contract_target_name_from_station_data(station, contract, stations, planets);
+    let objective = if contract.kind == "hauling" {
+        format!(
+            "Deliver {} × {} to {}",
+            contract
+                .item
+                .as_ref()
+                .map(|item| item.name.as_str())
+                .unwrap_or("cargo"),
+            contract.amount,
+            destination
+        )
+    } else {
+        format!("Scan {} to level {}", destination, contract.amount)
+    };
+    (39.0
+        + wrapped_text_height(&contract.name, layout.detail.w - 132.0, 19)
+        + wrapped_text_height(detail, layout.detail.w - 18.0, 14)
+        + wrapped_text_height(
+            &format!(
+                "{} · {} cr · {}d",
+                objective, contract.reward, contract.duration_days
+            ),
+            layout.detail.w - 18.0,
+            13,
+        ))
+    .max(96.0)
+}
+
+fn station_contract_cards_height(
+    station: &StationDestination,
+    service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
+    action_rail_width: f32,
+) -> f32 {
+    service
+        .contracts
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            station_contract_card_height(
+                station,
+                service,
+                stations,
+                planets,
+                index,
+                action_rail_width,
+            ) + CONTRACT_CARD_GAP
+        })
+        .sum::<f32>()
+        - CONTRACT_CARD_GAP
+}
+
+fn contract_target_name_from_station_data(
+    station: &StationDestination,
+    contract: &ContractOffer,
+    stations: &[StationDestination],
+    planets: &[Planet],
+) -> String {
+    if contract.kind == "hauling" {
+        contract
+            .target_station
+            .as_deref()
+            .and_then(|target| stations.iter().find(|station| station.id == target))
+            .map(|station| station.name.clone())
+            .or_else(|| contract.target_station.clone())
+            .unwrap_or_else(|| station.name.clone())
+    } else {
+        contract
+            .target_planet
+            .as_deref()
+            .and_then(|target| planets.iter().find(|planet| planet.id == target))
+            .map(|planet| planet.id.clone())
+            .or_else(|| contract.target_planet.clone())
+            .unwrap_or_else(|| "target planet".to_string())
     }
 }
 
@@ -17403,6 +18185,8 @@ fn draw_research_lead_table(render: RecipeUnlockTableRender<'_>) {
         content_registry,
         station,
         service,
+        stations,
+        planets,
         in_range,
         credits: _,
         completed_research,
@@ -17413,7 +18197,7 @@ fn draw_research_lead_table(render: RecipeUnlockTableRender<'_>) {
     if service.research.is_empty() {
         return;
     }
-    let y = research_lead_table_y(station, service, action_rail_width);
+    let y = research_lead_table_y(station, service, stations, planets, action_rail_width);
     let layout = recipe_unlock_table_layout(x, y, width);
     let research_column = layout.columns[0];
     let status_column = layout.columns[1];
@@ -17502,6 +18286,8 @@ fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
         content_registry,
         station,
         service,
+        stations,
+        planets,
         in_range,
         credits,
         completed_research,
@@ -17512,7 +18298,7 @@ fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
     if service.recipe_unlocks.is_empty() {
         return;
     }
-    let y = recipe_unlock_table_y(station, service, action_rail_width);
+    let y = recipe_unlock_table_y(station, service, stations, planets, action_rail_width);
     let layout = recipe_unlock_table_layout(x, y, width);
     let recipe_column = layout.columns[0];
     let price_column = layout.columns[1];
@@ -17599,22 +18385,33 @@ fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
 fn recipe_unlock_table_y(
     station: &StationDestination,
     service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
     action_rail_width: f32,
 ) -> f32 {
     contract_table_y(station, service, action_rail_width)
         + if service.contracts.is_empty() {
             0.0
         } else {
-            28.0 + service.contracts.len() as f32 * 40.0 + 20.0
+            28.0 + station_contract_cards_height(
+                station,
+                service,
+                stations,
+                planets,
+                action_rail_width,
+            ) + CONTRACT_CARD_GAP
+                + 20.0
         }
 }
 
 fn research_lead_table_y(
     station: &StationDestination,
     service: &StationService,
+    stations: &[StationDestination],
+    planets: &[Planet],
     action_rail_width: f32,
 ) -> f32 {
-    recipe_unlock_table_y(station, service, action_rail_width)
+    recipe_unlock_table_y(station, service, stations, planets, action_rail_width)
         + if service.recipe_unlocks.is_empty() {
             0.0
         } else {
@@ -21184,6 +21981,76 @@ mod tests {
     }
 
     #[test]
+    fn active_contract_menu_resolves_progress_and_destination() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![test_planet(
+                "core:test_target",
+                STARTER_SYSTEM_ID,
+                vec2(400.0, 0.0),
+                true,
+            )],
+        );
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].contracts = vec![ContractOffer {
+            id: "core:test_survey".to_string(),
+            name: "Test Survey".to_string(),
+            kind: "survey".to_string(),
+            description: Some("Survey the target.".to_string()),
+            origin_station: "core:test_station".to_string(),
+            origin_service: "core:test_market".to_string(),
+            target_station: None,
+            target_planet: Some("core:test_target".to_string()),
+            item: None,
+            amount: 2,
+            reward: 240,
+            duration_days: 10.0,
+            reputation_faction: None,
+            reputation_required: 0,
+            reputation_reward: 5,
+        }];
+        game.active_contracts.push(ActiveContract {
+            id: "core:test_survey".to_string(),
+            origin_station: "core:test_station".to_string(),
+            origin_service: "core:test_market".to_string(),
+            expires_day: 10.0,
+            target_reached: false,
+        });
+
+        let entries = active_contract_menu_entries(&game);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].origin_name, "Test Station");
+        assert_eq!(entries[0].target_name, "core:test_target");
+        assert_eq!(entries[0].progress, "Survey level 0/2");
+        assert_eq!(entries[0].status, "Active");
+
+        game.active_contracts[0].target_reached = true;
+        let completed_entries = active_contract_menu_entries(&game);
+        assert_eq!(completed_entries[0].progress, "Survey level 2/2");
+        assert_eq!(completed_entries[0].status, "Ready to complete");
+
+        game.contracts_open = true;
+        focus_active_contract(&mut game, &completed_entries[0]);
+        assert!(!game.contracts_open);
+        assert!(game.inventory_open);
+        assert_eq!(game.selected_station, Some(0));
+        assert_eq!(game.selected_station_service, Some(0));
+    }
+
+    #[test]
+    fn fit_debug_text_truncates_unicode_without_splitting_utf8() {
+        let fitted = append_debug_ellipsis("Freight Lock · Ready → ×".to_string(), 30);
+        assert!(fitted.is_char_boundary(fitted.len()));
+        assert_eq!(fitted, "Freight Lock · Ready...");
+    }
+
+    #[test]
     fn vendor_catalogs_are_deterministic_and_rotate_by_world_day() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -22244,9 +23111,15 @@ mod tests {
         game.research_open = true;
         game.upgrades_open = true;
         game.content_open = true;
+        game.contracts_open = true;
 
         handle_escape_pressed(&mut game);
         assert!(!game.content_open);
+        assert!(game.contracts_open);
+        assert!(game.upgrades_open);
+
+        handle_escape_pressed(&mut game);
+        assert!(!game.contracts_open);
         assert!(game.upgrades_open);
         assert!(!game.escape_dialog_open);
 
@@ -22833,12 +23706,15 @@ mod tests {
             research_open: false,
             upgrades_open: false,
             content_open: false,
+            contracts_open: false,
             content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
             starmap_filter: StarmapFilter::All,
             starmap_resource_filter_index: 0,
             work_scroll: 0.0,
+            contract_menu_scroll: 0.0,
+            selected_contract_index: None,
             inventory_scroll: 0.0,
             upgrades_scroll: 0.0,
             shield_recharge_delay_remaining: 0.0,
