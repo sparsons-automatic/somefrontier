@@ -130,6 +130,12 @@ are preserved when the game saves and loads. Some station services are managed
 by named vendors whose catalogs rotate by world day; their specialties, current
 catalog, prices, and stock are shown in the station panel.
 
+Garage services restore damaged hull and shields for credits when the ship is
+in dock range. Freight Lock and archive services can offer hauling and survey
+contracts: accept them at their origin, complete the cargo delivery or scan,
+then return to claim the reward. Active contracts and deadlines are preserved
+in saves.
+
 ## Ship Upgrades
 
 Open the inventory panel, then click the ship preview to open ship upgrades.

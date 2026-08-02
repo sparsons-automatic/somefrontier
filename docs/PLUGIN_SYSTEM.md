@@ -517,9 +517,9 @@ Rules:
 - Service `name` and `kind` must not be empty.
 - Service `kind` is player-facing context unless the base game has specific
   behavior for it. Supported mechanics currently include trade stock, research
-  leads, and legacy recipe unlock rows; other concise kinds such as `garage`,
-  `cargo`, `navigation`, `signals`, or `contracts` can label future hooks
-  without adding behavior.
+  leads, legacy recipe unlock rows, garage repair actions, and hauling/survey
+  contract boards. Other concise kinds such as `cargo`, `navigation`, or
+  `signals` can label future hooks without adding behavior.
 - Trade `item` values must reference existing items. `buy_price` and
   `sell_price` must be positive. `stock` and `restock_days` are optional, and
   `restock_days` must be positive when present. When both are present, `stock`
@@ -530,10 +530,51 @@ Rules:
 - Legacy recipe unlock `recipe` values must reference existing recipes, and
   `price` must be positive. Prefer research leads for new content so the
   research tree remains the progression purchase surface.
+- Contract entries are authored as `[[stations.services.contracts]]` records.
+  `id`, `name`, `kind`, `amount`, `reward`, and `duration_days` are required.
+  Supported kinds are `hauling` and `survey`.
+- Hauling contracts must provide `target_station` and an existing `item`; survey
+  contracts must provide `target_planet`. A contract has exactly one target,
+  and `amount`, `reward`, and `duration_days` must be positive.
+- Hauling progress is reached by carrying the requested item to the target
+  station in interaction range. Survey progress is reached when the target
+  planet has been scanned to the contract amount. Return to the originating
+  service to complete the contract and receive its credit reward.
+- Active contracts are limited to three per save, expire at their deadline, and
+  are persisted with backward-compatible save defaults.
 - `unavailable = true` can mark trade stock, research leads, or legacy recipe
   unlocks as known but not currently usable.
 - Defining a station does not automatically create new UI or behavior. The base
   game must support the station or service mechanic.
+
+### Contract example
+
+```toml
+[[stations.services]]
+id = "freight_lock"
+name = "Freight Lock"
+kind = "cargo"
+
+[[stations.services.contracts]]
+id = "iron_run"
+name = "Iron Run"
+kind = "hauling"
+description = "Deliver iron ore to the exchange."
+target_station = "frontier_exchange"
+item = "iron_ore"
+amount = 6
+reward = 180
+duration_days = 8.0
+
+[[stations.services.contracts]]
+id = "survey_moon"
+name = "Survey Moon"
+kind = "survey"
+target_planet = "kestrel_titanium_moon"
+amount = 1
+reward = 340
+duration_days = 15.0
+```
 
 ## `vendors.toml`
 
@@ -1202,8 +1243,9 @@ Reject startup when:
 - A station has an empty name, non-positive base seconds, or non-positive
   radius.
 - A station service has an empty name, empty kind, duplicate ID within a station,
-  invalid trade item, invalid research lead, invalid legacy recipe unlock, zero
-  prices, or non-positive restock days.
+  invalid trade item, invalid research lead, invalid legacy recipe unlock, an
+  invalid contract target or kind, zero prices/rewards/amounts, or
+  non-positive restock days or contract duration.
 - An upgrade has no costs, a missing cost item, a zero-count cost, or a
   non-positive `per_levels` interval.
 - Starter inventory references a missing item.

@@ -114,7 +114,29 @@ restock_days = 6.0
 id = "ore_lattice_freight_lock"
 name = "Freight Lock"
 kind = "cargo"
-description = "Bulk cargo staging, storage, and future freight-contract hooks."
+description = "Bulk cargo staging and freight-contract desk for moving industrial stock between stations."
+
+[[stations.services.contracts]]
+id = "ore_to_frontier_iron_run"
+name = "Iron Run to Frontier Exchange"
+kind = "hauling"
+description = "Deliver a small iron ore consignment to the Frontier Exchange."
+target_station = "frontier_exchange"
+item = "iron_ore"
+amount = 6
+reward = 180
+duration_days = 8.0
+
+[[stations.services.contracts]]
+id = "ore_to_cinder_copper_run"
+name = "Copper Run to Cinder Yard"
+kind = "hauling"
+description = "Move copper ore to the repair yard before its next parts shipment."
+target_station = "cinder_repair_yard"
+item = "copper_ore"
+amount = 4
+reward = 220
+duration_days = 10.0
 
 [[stations]]
 id = "cinder_repair_yard"
@@ -211,7 +233,27 @@ summary = "Survey archive and route desk where scan data becomes recipe knowledg
 id = "pale_archive_data"
 name = "Scan Desk"
 kind = "archive"
-description = "Survey record review, scan-data context, and future discovery turn-in hooks."
+description = "Survey record review and contracts for returning verified planetary readings."
+
+[[stations.services.contracts]]
+id = "survey_redwake_probe"
+name = "Survey Redwake Probe"
+kind = "survey"
+description = "Complete a first-pass scan of Redwake and return the reading here."
+target_planet = "ferric_copper_planetoid"
+amount = 1
+reward = 260
+duration_days = 12.0
+
+[[stations.services.contracts]]
+id = "survey_ashfall_moon"
+name = "Survey Ashfall Moon"
+kind = "survey"
+description = "Map the Ashfall moon and bring the scan record back to the archive."
+target_planet = "kestrel_titanium_moon"
+amount = 1
+reward = 340
+duration_days = 15.0
 
 [[stations.services]]
 id = "pale_archive_recipes"
