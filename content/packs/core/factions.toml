@@ -6,6 +6,9 @@ default_disposition = "friendly"
 color = [150, 221, 226]
 tags = ["industrial", "security", "starter"]
 summary = "Frontier industrial cooperative that coordinates starter-system refining, patrol, and station logistics."
+reputation_start = 0
+reputation_min = -100
+reputation_max = 100
 
 [[factions]]
 id = "freebelt_compact"
@@ -15,6 +18,9 @@ default_disposition = "neutral"
 color = [226, 190, 150]
 tags = ["hauler", "independent", "trade"]
 summary = "Loose society of independent haulers and dock crews moving bulk cargo through frontier routes."
+reputation_start = 0
+reputation_min = -100
+reputation_max = 100
 
 [[factions]]
 id = "helioforge_yard_union"
@@ -24,6 +30,9 @@ default_disposition = "friendly"
 color = [205, 226, 230]
 tags = ["garage", "repair", "dockyard"]
 summary = "Station yard workers and refit crews that keep frontier ships flying."
+reputation_start = 0
+reputation_min = -100
+reputation_max = 100
 
 [[factions]]
 id = "frontier_cartographers"
@@ -33,6 +42,9 @@ default_disposition = "friendly"
 color = [180, 205, 255]
 tags = ["survey", "archive", "navigation"]
 summary = "Survey archivists who preserve route data, scanner records, and local mineral reports."
+reputation_start = 0
+reputation_min = -100
+reputation_max = 100
 
 [[factions]]
 id = "frontier_beacon_authority"
@@ -42,6 +54,9 @@ default_disposition = "friendly"
 color = [113, 235, 138]
 tags = ["signal", "navigation", "beacon"]
 summary = "Signal watch crews responsible for system beacons, route telemetry, and emergency broadcasts."
+reputation_start = 0
+reputation_min = -100
+reputation_max = 100
 
 [[factions]]
 id = "redwake_raiders"
@@ -51,3 +66,6 @@ default_disposition = "hostile"
 color = [226, 104, 96]
 tags = ["hostile", "raider", "probe"]
 summary = "Hostile raider society represented by probe contacts and reserved for future encounter behavior."
+reputation_start = -25
+reputation_min = -100
+reputation_max = 100

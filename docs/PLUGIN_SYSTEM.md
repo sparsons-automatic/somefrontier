@@ -540,6 +540,10 @@ Rules:
   station in interaction range. Survey progress is reached when the target
   planet has been scanned to the contract amount. Return to the originating
   service to complete the contract and receive its credit reward.
+- `reputation_required` defaults to `0` and gates accepting or completing the
+  contract against the sponsoring station or vendor faction's player standing.
+  `reputation_reward` defaults to `0` and is awarded to that faction when the
+  contract is completed.
 - Active contracts are limited to three per save, expire at their deadline, and
   are persisted with backward-compatible save defaults.
 - `unavailable = true` can mark trade stock, research leads, or legacy recipe
@@ -593,6 +597,8 @@ specialties = ["starter ore", "survey supplies"]
 rotation_days = 5.0
 slots = 4
 price_variance = 0.10
+reputation_required = 0
+price_reputation_scale = -0.05
 
 [[vendors.offers]]
 item = "iron_ore"
@@ -609,6 +615,11 @@ Rules:
 - `station` and `service` must reference an existing station service.
 - `name` must not be empty.
 - `faction` is optional and must reference a loaded faction when present.
+- `reputation_required` defaults to `0`. A vendor is unavailable while the
+  player's standing with its faction is below this value.
+- `price_reputation_scale` defaults to `0.0` and must be between `-1.0` and
+  `1.0`. It scales the vendor's prices from the player's standing, with the
+  runtime clamping the resulting buy/sell multipliers to a safe range.
 - `specialties` is player-facing descriptive metadata.
 - `rotation_days` and `slots` must be positive.
 - `price_variance` must be between `0.0` and `1.0`.
@@ -847,8 +858,9 @@ Rules:
 
 Faction files define player-facing societies, cultures, authorities, crews, and
 hostile groups that can own or influence world content. Faction records are
-data hooks for ownership and disposition; behavior systems such as diplomacy,
-regional spawning, contracts, and combat rules remain owned by the base game.
+data hooks for ownership, disposition, and player reputation; behavior systems
+such as diplomacy, regional spawning, contracts, and combat rules remain owned
+by the base game.
 
 ```toml
 [[factions]]
@@ -859,6 +871,9 @@ default_disposition = "friendly"
 color = [150, 221, 226]
 tags = ["industrial", "security", "starter"]
 summary = "Frontier industrial cooperative that coordinates starter-system refining, patrol, and station logistics."
+reputation_start = 0
+reputation_min = -100
+reputation_max = 100
 ```
 
 Rules:
@@ -872,6 +887,10 @@ Rules:
 - `tags` defaults to an empty list and provides future hooks for spawning,
   encounters, services, and route rules.
 - `summary` is optional player-facing metadata.
+- `reputation_start` is the initial player standing and must fall within the
+  inclusive `reputation_min`/`reputation_max` bounds. The bounds default to
+  `-100` and `100`. Optional `reputation_tiers` can name content-defined
+  thresholds for standing labels.
 - Systems, planets, stations, and NPC ships can reference factions with a
   `faction` field.
 - Stations can also use `culture` to reference a faction or society record that
