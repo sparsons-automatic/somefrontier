@@ -794,7 +794,7 @@ systems.
 [[npc_ships]]
 id = "frontier_patrol_cutter"
 name = "Frontier Patrol Cutter"
-texture = "./assets/ships/npc-scout-01.png"
+texture = "./assets/ships/frontier-patrol-cutter.png"
 system = "frontier"
 position = [820.0, -520.0]
 radius = 28.0

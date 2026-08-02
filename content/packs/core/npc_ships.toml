@@ -1,7 +1,7 @@
 [[npc_ships]]
 id = "frontier_freehauler"
 name = "Frontier Freehauler"
-texture = "./assets/ships/npc-scout-01.png"
+texture = "./assets/ships/frontier-freehauler.png"
 system = "frontier"
 position = [-760.0, 420.0]
 radius = 30.0
@@ -28,7 +28,7 @@ summary = "Independent cargo skiff moving starter ore and components through Fro
 [[npc_ships]]
 id = "frontier_patrol_cutter"
 name = "Frontier Patrol Cutter"
-texture = "./assets/ships/npc-scout-01.png"
+texture = "./assets/ships/frontier-patrol-cutter.png"
 system = "frontier"
 position = [820.0, -520.0]
 radius = 28.0
@@ -55,7 +55,7 @@ summary = "Local patrol craft that gives the system an early moving security pre
 [[npc_ships]]
 id = "redwake_probe"
 name = "Redwake Probe"
-texture = "./assets/ships/npc-scout-01.png"
+texture = "./assets/ships/redwake-raider.png"
 system = "frontier"
 position = [420.0, 0.0]
 radius = 22.0

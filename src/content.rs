@@ -3794,8 +3794,17 @@ mod tests {
                     && npc_ship.shield_slots == ["core:balanced_shield_matrix"]
                     && npc_ship.weapon_slots == ["core:point_defense_turret"]
                     && npc_ship.texture.as_deref().is_some_and(|texture| {
-                        texture.contains("content/packs/core/./assets/ships/npc-scout-01.png")
+                        texture.contains(
+                            "content/packs/core/./assets/ships/frontier-patrol-cutter.png",
+                        )
                     })
+            }));
+        assert!(registry
+            .npc_ships
+            .get("core:redwake_probe")
+            .and_then(|npc_ship| npc_ship.texture.as_deref())
+            .is_some_and(|texture| {
+                texture.contains("content/packs/core/./assets/ships/redwake-raider.png")
             }));
         assert!(registry.recipes.contains_key("core:point_defense_turret"));
         assert!(registry.recipes.contains_key("core:balanced_shield_matrix"));
