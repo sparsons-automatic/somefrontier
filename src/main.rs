@@ -42,6 +42,7 @@ const NPC_SEPARATION_PADDING: f32 = 54.0;
 const NPC_STATION_CLEARANCE: f32 = 72.0;
 const NPC_PLANET_CLEARANCE: f32 = 96.0;
 const NPC_FOLLOW_DISTANCE: f32 = 420.0;
+const PLAYER_FOLLOW_DISTANCE: f32 = 120.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
 const NPC_PRESSURE_RANGE: f32 = 520.0;
 const REDWAKE_PROBE_PRESSURE_PER_SECOND: f32 = 2.4;
@@ -245,6 +246,9 @@ struct GameState {
     save_status_manual: bool,
     operation_feedback: Vec<OperationFeedback>,
     debug_console: DebugConsole,
+    context_action_menu: Option<ContextActionMenu>,
+    follow_target: Option<FollowTarget>,
+    npc_trade_quantity: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +257,37 @@ struct OperationFeedback {
     message: String,
     aggregate_key: Option<String>,
     count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextTarget {
+    NpcShip(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextAction {
+    Follow,
+    StopFollowing,
+    Hail,
+    Trade,
+}
+
+#[derive(Clone, Copy)]
+struct ContextActionMenu {
+    target: ContextTarget,
+    position: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FollowTarget {
+    NpcShip(usize),
+}
+
+struct ContextMenuEntry {
+    action: ContextAction,
+    label: &'static str,
+    enabled: bool,
+    detail: &'static str,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -568,6 +603,7 @@ struct NpcShip {
     identified: bool,
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
+    trade_open: bool,
     credit_reward_min: u32,
     credit_reward_max: u32,
     hull: ShipResource,
@@ -622,6 +658,18 @@ enum NpcInteractionAction {
     Conflict,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NpcTradeAction {
+    Buy,
+    Sell,
+}
+
+struct NpcTradeQuote {
+    buy_price: u32,
+    sell_price: u32,
+    rumor: &'static str,
+}
+
 impl NpcInteractionAction {
     fn label(self) -> &'static str {
         match self {
@@ -645,6 +693,18 @@ struct NpcInteractionRow {
     action: NpcInteractionAction,
     state: NpcInteractionState,
     status: &'static str,
+}
+
+struct NpcTradeRender<'a> {
+    ship: &'a Ship,
+    ship_upgrades: &'a [ShipUpgrade; SHIP_UPGRADE_COUNT],
+    npc_ship: &'a NpcShip,
+    world_seed: u64,
+    world_elapsed_days: f32,
+    credits: u32,
+    inventory: &'a Inventory,
+    quantity: u32,
+    rect: Rect,
 }
 
 struct StationService {
@@ -829,6 +889,8 @@ struct SaveData {
     #[serde(default)]
     market_offers: Vec<SaveMarketOffer>,
     #[serde(default)]
+    npc_cargo: Vec<SaveNpcCargo>,
+    #[serde(default)]
     system_destinations: Vec<SaveSystemDestination>,
     #[serde(default)]
     content_pack_options: Vec<PackOptionSelection>,
@@ -889,6 +951,12 @@ struct SaveMarketOffer {
     next_restock_day: Option<f32>,
     #[serde(default)]
     catalog_rotation: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveNpcCargo {
+    npc: String,
+    cargo: Vec<SaveStack>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1240,7 +1308,7 @@ impl GameState {
             processing_settings,
             production_mode: ProductionMode::Smelting,
             ship_upgrades: make_ship_upgrades(),
-            inventory_open: true,
+            inventory_open: false,
             map_open: false,
             research_open: false,
             upgrades_open: false,
@@ -1265,6 +1333,9 @@ impl GameState {
             save_status_manual: false,
             operation_feedback: Vec::new(),
             debug_console: DebugConsole::default(),
+            context_action_menu: None,
+            follow_target: None,
+            npc_trade_quantity: 1,
         };
         if let Some(save_data) = save_data {
             draw_startup_transition_assets(
@@ -1361,6 +1432,7 @@ impl GameState {
             &save.market_offers,
             self.world_elapsed_days,
         );
+        apply_npc_cargo_save(&mut self.npc_ships, &save.npc_cargo, &self.content_registry);
 
         self.inventory = Inventory::from_save(&self.content_registry, &save.inventory);
         apply_upgrade_save(&mut self.ship_upgrades, &save.upgrades);
@@ -1486,6 +1558,7 @@ impl GameState {
                 .map(|weapon| weapon.id.clone())
                 .collect(),
             market_offers: save_market_offers(&self.stations),
+            npc_cargo: save_npc_cargo(&self.npc_ships),
             system_destinations: save_system_destinations(self),
             content_pack_options: self.content_pack_options.clone(),
             completed_research: self.completed_research.clone(),
@@ -2153,6 +2226,54 @@ fn apply_market_save(
     }
 }
 
+fn save_npc_cargo(npc_ships: &[NpcShip]) -> Vec<SaveNpcCargo> {
+    npc_ships
+        .iter()
+        .filter(|npc| !npc.cargo_defaults.is_empty())
+        .map(|npc| SaveNpcCargo {
+            npc: npc.id.clone(),
+            cargo: npc
+                .cargo_defaults
+                .iter()
+                .map(|stack| SaveStack {
+                    item: stack.item.id.clone(),
+                    count: stack.count,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn apply_npc_cargo_save(
+    npc_ships: &mut [NpcShip],
+    saved: &[SaveNpcCargo],
+    registry: &content::ContentRegistry,
+) {
+    for npc in npc_ships {
+        let Some(saved_npc) = saved.iter().find(|saved_npc| saved_npc.npc == npc.id) else {
+            continue;
+        };
+        let cargo = saved_npc
+            .cargo
+            .iter()
+            .filter_map(|stack| {
+                let item = registry_item(registry, &stack.item)?;
+                (stack.count > 0).then_some(ItemStack {
+                    item,
+                    count: stack.count,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mass = cargo
+            .iter()
+            .map(|stack| stack.item.unit_mass * stack.count as f32)
+            .sum::<f32>();
+        if mass <= npc.cargo_capacity {
+            npc.cargo_defaults = cargo;
+        }
+    }
+}
+
 async fn make_npc_ships(
     content_registry: &content::ContentRegistry,
     transition_assets: &[TransitionAsset],
@@ -2208,6 +2329,7 @@ async fn make_npc_ships(
             identified: false,
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
+            trade_open: false,
             credit_reward_min: npc_ship_def.credit_reward_min,
             credit_reward_max: npc_ship_def.credit_reward_max,
             hull: ShipResource::full(npc_ship_def.hull_capacity),
@@ -7335,6 +7457,18 @@ fn update_game(game: &mut GameState, dt: f32) {
         click_handled = handle_contracts_overlay_input(game, mouse);
     }
 
+    if !game.map_open
+        && !game.research_open
+        && !game.upgrades_open
+        && !game.content_open
+        && !game.contracts_open
+    {
+        let mouse = vec2(mouse_position().0, mouse_position().1);
+        if handle_context_action_input(game, mouse) {
+            click_handled = true;
+        }
+    }
+
     if game.inventory_open
         && !game.map_open
         && !game.research_open
@@ -7358,7 +7492,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             click_handled = handle_station_service_input(game, station_index, mouse)
                 || handle_production_table_input(game, mouse, wheel);
         } else if let Some(npc_ship_index) = game.selected_npc_ship {
-            click_handled = handle_npc_ship_interaction_input(game, npc_ship_index, mouse)
+            click_handled = handle_npc_ship_interaction_input(game, npc_ship_index, mouse, wheel)
                 || handle_production_table_input(game, mouse, wheel);
         } else {
             if handle_ship_shield_slot_input(game, mouse)
@@ -7416,17 +7550,19 @@ fn update_game(game: &mut GameState, dt: f32) {
         } else {
             select_clicked_destination(game, mouse);
             identify_selected_npc_ship(game);
-            if game.selected_planet.is_some()
-                || game.selected_station.is_some()
-                || game.selected_npc_ship.is_some()
-            {
-                game.inventory_open = true;
-            }
         }
     }
 
     if game.orbiting_planet.is_some() {
         update_ship_orbit(game);
+    } else if game.follow_target.is_some() {
+        if movement_input_pressed() {
+            stop_following(game, "Manual flight input cancelled follow");
+            let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
+            update_ship(&mut game.ship, dt, energy_recharge);
+        } else {
+            update_ship_follow(game, dt);
+        }
     } else {
         let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
         update_ship(&mut game.ship, dt, energy_recharge);
@@ -7444,8 +7580,240 @@ fn handle_escape_pressed(game: &mut GameState) {
     game.escape_dialog_open = true;
 }
 
+fn movement_input_pressed() -> bool {
+    is_key_down(KeyCode::W)
+        || is_key_down(KeyCode::S)
+        || is_key_down(KeyCode::A)
+        || is_key_down(KeyCode::D)
+        || is_key_down(KeyCode::Up)
+        || is_key_down(KeyCode::Down)
+        || is_key_down(KeyCode::Left)
+        || is_key_down(KeyCode::Right)
+}
+
+fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<ContextMenuEntry> {
+    match target {
+        ContextTarget::NpcShip(index) => {
+            let Some(npc_ship) = game.npc_ships.get(index) else {
+                return Vec::new();
+            };
+            let following = game.follow_target == Some(FollowTarget::NpcShip(index));
+            let in_range = npc_ship_in_interaction_range(&game.ship, npc_ship);
+            let can_trade = npc_ship.identified
+                && in_range
+                && !npc_ship_is_hostile(&game.content_registry, npc_ship)
+                && npc_ship_can_trade(&game.content_registry, npc_ship)
+                && npc_ship.cargo_defaults.iter().any(|stack| stack.count > 0);
+            vec![
+                ContextMenuEntry {
+                    action: if following {
+                        ContextAction::StopFollowing
+                    } else {
+                        ContextAction::Follow
+                    },
+                    label: if following {
+                        "Stop following"
+                    } else {
+                        "Follow"
+                    },
+                    enabled: true,
+                    detail: if following {
+                        "Manual control"
+                    } else {
+                        "Match pace"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Hail,
+                    label: "Hail",
+                    enabled: npc_ship.identified
+                        && in_range
+                        && !npc_ship_is_hostile(&game.content_registry, npc_ship),
+                    detail: if npc_ship.identified && in_range {
+                        "Request rumor"
+                    } else {
+                        "Identify and approach"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Trade,
+                    label: "Trade",
+                    enabled: can_trade,
+                    detail: if can_trade {
+                        "Open cargo market"
+                    } else {
+                        "Identify and approach"
+                    },
+                },
+            ]
+        }
+    }
+}
+
+fn context_action_menu_rect(menu: &ContextActionMenu, entry_count: usize) -> Rect {
+    let width = 210.0;
+    let height = 24.0 + entry_count as f32 * 44.0;
+    Rect::new(
+        menu.position.x.clamp(8.0, screen_width() - width - 8.0),
+        menu.position.y.clamp(8.0, screen_height() - height - 8.0),
+        width,
+        height,
+    )
+}
+
+fn context_action_entry_rect(menu_rect: Rect, index: usize) -> Rect {
+    Rect::new(
+        menu_rect.x + 8.0,
+        menu_rect.y + 16.0 + index as f32 * 44.0,
+        menu_rect.w - 16.0,
+        36.0,
+    )
+}
+
+fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if let Some(menu) = game.context_action_menu {
+        let entries = context_action_entries(game, menu.target);
+        let menu_rect = context_action_menu_rect(&menu, entries.len());
+        if is_mouse_button_pressed(MouseButton::Left) {
+            let selected = entries.iter().enumerate().find_map(|(index, entry)| {
+                context_action_entry_rect(menu_rect, index)
+                    .contains(mouse)
+                    .then_some((entry.action, entry.enabled))
+            });
+            game.context_action_menu = None;
+            if let Some((action, true)) = selected {
+                execute_context_action(game, menu.target, action);
+            }
+            return true;
+        }
+        if is_mouse_button_pressed(MouseButton::Right) {
+            game.context_action_menu = None;
+            return true;
+        }
+        return false;
+    }
+
+    if !is_mouse_button_pressed(MouseButton::Right) {
+        return false;
+    }
+    let Some(npc_index) = clicked_npc_ship_index(
+        mouse,
+        &game.ship,
+        &game.npc_ships,
+        &game.current_system_id,
+        game.camera_zoom,
+    ) else {
+        return false;
+    };
+    select_npc_ship_for_context(game, npc_index);
+    game.inventory_open = false;
+    game.context_action_menu = Some(ContextActionMenu {
+        target: ContextTarget::NpcShip(npc_index),
+        position: mouse,
+    });
+    true
+}
+
+fn select_npc_ship_for_context(game: &mut GameState, npc_index: usize) {
+    game.selected_planet = None;
+    game.selected_station = None;
+    game.selected_npc_ship = Some(npc_index);
+    game.selected_station_service = None;
+    identify_selected_npc_ship(game);
+}
+
+fn execute_context_action(game: &mut GameState, target: ContextTarget, action: ContextAction) {
+    match (target, action) {
+        (ContextTarget::NpcShip(index), ContextAction::Follow) => {
+            if game.npc_ships.get(index).is_some() {
+                game.follow_target = Some(FollowTarget::NpcShip(index));
+                select_npc_ship_for_context(game, index);
+                push_operation_feedback(game, "Follow", "Matching NPC course and pace".to_string());
+            }
+        }
+        (ContextTarget::NpcShip(index), ContextAction::StopFollowing) => {
+            stop_following(game, "Follow cancelled");
+            select_npc_ship_for_context(game, index);
+        }
+        (ContextTarget::NpcShip(index), ContextAction::Hail) => {
+            if let Some(npc_ship) = game.npc_ships.get(index) {
+                let rumor = npc_ship_rumor(game, npc_ship);
+                push_operation_feedback(game, "Rumor", rumor);
+            }
+        }
+        (ContextTarget::NpcShip(index), ContextAction::Trade) => {
+            select_npc_ship_for_context(game, index);
+            game.inventory_open = true;
+            game.npc_trade_quantity = 1;
+            if let Some(npc_ship) = game.npc_ships.get_mut(index) {
+                npc_ship.trade_open = true;
+            }
+        }
+    }
+}
+
+fn stop_following(game: &mut GameState, message: &str) {
+    if game.follow_target.take().is_some() {
+        push_operation_feedback(game, "Follow", message.to_string());
+    }
+}
+
+fn update_ship_follow(game: &mut GameState, dt: f32) {
+    let Some(FollowTarget::NpcShip(index)) = game.follow_target else {
+        return;
+    };
+    let Some(npc_ship) = game.npc_ships.get(index) else {
+        stop_following(game, "Target lost");
+        return;
+    };
+    if npc_ship.system != game.current_system_id || npc_ship.hull.current <= 0.0 {
+        stop_following(game, "Target left local space");
+        return;
+    }
+    let travel_direction = if npc_ship.velocity.length_squared() > 0.01 {
+        npc_ship.velocity.normalize()
+    } else {
+        vec2(npc_ship.angle.cos(), npc_ship.angle.sin())
+    };
+    let desired_position = npc_ship.position - travel_direction * PLAYER_FOLLOW_DISTANCE;
+    let offset = desired_position - game.ship.position;
+    let desired_velocity =
+        npc_ship.velocity + clamp_vec2_length(offset * 0.8, npc_ship.behavior.max_speed());
+    game.ship.velocity = move_toward_vec2(
+        game.ship.velocity,
+        desired_velocity,
+        game.ship.forward_acceleration() * dt,
+    );
+    if game.ship.velocity.length_squared() > 0.01 {
+        game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x);
+    }
+    game.ship.position += game.ship.velocity * dt;
+    game.ship
+        .systems
+        .energy
+        .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
+    let in_range =
+        game.ship.position.distance(npc_ship.position) <= npc_ship_interaction_radius(npc_ship);
+    if in_range && !npc_ship.identified {
+        game.selected_npc_ship = Some(index);
+        identify_selected_npc_ship(game);
+    }
+}
+
+fn move_toward_vec2(current: Vec2, target: Vec2, max_delta: f32) -> Vec2 {
+    let delta = target - current;
+    if delta.length() <= max_delta {
+        target
+    } else {
+        current + delta.normalize() * max_delta
+    }
+}
+
 fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
-    if game.content_open {
+    if game.context_action_menu.is_some() {
+        game.context_action_menu = None;
+        true
+    } else if game.content_open {
         game.content_open = false;
         true
     } else if game.contracts_open {
@@ -8104,6 +8472,8 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.selected_station = None;
     game.selected_npc_ship = None;
     game.selected_station_service = None;
+    game.context_action_menu = None;
+    game.follow_target = None;
     game.orbiting_planet = None;
     game.destination_planet = destination_planet_for_system(
         &game.planets,
@@ -8141,6 +8511,11 @@ fn select_nearby_destination(game: &mut GameState) {
     } else {
         None
     };
+    if let Some(index) = game.selected_npc_ship {
+        if let Some(npc_ship) = game.npc_ships.get_mut(index) {
+            npc_ship.trade_open = false;
+        }
+    }
     game.selected_station_service = None;
 }
 
@@ -8174,6 +8549,11 @@ fn select_clicked_destination(game: &mut GameState, mouse: Vec2) {
     } else {
         None
     };
+    if let Some(index) = game.selected_npc_ship {
+        if let Some(npc_ship) = game.npc_ships.get_mut(index) {
+            npc_ship.trade_open = false;
+        }
+    }
     game.selected_station_service = None;
 }
 
@@ -8966,6 +9346,7 @@ fn handle_npc_ship_interaction_input(
     game: &mut GameState,
     npc_ship_index: usize,
     mouse: Vec2,
+    wheel: f32,
 ) -> bool {
     if !is_mouse_button_pressed(MouseButton::Left) {
         return false;
@@ -8976,16 +9357,39 @@ fn handle_npc_ship_interaction_input(
     if !npc_ship_is_in_system(npc_ship, &game.current_system_id) {
         return false;
     }
+    if npc_ship.trade_open {
+        return handle_npc_trade_input(game, npc_ship_index, mouse, wheel);
+    }
     let rows = npc_interaction_rows(&game.content_registry, &game.ship, npc_ship);
-    let rail_width = npc_ship_action_rail_width(&game.content_registry, &game.ship, npc_ship);
+    let rail_width = selected_action_rail_width(game).unwrap_or_else(|| {
+        npc_ship_action_rail_width(&game.content_registry, &game.ship, npc_ship)
+    });
     let Some(row_index) = hovered_npc_interaction_row_index(mouse, rows.len(), rail_width) else {
         return false;
     };
     let Some(row) = rows.get(row_index) else {
         return false;
     };
-    if row.action == NpcInteractionAction::Identify && row.state == NpcInteractionState::Available {
-        identify_selected_npc_ship(game);
+    if row.state != NpcInteractionState::Available {
+        return true;
+    }
+    match row.action {
+        NpcInteractionAction::Identify => {
+            identify_selected_npc_ship(game);
+        }
+        NpcInteractionAction::Hail => {
+            if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
+                let rumor = npc_ship_rumor(game, npc_ship);
+                push_operation_feedback(game, "Rumor", rumor);
+            }
+        }
+        NpcInteractionAction::Trade => {
+            if let Some(npc_ship) = game.npc_ships.get_mut(npc_ship_index) {
+                npc_ship.trade_open = true;
+                game.npc_trade_quantity = 1;
+            }
+        }
+        NpcInteractionAction::Dock | NpcInteractionAction::Conflict => {}
     }
     true
 }
@@ -8998,11 +9402,7 @@ fn npc_interaction_rows(
     let in_range = npc_ship_in_interaction_range(ship, npc_ship);
     let identified = npc_ship.identified;
     let hostile = npc_ship_is_hostile(content_registry, npc_ship);
-    let trade_role = matches!(npc_ship.role.as_str(), "hauler" | "trader")
-        || npc_ship
-            .behavior_tags
-            .iter()
-            .any(|tag| tag == "trade-route");
+    let trade_role = npc_ship_can_trade(content_registry, npc_ship);
 
     vec![
         NpcInteractionRow {
@@ -9052,15 +9452,26 @@ fn npc_interaction_rows(
         },
         NpcInteractionRow {
             action: NpcInteractionAction::Trade,
-            state: NpcInteractionState::Unavailable,
+            state: if in_range
+                && identified
+                && !hostile
+                && trade_role
+                && !npc_ship.cargo_defaults.is_empty()
+            {
+                NpcInteractionState::Available
+            } else {
+                NpcInteractionState::Unavailable
+            },
             status: if !identified {
                 "Identify"
             } else if hostile {
                 "Hostile"
+            } else if trade_role && !npc_ship.cargo_defaults.is_empty() {
+                "Open market"
             } else if trade_role {
-                "No exchange"
-            } else {
                 "No stock"
+            } else {
+                "No market"
             },
         },
         NpcInteractionRow {
@@ -9073,6 +9484,267 @@ fn npc_interaction_rows(
             },
         },
     ]
+}
+
+fn npc_ship_can_trade(content_registry: &content::ContentRegistry, npc_ship: &NpcShip) -> bool {
+    !npc_ship_is_hostile(content_registry, npc_ship)
+        && (matches!(npc_ship.role.as_str(), "hauler" | "trader")
+            || npc_ship
+                .behavior_tags
+                .iter()
+                .any(|tag| tag == "trade-route"))
+}
+
+fn npc_trade_quote(npc_ship: &NpcShip, item: &ItemRef, world_seed: u64, day: u64) -> NpcTradeQuote {
+    let salt = world_seed ^ day.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let noise = stable_unit_noise(&format!("{}:{}", npc_ship.id, item.id), salt);
+    let base = (item.unit_mass * 12.0).round() as u32;
+    let buy_price = ((base.max(4) as f32) * (0.85 + noise * 0.35)).round() as u32;
+    NpcTradeQuote {
+        buy_price: buy_price.max(4),
+        sell_price: ((buy_price as f32) * 0.72).round() as u32,
+        rumor: match ((noise * 3.0) as usize).min(2) {
+            0 => "Supply is tight; buyers are paying up.",
+            1 => "The route is steady; prices look ordinary.",
+            _ => "Freighters are moving extra stock through this lane.",
+        },
+    }
+}
+
+fn npc_ship_rumor(game: &GameState, npc_ship: &NpcShip) -> String {
+    let Some(stack) = npc_ship.cargo_defaults.first() else {
+        return format!("{} has no cargo market news.", npc_ship.name);
+    };
+    let quote = npc_trade_quote(
+        npc_ship,
+        &stack.item,
+        game.world_seed,
+        game.world_elapsed_days.floor().max(0.0) as u64,
+    );
+    format!(
+        "{} reports {}: {} buys {} cr / sells {} cr.",
+        npc_ship.name, quote.rumor, stack.item.name, quote.buy_price, quote.sell_price
+    )
+}
+
+fn npc_trade_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    ui_table_layout_until_bottom(UiTableBottomLayout {
+        x,
+        y,
+        width,
+        row_start_offset: 68.0,
+        viewport_bottom: action_table_bottom(),
+        row_height: 42.0,
+        column_gap: 8.0,
+        columns: &[
+            ui_column_spec_flex(150.0, 1.0),
+            ui_column_spec_fixed(92.0),
+            ui_column_spec_fixed(82.0),
+            ui_column_spec_fixed(82.0),
+        ],
+    })
+}
+
+fn handle_npc_trade_input(
+    game: &mut GameState,
+    npc_ship_index: usize,
+    mouse: Vec2,
+    wheel: f32,
+) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) && wheel == 0.0 {
+        return false;
+    }
+    let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
+        return false;
+    };
+    let npc_name = npc_ship.name.clone();
+    if !npc_ship.identified
+        || !npc_ship_in_interaction_range(&game.ship, npc_ship)
+        || !npc_ship_can_trade(&game.content_registry, npc_ship)
+    {
+        return true;
+    }
+    let rail_width = selected_action_rail_width(game).unwrap_or_else(|| {
+        npc_ship_action_rail_width(&game.content_registry, &game.ship, npc_ship)
+    });
+    let layout = npc_trade_table_layout(
+        action_rail_rect(rail_width).x + 12.0,
+        action_rail_rect(rail_width).y + 48.0,
+        rail_width - 24.0,
+    );
+    let Some(cell) = ui_hovered_table_cell(mouse, &layout, npc_ship.cargo_defaults.len(), 0.0)
+    else {
+        return true;
+    };
+    let row = ui_table_row_rect(&layout, cell.row, 0.0);
+    let quantity_column = layout.columns[1];
+    let quantity_rect = Rect::new(quantity_column.x, row.y, quantity_column.w, row.h);
+    let quantity_control_rect = Rect::new(quantity_column.x, row.y + 8.0, quantity_column.w, 22.0);
+    if wheel != 0.0 {
+        let step = work_setting_step() as u32;
+        game.npc_trade_quantity = if wheel > 0.0 {
+            game.npc_trade_quantity.saturating_add(step)
+        } else {
+            game.npc_trade_quantity.saturating_sub(step).max(1)
+        };
+        game.npc_trade_quantity = game.npc_trade_quantity.min(999);
+        return true;
+    }
+    if quantity_rect.contains(mouse) {
+        let step = work_setting_step() as u32;
+        match npc_trade_quantity_control_delta(mouse, quantity_control_rect) {
+            Some(-1) => {
+                game.npc_trade_quantity = game.npc_trade_quantity.saturating_sub(step).max(1);
+            }
+            Some(1) => {
+                game.npc_trade_quantity = game.npc_trade_quantity.saturating_add(step).min(999);
+            }
+            _ => {}
+        }
+        return true;
+    }
+    let action = match cell.column {
+        2 => NpcTradeAction::Buy,
+        3 => NpcTradeAction::Sell,
+        _ => return true,
+    };
+    let Some(stack) = npc_ship.cargo_defaults.get(cell.row) else {
+        return true;
+    };
+    let item = stack.item.clone();
+    let quote = npc_trade_quote(
+        npc_ship,
+        &item,
+        game.world_seed,
+        game.world_elapsed_days.floor().max(0.0) as u64,
+    );
+    let amount = match action {
+        NpcTradeAction::Buy => npc_trade_buy_amount(
+            game.credits,
+            &game.inventory,
+            &game.ship_upgrades,
+            stack,
+            &quote,
+            game.npc_trade_quantity,
+        ),
+        NpcTradeAction::Sell => npc_trade_sell_amount(
+            npc_ship,
+            stack,
+            game.inventory.count(&item),
+            game.npc_trade_quantity,
+        ),
+    };
+    if amount == 0 {
+        return true;
+    }
+    match action {
+        NpcTradeAction::Buy => {
+            game.credits = game
+                .credits
+                .saturating_sub(quote.buy_price.saturating_mul(amount));
+            game.inventory.add_item(item.clone(), amount);
+            if let Some(npc) = game.npc_ships.get_mut(npc_ship_index) {
+                npc.cargo_defaults[cell.row].count =
+                    npc.cargo_defaults[cell.row].count.saturating_sub(amount);
+            }
+            game.save_dirty = true;
+            push_operation_feedback(
+                game,
+                "Trade",
+                format!(
+                    "Bought {} x{} from {} for {} cr",
+                    item.name,
+                    amount,
+                    npc_name,
+                    quote.buy_price.saturating_mul(amount)
+                ),
+            );
+        }
+        NpcTradeAction::Sell => {
+            game.inventory.remove_item(&item, amount);
+            if let Some(npc) = game.npc_ships.get_mut(npc_ship_index) {
+                npc.cargo_defaults[cell.row].count += amount;
+            }
+            game.credits = game
+                .credits
+                .saturating_add(quote.sell_price.saturating_mul(amount));
+            game.save_dirty = true;
+            push_operation_feedback(
+                game,
+                "Trade",
+                format!(
+                    "Sold {} x{} to {} for {} cr",
+                    item.name,
+                    amount,
+                    npc_name,
+                    quote.sell_price.saturating_mul(amount)
+                ),
+            );
+        }
+    }
+    true
+}
+
+fn npc_trade_quantity_control_delta(mouse: Vec2, rect: Rect) -> Option<i32> {
+    if !rect.contains(mouse) {
+        return None;
+    }
+    let position = (mouse.x - rect.x) / rect.w;
+    if position < 0.35 {
+        Some(-1)
+    } else if position > 0.65 {
+        Some(1)
+    } else {
+        Some(0)
+    }
+}
+
+fn npc_trade_buy_amount(
+    credits: u32,
+    inventory: &Inventory,
+    ship_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+    stack: &ItemStack,
+    quote: &NpcTradeQuote,
+    requested: u32,
+) -> u32 {
+    let by_mass = if stack.item.unit_mass > 0.0 {
+        ((cargo_rating_kg(ship_upgrades) - inventory.total_mass()).max(0.0) / stack.item.unit_mass)
+            as u32
+    } else {
+        requested
+    };
+    let by_slot = if inventory.count(&stack.item) > 0 || inventory.slots.iter().any(Option::is_none)
+    {
+        requested
+    } else {
+        0
+    };
+    requested
+        .min(stack.count)
+        .min(credits / quote.buy_price.max(1))
+        .min(by_mass)
+        .min(by_slot)
+}
+
+fn npc_trade_sell_amount(
+    npc_ship: &NpcShip,
+    stack: &ItemStack,
+    inventory_count: u32,
+    requested: u32,
+) -> u32 {
+    let by_mass = if stack.item.unit_mass > 0.0 {
+        ((npc_ship.cargo_capacity
+            - npc_ship
+                .cargo_defaults
+                .iter()
+                .map(|cargo| cargo.item.unit_mass * cargo.count as f32)
+                .sum::<f32>())
+        .max(0.0)
+            / stack.item.unit_mass) as u32
+    } else {
+        requested
+    };
+    requested.min(inventory_count).min(by_mass)
 }
 
 fn npc_ship_is_hostile(content_registry: &content::ContentRegistry, npc_ship: &NpcShip) -> bool {
@@ -10305,8 +10977,10 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
     }
 
     let previous_selection = game.selected_npc_ship;
+    let previous_follow = game.follow_target;
     let mut surviving_npc_ships = Vec::with_capacity(game.npc_ships.len());
     let mut next_selected_npc_ship = None;
+    let mut next_follow_target = None;
     let npc_ships = std::mem::take(&mut game.npc_ships);
 
     for (old_index, npc_ship) in npc_ships.into_iter().enumerate() {
@@ -10314,6 +10988,9 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
             let new_index = surviving_npc_ships.len();
             if previous_selection == Some(old_index) {
                 next_selected_npc_ship = Some(new_index);
+            }
+            if previous_follow == Some(FollowTarget::NpcShip(old_index)) {
+                next_follow_target = Some(FollowTarget::NpcShip(new_index));
             }
             surviving_npc_ships.push(npc_ship);
         } else {
@@ -10332,6 +11009,11 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
 
     game.npc_ships = surviving_npc_ships;
     game.selected_npc_ship = next_selected_npc_ship;
+    game.context_action_menu = None;
+    game.follow_target = next_follow_target;
+    if previous_follow.is_some() && next_follow_target.is_none() {
+        push_operation_feedback(game, "Follow", "Target destroyed".to_string());
+    }
     game.save_dirty = true;
 }
 
@@ -11041,6 +11723,9 @@ fn draw_scene(
     if game.contracts_open {
         draw_contracts_overlay(game, panel_corner);
     }
+    if let Some(menu) = &game.context_action_menu {
+        draw_context_action_menu(game, menu);
+    }
     if game.escape_dialog_open {
         draw_escape_dialog(game, logo, panel_corner);
     }
@@ -11052,6 +11737,79 @@ fn draw_scene(
     }
     if let Some(transition) = &game.scene_transition {
         draw_scene_transition_overlay(transition);
+    }
+}
+
+fn draw_context_action_menu(game: &GameState, menu: &ContextActionMenu) {
+    let entries = context_action_entries(game, menu.target);
+    let rect = context_action_menu_rect(menu, entries.len());
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        Color::from_rgba(4, 11, 17, 245),
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        Color::from_rgba(150, 221, 226, 180),
+    );
+    draw_text(
+        "Actions",
+        rect.x + 10.0,
+        rect.y + 13.0,
+        13.0,
+        Color::from_rgba(168, 204, 210, 255),
+    );
+    let mouse = mouse_vec2();
+    for (index, entry) in entries.iter().enumerate() {
+        let row = context_action_entry_rect(rect, index);
+        let hovered = entry.enabled && row.contains(mouse);
+        draw_rectangle(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            if hovered {
+                Color::from_rgba(24, 58, 66, 230)
+            } else {
+                Color::from_rgba(8, 18, 24, 180)
+            },
+        );
+        draw_rectangle_lines(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            1.0,
+            if entry.enabled {
+                Color::from_rgba(96, 137, 150, 150)
+            } else {
+                Color::from_rgba(82, 114, 124, 80)
+            },
+        );
+        draw_text(
+            entry.label,
+            row.x + 8.0,
+            row.y + 16.0,
+            15.0,
+            if entry.enabled {
+                Color::from_rgba(205, 226, 230, 255)
+            } else {
+                Color::from_rgba(126, 143, 148, 210)
+            },
+        );
+        draw_text(
+            entry.detail,
+            row.x + 8.0,
+            row.y + 30.0,
+            11.0,
+            Color::from_rgba(126, 156, 164, 220),
+        );
     }
 }
 
@@ -14013,12 +14771,22 @@ fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mo
     } else if let Some(npc_ship_index) = game.selected_npc_ship {
         if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
             draw_action_rail_frame(rail, "Actions");
-            draw_npc_ship_interaction_list(
-                &game.content_registry,
-                &game.ship,
-                npc_ship,
-                Rect::new(rail.x + 12.0, rail.y + 48.0, rail.w - 24.0, rail.h - 60.0),
-            );
+            let rect = Rect::new(rail.x + 12.0, rail.y + 48.0, rail.w - 24.0, rail.h - 60.0);
+            if npc_ship.trade_open {
+                draw_npc_ship_trade_list(NpcTradeRender {
+                    ship: &game.ship,
+                    ship_upgrades: &game.ship_upgrades,
+                    npc_ship,
+                    world_seed: game.world_seed,
+                    world_elapsed_days: game.world_elapsed_days,
+                    credits: game.credits,
+                    inventory: &game.inventory,
+                    quantity: game.npc_trade_quantity,
+                    rect,
+                });
+            } else {
+                draw_npc_ship_interaction_list(&game.content_registry, &game.ship, npc_ship, rect);
+            }
         }
     } else {
         draw_ship_defense_action_rail(game, rail, mouse);
@@ -17385,6 +18153,160 @@ fn draw_npc_ship_interaction_list(
         15,
         Color::from_rgba(178, 197, 203, 235),
     );
+}
+
+fn draw_npc_ship_trade_list(render: NpcTradeRender<'_>) {
+    let NpcTradeRender {
+        ship,
+        ship_upgrades,
+        npc_ship,
+        world_seed,
+        world_elapsed_days,
+        credits,
+        inventory,
+        quantity,
+        rect,
+    } = render;
+    let Rect { x, y, w: width, .. } = rect;
+    let layout = npc_trade_table_layout(x, y, width);
+    let columns = &layout.columns;
+    let header = Color::from_rgba(168, 204, 210, 255);
+    draw_text("Cargo market", x, y + 16.0, 16.0, header);
+    draw_text(
+        "Hail for route rumors",
+        x,
+        y + 38.0,
+        13.0,
+        Color::from_rgba(126, 156, 164, 220),
+    );
+    for (label, column) in [
+        ("Item", &columns[0]),
+        ("Qty", &columns[1]),
+        ("Buy", &columns[2]),
+        ("Sell", &columns[3]),
+    ] {
+        draw_text(label, column.x, y + 58.0, 14.0, header);
+    }
+    draw_line(
+        x,
+        y + 66.0,
+        x + width,
+        y + 66.0,
+        1.0,
+        Color::from_rgba(96, 137, 150, 220),
+    );
+
+    if !npc_ship_in_interaction_range(ship, npc_ship) {
+        draw_text(
+            "Approach to trade",
+            x,
+            y + 92.0,
+            16.0,
+            Color::from_rgba(226, 190, 150, 255),
+        );
+        return;
+    }
+    let day = world_elapsed_days.floor().max(0.0) as u64;
+    for (index, stack) in npc_ship.cargo_defaults.iter().enumerate() {
+        let row = ui_table_row_rect(&layout, index, 0.0);
+        if !ui_table_row_visible(&layout, row) {
+            continue;
+        }
+        let quote = npc_trade_quote(npc_ship, &stack.item, world_seed, day);
+        let cargo_count = inventory.count(&stack.item);
+        let buy_amount =
+            npc_trade_buy_amount(credits, inventory, ship_upgrades, stack, &quote, quantity);
+        let buy_label = if stack.count == 0 {
+            "No stock".to_string()
+        } else if buy_amount == 0 {
+            "Unavailable".to_string()
+        } else {
+            format!("Buy x{}", buy_amount)
+        };
+        let sell_amount = npc_trade_sell_amount(npc_ship, stack, cargo_count, quantity);
+        let sell_label = if sell_amount == 0 {
+            "No cargo".to_string()
+        } else {
+            format!("Sell x{}", sell_amount)
+        };
+        let hovered = row.contains(mouse_vec2());
+        draw_rectangle(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            if hovered {
+                Color::from_rgba(13, 32, 40, 210)
+            } else {
+                Color::from_rgba(8, 18, 24, 118)
+            },
+        );
+        draw_text(
+            &fit_debug_text(&stack.item.name, columns[0].w, 15),
+            columns[0].x,
+            row.y + 17.0,
+            15.0,
+            Color::from_rgba(205, 226, 230, 255),
+        );
+        draw_text(
+            &format!("{}", stack.count),
+            columns[0].x,
+            row.y + 33.0,
+            12.0,
+            Color::from_rgba(126, 156, 164, 220),
+        );
+        let quantity_rect = Rect::new(columns[1].x, row.y + 8.0, columns[1].w, 22.0);
+        draw_trade_action_button(
+            quantity_rect,
+            "",
+            true,
+            quantity_rect.contains(mouse_vec2()),
+        );
+        draw_text(
+            "−",
+            quantity_rect.x + 7.0,
+            quantity_rect.y + 15.0,
+            14.0,
+            Color::from_rgba(205, 226, 230, 255),
+        );
+        let quantity_label = quantity.to_string();
+        let quantity_width = measure_text(&quantity_label, None, 14, 1.0).width;
+        draw_text(
+            &quantity_label,
+            quantity_rect.x + (quantity_rect.w - quantity_width) * 0.5,
+            quantity_rect.y + 15.0,
+            14.0,
+            Color::from_rgba(205, 226, 230, 255),
+        );
+        draw_text(
+            "+",
+            quantity_rect.x + quantity_rect.w - 15.0,
+            quantity_rect.y + 15.0,
+            14.0,
+            Color::from_rgba(205, 226, 230, 255),
+        );
+        draw_trade_action_button(
+            Rect::new(columns[2].x, row.y + 8.0, columns[2].w, 22.0),
+            &buy_label,
+            buy_amount > 0,
+            Rect::new(columns[2].x, row.y + 8.0, columns[2].w, 22.0).contains(mouse_vec2()),
+        );
+        draw_trade_action_button(
+            Rect::new(columns[3].x, row.y + 8.0, columns[3].w, 22.0),
+            &sell_label,
+            sell_amount > 0,
+            Rect::new(columns[3].x, row.y + 8.0, columns[3].w, 22.0).contains(mouse_vec2()),
+        );
+    }
+    if npc_ship.cargo_defaults.is_empty() {
+        draw_text(
+            "No cargo available",
+            x,
+            y + 92.0,
+            16.0,
+            Color::from_rgba(226, 190, 150, 255),
+        );
+    }
 }
 
 fn draw_station_service_list(render: StationActionRailRender<'_>) {
@@ -21616,7 +22538,7 @@ mod tests {
                 .iter()
                 .find(|row| row.action == NpcInteractionAction::Trade)
                 .map(|row| row.status),
-            Some("No exchange")
+            Some("No stock")
         );
 
         let hostile_rows = npc_interaction_rows(&registry, &ship, &hostile);
@@ -21634,6 +22556,132 @@ mod tests {
                 .map(|row| row.status),
             Some("Auto defense")
         );
+    }
+
+    #[test]
+    fn npc_trade_quotes_are_stable_within_a_market_day() {
+        let item = ItemRef {
+            id: "core:iron_ore".to_string(),
+            name: "Iron ore".to_string(),
+            unit_mass: 10.0,
+        };
+        let npc = test_npc_ship(NpcBehaviorMode::TradeRoute, Vec2::ZERO);
+        let first = npc_trade_quote(&npc, &item, 42, 3);
+        let second = npc_trade_quote(&npc, &item, 42, 3);
+
+        assert_eq!(first.buy_price, second.buy_price);
+        assert_eq!(first.sell_price, second.sell_price);
+        assert_eq!(first.rumor, second.rumor);
+        assert!(first.buy_price > first.sell_price);
+    }
+
+    #[test]
+    fn npc_trade_quantity_is_limited_by_stock_credits_and_cargo() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let item = required_item(&registry, "core:iron_ore");
+        let npc = test_npc_ship(NpcBehaviorMode::TradeRoute, Vec2::ZERO);
+        let stack = ItemStack {
+            item: item.clone(),
+            count: 8,
+        };
+        let quote = npc_trade_quote(&npc, &item, 1, 0);
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.credits = quote.buy_price * 3;
+
+        assert_eq!(
+            npc_trade_buy_amount(
+                game.credits,
+                &game.inventory,
+                &game.ship_upgrades,
+                &stack,
+                &quote,
+                99,
+            ),
+            3
+        );
+
+        game.inventory.add_item(item, 5);
+        assert_eq!(npc_trade_sell_amount(&npc, &stack, 5, 99), 5);
+    }
+
+    #[test]
+    fn npc_trade_quantity_controls_match_visible_button_sides() {
+        let rect = Rect::new(100.0, 40.0, 92.0, 22.0);
+
+        assert_eq!(
+            npc_trade_quantity_control_delta(vec2(105.0, 50.0), rect),
+            Some(-1)
+        );
+        assert_eq!(
+            npc_trade_quantity_control_delta(vec2(146.0, 50.0), rect),
+            Some(0)
+        );
+        assert_eq!(
+            npc_trade_quantity_control_delta(vec2(185.0, 50.0), rect),
+            Some(1)
+        );
+        assert_eq!(
+            npc_trade_quantity_control_delta(vec2(195.0, 50.0), rect),
+            None
+        );
+    }
+
+    #[test]
+    fn identified_nearby_hauler_with_cargo_exposes_trade_action() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let ship = Ship::starter();
+        let mut hauler = test_npc_ship(NpcBehaviorMode::TradeRoute, vec2(120.0, 0.0));
+        hauler.role = "hauler".to_string();
+        hauler.identified = true;
+        hauler.cargo_defaults = vec![ItemStack {
+            item: required_item(&registry, "core:iron_ore"),
+            count: 2,
+        }];
+
+        let trade = npc_interaction_rows(&registry, &ship, &hauler)
+            .into_iter()
+            .find(|row| row.action == NpcInteractionAction::Trade)
+            .expect("trade row should exist");
+        assert_eq!(trade.state, NpcInteractionState::Available);
+        assert_eq!(trade.status, "Open market");
+    }
+
+    #[test]
+    fn npc_context_menu_starts_with_follow_and_switches_to_stop() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+
+        let entries = context_action_entries(&game, ContextTarget::NpcShip(0));
+        assert_eq!(entries[0].action, ContextAction::Follow);
+        assert!(entries[0].enabled);
+
+        game.follow_target = Some(FollowTarget::NpcShip(0));
+        let entries = context_action_entries(&game, ContextTarget::NpcShip(0));
+        assert_eq!(entries[0].action, ContextAction::StopFollowing);
+    }
+
+    #[test]
+    fn npc_cargo_save_round_trip_restores_valid_runtime_items() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let item = required_item(&registry, "core:iron_ore");
+        let mut npc = test_npc_ship(NpcBehaviorMode::TradeRoute, Vec2::ZERO);
+        npc.id = "core:trade_test".to_string();
+        npc.cargo_capacity = 1_000.0;
+        npc.cargo_defaults = vec![ItemStack { item, count: 4 }];
+        let saved = save_npc_cargo(&[npc]);
+
+        let mut restored = test_npc_ship(NpcBehaviorMode::TradeRoute, Vec2::ZERO);
+        restored.id = "core:trade_test".to_string();
+        restored.cargo_capacity = 1_000.0;
+        apply_npc_cargo_save(std::slice::from_mut(&mut restored), &saved, &registry);
+
+        assert_eq!(restored.cargo_defaults[0].item.id, "core:iron_ore");
+        assert_eq!(restored.cargo_defaults[0].count, 4);
     }
 
     #[test]
@@ -23624,6 +24672,7 @@ mod tests {
             identified: false,
             cargo_capacity: 100.0,
             cargo_defaults: Vec::new(),
+            trade_open: false,
             credit_reward_min: 0,
             credit_reward_max: 0,
             hull: ShipResource::full(50.0),
@@ -23726,6 +24775,9 @@ mod tests {
             save_status_manual: false,
             operation_feedback: Vec::new(),
             debug_console: DebugConsole::default(),
+            context_action_menu: None,
+            follow_target: None,
+            npc_trade_quantity: 1,
         }
     }
 }

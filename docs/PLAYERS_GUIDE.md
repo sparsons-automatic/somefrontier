@@ -41,7 +41,8 @@ confirmation for removing the selected save without leaving the menu.
 | Open contracts | `J` |
 | Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
 | Inspect nearby planet or station | `Space` |
-| Select a visible planet | Left click the planet |
+| Select a visible planet | Left click the planet; press `Space` to inspect |
+| Open object actions | Right click a visible NPC ship |
 | Set a starmap destination | Left click a planet in the map |
 | Open ship upgrades | Click the ship preview in inventory |
 | Close menu / pause actions | `Esc` |
@@ -65,9 +66,10 @@ ready, the row calls out the missing fuel and can point at a local station that
 stocks it. If the ship can warp but the route leads to harsher remote space, the
 row can recommend scanner preparation before departure.
 
-Planets can be selected from local space or the map. When you are close enough,
-the planet panel shows available actions. You can enter orbit from the planet
-panel while in range; applying manual thrust or starting warp breaks orbit.
+Planets can be selected from local space or the map without opening an overlay.
+Press `Space` when close enough to inspect the planet panel and its available
+actions. You can enter orbit from the planet panel while in range; applying
+manual thrust or starting warp breaks orbit.
 
 ## Surveying
 
@@ -268,7 +270,17 @@ Fly near an NPC ship and press `Space`, or click a visible NPC ship, to inspect
 the contact. Nearby contacts can be identified from the interaction panel,
 revealing faction, disposition, systems, cargo summary, and supported hooks such
 as hail, dock, trade, or conflict. Some hooks are visible before their full
-mechanics exist, so unavailable rows describe the current blocker.
+mechanics exist, so unavailable rows describe the current blocker. Identified
+non-hostile haulers with cargo expose a mobile Cargo market: open it from the
+Trade row, choose a quantity with the `−` and `+` controls, then buy or sell
+that many units. Scroll over a cargo row to adjust the quantity; hold `Ctrl`
+for steps of 10 or `Shift` for steps of 5. Hail a hauler first for a short
+price or supply rumor. Their remaining cargo is saved with the game, so trades
+survive a save and reload. Right-click a visible NPC ship for its contextual
+Actions menu. Follow matches your ship's course and pace while keeping you near
+the contact; manual thrust, turning, a system change, or target destruction
+cancels following. Hail and Trade are also available there when their range and
+identification requirements are met.
 
 Factions and societies own systems, planets, stations, and NPC ships. The UI can
 show faction names and default disposition such as friendly, neutral, hostile,
