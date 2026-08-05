@@ -204,6 +204,21 @@ shows `Redwake probe pressure` while this is happening. Damage resistance
 reduces this pressure, and existing shield recharge resumes after the pressure
 delay clears.
 
+### Collision And Safe Flight
+
+Ships can damage one another when they overlap while closing at meaningful
+speed. Impact damage scales with closing speed and ship mass. Shields absorb
+collision damage first, then any remaining damage reaches the hull. Equipped
+shield modules provide their normal damage resistance and recharge delay to
+collision impacts, and NPCs without shields take the damage directly against
+their hull.
+
+Low-speed contact is ignored, and repeated contact while ships remain overlapped
+is limited by a short collision cooldown. Approach and follow movement should
+therefore be performed at low speed near a contact. High-speed ramming can
+destroy a ship quickly; collision response and impact feedback are still being
+tuned.
+
 ## Stations And Services
 
 Stations appear as local-space destinations. Fly within dock range and inspect
