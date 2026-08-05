@@ -56,6 +56,7 @@ const COLLISION_MIN_CLOSING_SPEED: f32 = 24.0;
 const COLLISION_DAMAGE_COEFFICIENT: f32 = 0.006;
 const COLLISION_REFERENCE_MASS: f32 = 100_000.0;
 const COLLISION_COOLDOWN_SECONDS: f32 = 0.6;
+const COLLISION_EVENT_SECONDS: f32 = 0.8;
 const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
 const STATION_INTERACTION_PADDING: f32 = 86.0;
@@ -192,6 +193,7 @@ struct GameState {
     equipped_weapons: Vec<WeaponSystem>,
     npc_ships: Vec<NpcShip>,
     collision_cooldowns: HashMap<String, f32>,
+    collision_impact_events: Vec<CollisionImpactEvent>,
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
     ship_texture: Option<Texture2D>,
@@ -265,6 +267,23 @@ struct OperationFeedback {
     message: String,
     aggregate_key: Option<String>,
     count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CollisionImpactSeverity {
+    Minor,
+    Significant,
+    Critical,
+    Destructive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionImpactEvent {
+    position: Vec2,
+    timer: f32,
+    shield_damage: f32,
+    hull_damage: f32,
+    severity: CollisionImpactSeverity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1301,6 +1320,7 @@ impl GameState {
             equipped_weapons,
             npc_ships,
             collision_cooldowns: HashMap::new(),
+            collision_impact_events: Vec::new(),
             defense_threats,
             weapon_fire_events: Vec::new(),
             ship_texture,
@@ -3526,10 +3546,78 @@ fn collision_impact_damage(closing_speed: f32, left_mass: f32, right_mass: f32) 
     (closing_speed.max(0.0).powi(2) * average_mass * COLLISION_DAMAGE_COEFFICIENT).max(0.0)
 }
 
+fn collision_impact_severity(
+    application: DamageApplication,
+    destroyed: bool,
+) -> CollisionImpactSeverity {
+    if destroyed {
+        CollisionImpactSeverity::Destructive
+    } else if application.hull_damage > 0.0 {
+        CollisionImpactSeverity::Critical
+    } else if application.shield_absorbed >= 20.0 {
+        CollisionImpactSeverity::Significant
+    } else {
+        CollisionImpactSeverity::Minor
+    }
+}
+
+fn collision_damage_summary(application: DamageApplication) -> String {
+    let mut parts = Vec::new();
+    if application.shield_absorbed > 0.0 {
+        parts.push(format!("shield -{:.0}", application.shield_absorbed));
+    }
+    if application.hull_damage > 0.0 {
+        parts.push(format!("hull -{:.0}", application.hull_damage));
+    }
+    if parts.is_empty() {
+        "no damage".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn record_collision_impact(
+    game: &mut GameState,
+    position: Vec2,
+    subject: &str,
+    application: DamageApplication,
+    destroyed: bool,
+) {
+    if !application.changed() {
+        return;
+    }
+    let severity = collision_impact_severity(application, destroyed);
+    let suffix = if destroyed { " / destroyed" } else { "" };
+    push_operation_feedback(
+        game,
+        "Collision",
+        format!(
+            "{subject}: {}{}",
+            collision_damage_summary(application),
+            suffix
+        ),
+    );
+    game.collision_impact_events.push(CollisionImpactEvent {
+        position,
+        timer: COLLISION_EVENT_SECONDS,
+        shield_damage: application.shield_absorbed,
+        hull_damage: application.hull_damage,
+        severity,
+    });
+}
+
+fn update_collision_impact_events(game: &mut GameState, dt: f32) {
+    game.collision_impact_events.retain_mut(|event| {
+        event.timer -= dt;
+        event.timer > 0.0
+    });
+}
+
 fn update_ship_collisions(game: &mut GameState, dt: f32) {
     if dt <= 0.0 || !dt.is_finite() {
         return;
     }
+    update_collision_impact_events(game, dt);
     game.collision_cooldowns.retain(|_, remaining| {
         *remaining = (*remaining - dt).max(0.0);
         *remaining > 0.0
@@ -3566,6 +3654,8 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         if damage <= 0.0 {
             continue;
         }
+        let npc_name = npc.name.clone();
+        let impact_position = (player_position + npc.position) * 0.5;
         let player_resistance = active_shield_damage_resistance(game);
         let player_application = apply_damage_to_resources(
             &mut game.ship.systems.shields,
@@ -3580,6 +3670,18 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         if player_application.changed() || npc_application.changed() {
             game.save_dirty = true;
         }
+        let npc_destroyed = game.npc_ships[npc_index].hull.current <= 0.0;
+        record_collision_impact(
+            game,
+            impact_position,
+            &format!("Impact with {npc_name}"),
+            DamageApplication {
+                shield_absorbed: player_application.shield_absorbed
+                    + npc_application.shield_absorbed,
+                hull_damage: player_application.hull_damage + npc_application.hull_damage,
+            },
+            npc_destroyed,
+        );
         game.collision_cooldowns
             .insert(key, COLLISION_COOLDOWN_SECONDS);
     }
@@ -3612,12 +3714,31 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
             if damage <= 0.0 {
                 continue;
             }
-            let (left, right) = game.npc_ships.split_at_mut(right_index);
-            let left_application = apply_npc_collision_damage(&mut left[left_index], damage);
-            let right_application = apply_npc_collision_damage(&mut right[0], damage);
+            let left_name = left.name.clone();
+            let right_name = right.name.clone();
+            let impact_position = (left.position + right.position) * 0.5;
+            let (left_application, right_application, destroyed) = {
+                let (left, right) = game.npc_ships.split_at_mut(right_index);
+                let left_application = apply_npc_collision_damage(&mut left[left_index], damage);
+                let right_application = apply_npc_collision_damage(&mut right[0], damage);
+                let destroyed =
+                    left[left_index].hull.current <= 0.0 || right[0].hull.current <= 0.0;
+                (left_application, right_application, destroyed)
+            };
             if left_application.changed() || right_application.changed() {
                 game.save_dirty = true;
             }
+            record_collision_impact(
+                game,
+                impact_position,
+                &format!("NPC collision: {left_name} / {right_name}"),
+                DamageApplication {
+                    shield_absorbed: left_application.shield_absorbed
+                        + right_application.shield_absorbed,
+                    hull_damage: left_application.hull_damage + right_application.hull_damage,
+                },
+                destroyed,
+            );
             game.collision_cooldowns
                 .insert(key, COLLISION_COOLDOWN_SECONDS);
         }
@@ -12398,6 +12519,9 @@ fn draw_scene(
     for event in &game.weapon_fire_events {
         draw_weapon_fire_event(center, ship, event, zoom);
     }
+    for event in &game.collision_impact_events {
+        draw_collision_impact_event(center, ship, event, zoom);
+    }
     let turn = ship.angular_velocity;
     draw_hud(HudView {
         ship,
@@ -12411,6 +12535,10 @@ fn draw_scene(
             &game.current_system_id,
         ),
         incoming_weapon_fire: incoming_weapon_fire_count(ship, &game.weapon_fire_events),
+        collision_warning: game
+            .collision_impact_events
+            .iter()
+            .find(|event| event.severity >= CollisionImpactSeverity::Critical),
         selected_planet: game.selected_planet,
         selected_station: game.selected_station,
         selected_npc_ship: game.selected_npc_ship,
@@ -13770,6 +13898,52 @@ fn draw_weapon_fire_event(center: Vec2, ship: &Ship, event: &WeaponFireEvent, zo
     if travel > 0.72 {
         let flare = ((travel - 0.72) / 0.28).clamp(0.0, 1.0) * alpha;
         draw_circle(to.x, to.y, 8.0 + flare * 13.0, Color { a: flare, ..impact });
+    }
+}
+
+fn draw_collision_impact_event(center: Vec2, ship: &Ship, event: &CollisionImpactEvent, zoom: f32) {
+    let screen_pos = world_to_screen(event.position, center, ship, zoom);
+    let alpha = (event.timer / COLLISION_EVENT_SECONDS).clamp(0.0, 1.0);
+    let progress = 1.0 - alpha;
+    let (outer, core) = match event.severity {
+        CollisionImpactSeverity::Minor => (
+            Color::new(0.35, 0.80, 1.0, alpha * 0.75),
+            Color::new(0.80, 0.98, 1.0, alpha),
+        ),
+        CollisionImpactSeverity::Significant => (
+            Color::new(0.98, 0.72, 0.25, alpha * 0.85),
+            Color::new(1.0, 0.94, 0.62, alpha),
+        ),
+        CollisionImpactSeverity::Critical | CollisionImpactSeverity::Destructive => (
+            Color::new(1.0, 0.25, 0.18, alpha * 0.9),
+            Color::new(1.0, 0.82, 0.48, alpha),
+        ),
+    };
+    let radius = (10.0 + progress * 28.0) * zoom.clamp(0.45, 2.0);
+    draw_circle_lines(screen_pos.x, screen_pos.y, radius, 3.0, outer);
+    draw_circle(
+        screen_pos.x,
+        screen_pos.y,
+        (3.0 + alpha * 6.0) * zoom.clamp(0.45, 2.0),
+        core,
+    );
+    if event.hull_damage > 0.0 {
+        draw_line(
+            screen_pos.x - radius,
+            screen_pos.y - radius,
+            screen_pos.x + radius,
+            screen_pos.y + radius,
+            2.0,
+            outer,
+        );
+        draw_line(
+            screen_pos.x + radius,
+            screen_pos.y - radius,
+            screen_pos.x - radius,
+            screen_pos.y + radius,
+            2.0,
+            outer,
+        );
     }
 }
 
@@ -21570,6 +21744,7 @@ struct HudView<'a> {
     npc_ships: &'a [NpcShip],
     pressure_contacts: usize,
     incoming_weapon_fire: usize,
+    collision_warning: Option<&'a CollisionImpactEvent>,
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
     selected_npc_ship: Option<usize>,
@@ -21588,6 +21763,7 @@ fn draw_hud(view: HudView<'_>) {
         npc_ships,
         pressure_contacts,
         incoming_weapon_fire,
+        collision_warning,
         selected_planet,
         selected_station,
         selected_npc_ship,
@@ -21655,6 +21831,24 @@ fn draw_hud(view: HudView<'_>) {
             184.0,
             20.0,
             Color::from_rgba(226, 104, 96, 255),
+        );
+        return;
+    }
+
+    if let Some(event) = collision_warning {
+        let label = match event.severity {
+            CollisionImpactSeverity::Critical => "Critical collision impact",
+            CollisionImpactSeverity::Destructive => "Destructive collision impact",
+            CollisionImpactSeverity::Minor | CollisionImpactSeverity::Significant => {
+                "Collision impact"
+            }
+        };
+        draw_text(
+            label,
+            34.0,
+            184.0,
+            20.0,
+            Color::from_rgba(247, 116, 96, 255),
         );
         return;
     }
@@ -22985,6 +23179,12 @@ mod tests {
         update_ship_collisions(&mut game, 0.1);
         let first_player_shields = game.ship.systems.shields.current;
         let first_npc_shields = game.npc_ships[0].shields.current;
+        assert_eq!(game.collision_impact_events.len(), 1);
+        assert!(operation_feedback_contains(
+            &game,
+            "Collision",
+            "Impact with"
+        ));
 
         update_ship_collisions(&mut game, 0.1);
         assert_eq!(game.ship.systems.shields.current, first_player_shields);
@@ -22994,6 +23194,59 @@ mod tests {
         assert!(game.ship.systems.shields.current < first_player_shields);
         assert!(game.npc_ships[0].shields.current < first_npc_shields);
         assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn collision_feedback_classifies_shield_hull_and_destroyed_impacts() {
+        let minor = collision_impact_severity(
+            DamageApplication {
+                shield_absorbed: 5.0,
+                hull_damage: 0.0,
+            },
+            false,
+        );
+        let critical = collision_impact_severity(
+            DamageApplication {
+                shield_absorbed: 0.0,
+                hull_damage: 1.0,
+            },
+            false,
+        );
+        let destructive = collision_impact_severity(
+            DamageApplication {
+                shield_absorbed: 0.0,
+                hull_damage: 50.0,
+            },
+            true,
+        );
+
+        assert_eq!(minor, CollisionImpactSeverity::Minor);
+        assert_eq!(critical, CollisionImpactSeverity::Critical);
+        assert_eq!(destructive, CollisionImpactSeverity::Destructive);
+    }
+
+    #[test]
+    fn collision_impact_events_expire_without_affecting_operations() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        record_collision_impact(
+            &mut game,
+            Vec2::ZERO,
+            "Impact with Test NPC",
+            DamageApplication {
+                shield_absorbed: 8.0,
+                hull_damage: 0.0,
+            },
+            false,
+        );
+        assert_eq!(game.collision_impact_events.len(), 1);
+        assert_eq!(game.operation_feedback.len(), 1);
+
+        update_collision_impact_events(&mut game, COLLISION_EVENT_SECONDS + 0.1);
+
+        assert!(game.collision_impact_events.is_empty());
+        assert_eq!(game.operation_feedback.len(), 1);
     }
 
     #[test]
@@ -25863,6 +26116,7 @@ mod tests {
             equipped_weapons: Vec::new(),
             npc_ships: Vec::new(),
             collision_cooldowns: HashMap::new(),
+            collision_impact_events: Vec::new(),
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
             ship_texture: None,

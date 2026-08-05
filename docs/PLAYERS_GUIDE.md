@@ -216,8 +216,14 @@ their hull.
 Low-speed contact is ignored, and repeated contact while ships remain overlapped
 is limited by a short collision cooldown. Approach and follow movement should
 therefore be performed at low speed near a contact. High-speed ramming can
-destroy a ship quickly; collision response and impact feedback are still being
-tuned.
+destroy a ship quickly.
+
+When a collision causes damage, a short-lived impact ring and flash appear at
+the contact point. The Operations feed reports whether shields absorbed the
+impact, hull damage was taken, or a ship was destroyed. Critical and destructive
+impacts also appear as a warning in the HUD. Minor contact or a collision fully
+absorbed by resistance may not create a damage event. These feedback effects do
+not change the available contextual actions or object panes.
 
 ## Stations And Services
 
