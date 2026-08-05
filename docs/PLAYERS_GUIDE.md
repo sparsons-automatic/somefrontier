@@ -226,7 +226,9 @@ or select them with `Space` or left click where supported. The station panel
 shows name, range, summary, ownership, culture, disposition, and service groups.
 Right-click a station for contextual Inspect, Approach, Dock, Trade, Contracts,
 and available service actions such as Repair. Approach engages the ship's
-autopilot until you reach the station's interaction range. Actions show their
+autopilot until you reach the station's interaction range. The ship brakes as
+it approaches and stops with a safe clearance rather than trying to overlap the
+station. Manual thrust or turning cancels the approach. Actions show their
 range, reputation, or availability requirements before they can be used; a
 station without a repair service does not advertise Repair.
 
@@ -308,9 +310,10 @@ for steps of 10 or `Shift` for steps of 5. Hail a hauler first for a short
 price or supply rumor. Their remaining cargo is saved with the game, so trades
 survive a save and reload. Right-click a visible NPC ship for its contextual
 Actions menu. Follow matches your ship's course and pace while keeping you near
-the contact; Approach engages the autopilot until you reach interaction range.
-Manual thrust, turning, a system change, or target destruction
-cancels following. Hail and Trade are also available there when their range and
+the contact while maintaining a safe trailing distance; Approach engages the
+autopilot until you reach interaction range and brakes before arrival. Manual
+thrust, turning, a system change, or target destruction cancels following or
+approach. Hail and Trade are also available there when their range and
 identification requirements are met.
 
 Factions and societies own systems, planets, stations, and NPC ships. The UI can

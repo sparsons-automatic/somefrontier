@@ -44,6 +44,7 @@ const NPC_PLANET_CLEARANCE: f32 = 96.0;
 const NPC_FOLLOW_DISTANCE: f32 = 420.0;
 const PLAYER_FOLLOW_DISTANCE: f32 = 120.0;
 const PLAYER_APPROACH_SPEED: f32 = 240.0;
+const AUTOPILOT_CLEARANCE_MARGIN: f32 = 18.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
 const NPC_PRESSURE_RANGE: f32 = 520.0;
 const REDWAKE_PROBE_PRESSURE_PER_SECOND: f32 = 2.4;
@@ -8345,20 +8346,29 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
 
     let target_state = match target {
         ApproachTarget::Planet(index) => game.planets.get(index).and_then(|planet| {
-            planet_is_in_system(planet, &game.current_system_id)
-                .then_some((planet.position, planet_interaction_radius(planet)))
+            planet_is_in_system(planet, &game.current_system_id).then_some((
+                planet.position,
+                planet_interaction_radius(planet),
+                planet.radius,
+            ))
         }),
         ApproachTarget::Station(index) => game.stations.get(index).and_then(|station| {
-            station_is_in_system(station, &game.current_system_id)
-                .then_some((station.position, station_interaction_radius(station)))
+            station_is_in_system(station, &game.current_system_id).then_some((
+                station.position,
+                station_interaction_radius(station),
+                station.radius,
+            ))
         }),
         ApproachTarget::NpcShip(index) => game.npc_ships.get(index).and_then(|npc_ship| {
-            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0)
-                .then_some((npc_ship.position, npc_ship_interaction_radius(npc_ship)))
+            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0).then_some((
+                npc_ship.position,
+                npc_ship_interaction_radius(npc_ship),
+                npc_ship.radius,
+            ))
         }),
     };
 
-    let Some((target_position, interaction_radius)) = target_state else {
+    let Some((target_position, interaction_radius, target_radius)) = target_state else {
         game.approach_target = None;
         push_operation_feedback(
             game,
@@ -8369,7 +8379,11 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
     };
 
     let offset = target_position - game.ship.position;
-    if offset.length() <= interaction_radius {
+    let safe_distance =
+        interaction_radius.max(target_radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN);
+    let distance = offset.length();
+    let remaining_distance = distance - safe_distance;
+    if remaining_distance <= 0.0 {
         game.ship.velocity = Vec2::ZERO;
         game.ship.angular_velocity = 0.0;
         game.approach_target = None;
@@ -8377,12 +8391,21 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         return;
     }
 
-    let desired_position =
-        target_position - offset.normalize() * (interaction_radius - SHIP_RADIUS).max(0.0);
-    let desired_velocity = clamp_vec2_length(
-        (desired_position - game.ship.position) * 0.8,
-        PLAYER_APPROACH_SPEED,
+    let direction = offset / distance.max(0.001);
+    let current_braking_distance = autopilot_braking_distance(
+        game.ship.velocity.length(),
+        game.ship.forward_acceleration(),
     );
+    let approach_speed = if current_braking_distance > remaining_distance {
+        0.0
+    } else {
+        autopilot_speed_for_distance(
+            remaining_distance,
+            game.ship.forward_acceleration(),
+            PLAYER_APPROACH_SPEED,
+        )
+    };
+    let desired_velocity = direction * approach_speed;
     game.ship.velocity = move_toward_vec2(
         game.ship.velocity,
         desired_velocity,
@@ -8391,12 +8414,16 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
     if game.ship.velocity.length_squared() > 0.01 {
         game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x) + std::f32::consts::PI;
     }
-    game.ship.position += game.ship.velocity * dt;
-    if game.ship.position.distance(target_position) <= interaction_radius {
+    let movement = game.ship.velocity * dt;
+    let movement_distance = movement.length();
+    if movement_distance >= remaining_distance {
+        game.ship.position = target_position - direction * safe_distance;
         game.ship.velocity = Vec2::ZERO;
         game.ship.angular_velocity = 0.0;
         game.approach_target = None;
         push_operation_feedback(game, "Autopilot", "Approach target reached".to_string());
+    } else {
+        game.ship.position += movement;
     }
     game.ship
         .systems
@@ -8427,10 +8454,22 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
     } else {
         vec2(npc_ship.angle.cos(), npc_ship.angle.sin())
     };
-    let desired_position = npc_ship.position - travel_direction * PLAYER_FOLLOW_DISTANCE;
+    let follow_distance =
+        PLAYER_FOLLOW_DISTANCE.max(npc_ship.radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN);
+    let desired_position = npc_ship.position - travel_direction * follow_distance;
     let offset = desired_position - game.ship.position;
-    let desired_velocity =
-        npc_ship.velocity + clamp_vec2_length(offset * 0.8, npc_ship.behavior.max_speed());
+    let offset_distance = offset.length();
+    let correction_speed = autopilot_speed_for_distance(
+        offset_distance,
+        game.ship.forward_acceleration(),
+        npc_ship.behavior.max_speed(),
+    );
+    let correction = if offset_distance > 0.001 {
+        offset / offset_distance * correction_speed
+    } else {
+        Vec2::ZERO
+    };
+    let desired_velocity = npc_ship.velocity + correction;
     game.ship.velocity = move_toward_vec2(
         game.ship.velocity,
         desired_velocity,
@@ -8439,7 +8478,15 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
     if game.ship.velocity.length_squared() > 0.01 {
         game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x);
     }
-    game.ship.position += game.ship.velocity * dt;
+    let movement = game.ship.velocity * dt;
+    let minimum_distance = npc_ship.radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN;
+    let next_position = game.ship.position + movement;
+    if next_position.distance(npc_ship.position) < minimum_distance {
+        game.ship.position = npc_ship.position - travel_direction * minimum_distance;
+        game.ship.velocity = npc_ship.velocity;
+    } else {
+        game.ship.position = next_position;
+    }
     game.ship
         .systems
         .energy
@@ -8450,6 +8497,25 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
         game.selected_npc_ship = Some(index);
         identify_selected_npc_ship(game);
     }
+}
+
+fn autopilot_braking_distance(speed: f32, acceleration: f32) -> f32 {
+    if !speed.is_finite() || !acceleration.is_finite() || acceleration <= 0.0 {
+        return 0.0;
+    }
+    speed.max(0.0).powi(2) / (2.0 * acceleration)
+}
+
+fn autopilot_speed_for_distance(distance: f32, acceleration: f32, max_speed: f32) -> f32 {
+    if !distance.is_finite() || !acceleration.is_finite() || !max_speed.is_finite() {
+        return 0.0;
+    }
+    let safe_distance = distance.max(0.0);
+    let safe_acceleration = acceleration.max(0.0);
+    let safe_max_speed = max_speed.max(0.0);
+    (2.0 * safe_acceleration * safe_distance)
+        .sqrt()
+        .min(safe_max_speed)
 }
 
 fn move_toward_vec2(current: Vec2, target: Vec2, max_delta: f32) -> Vec2 {
@@ -13224,6 +13290,8 @@ fn enter_planet_orbit(game: &mut GameState, planet_index: usize) -> bool {
     }
 
     game.orbiting_planet = Some(planet_index);
+    game.approach_target = None;
+    game.follow_target = None;
     game.selected_planet = Some(planet_index);
     game.destination_planet = None;
     remember_current_system_destination(game);
@@ -23458,6 +23526,36 @@ mod tests {
         game.follow_target = Some(FollowTarget::NpcShip(0));
         let entries = context_action_entries(&game, ContextTarget::NpcShip(0));
         assert_eq!(entries[0].action, ContextAction::StopFollowing);
+    }
+
+    #[test]
+    fn autopilot_braking_and_speed_limits_are_distance_aware() {
+        assert!((autopilot_braking_distance(100.0, 50.0) - 100.0).abs() < 0.01);
+        assert_eq!(autopilot_braking_distance(100.0, 0.0), 0.0);
+        assert!((autopilot_speed_for_distance(100.0, 50.0, 240.0) - 100.0).abs() < 0.01);
+        assert_eq!(autopilot_speed_for_distance(100.0, 50.0, 80.0), 80.0);
+    }
+
+    #[test]
+    fn follow_keeps_a_moving_npc_outside_collision_clearance() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut npc = test_npc_ship(NpcBehaviorMode::Patrol, vec2(240.0, 0.0));
+        npc.velocity = vec2(36.0, 0.0);
+        game.npc_ships = vec![npc];
+        game.follow_target = Some(FollowTarget::NpcShip(0));
+
+        for _ in 0..240 {
+            let npc_velocity = game.npc_ships[0].velocity;
+            game.npc_ships[0].position += npc_velocity * 0.1;
+            update_ship_follow(&mut game, 0.1);
+        }
+
+        let distance = game.ship.position.distance(game.npc_ships[0].position);
+        let minimum_distance = game.npc_ships[0].radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN;
+        assert!(distance >= minimum_distance - 0.01);
+        assert!((distance - PLAYER_FOLLOW_DISTANCE).abs() < 12.0);
     }
 
     #[test]
