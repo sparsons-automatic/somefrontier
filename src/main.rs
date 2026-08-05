@@ -43,6 +43,7 @@ const NPC_STATION_CLEARANCE: f32 = 72.0;
 const NPC_PLANET_CLEARANCE: f32 = 96.0;
 const NPC_FOLLOW_DISTANCE: f32 = 420.0;
 const PLAYER_FOLLOW_DISTANCE: f32 = 120.0;
+const PLAYER_APPROACH_SPEED: f32 = 240.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
 const NPC_PRESSURE_RANGE: f32 = 520.0;
 const REDWAKE_PROBE_PRESSURE_PER_SECOND: f32 = 2.4;
@@ -248,6 +249,7 @@ struct GameState {
     debug_console: DebugConsole,
     context_action_menu: Option<ContextActionMenu>,
     follow_target: Option<FollowTarget>,
+    approach_target: Option<ApproachTarget>,
     npc_trade_quantity: u32,
 }
 
@@ -261,11 +263,21 @@ struct OperationFeedback {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContextTarget {
+    Planet(usize),
+    Station(usize),
     NpcShip(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContextAction {
+    Inspect,
+    Approach,
+    Orbit,
+    Scan,
+    Mine,
+    Dock,
+    Contracts,
+    Repair,
     Follow,
     StopFollowing,
     Hail,
@@ -280,6 +292,13 @@ struct ContextActionMenu {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FollowTarget {
+    NpcShip(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApproachTarget {
+    Planet(usize),
+    Station(usize),
     NpcShip(usize),
 }
 
@@ -1335,6 +1354,7 @@ impl GameState {
             debug_console: DebugConsole::default(),
             context_action_menu: None,
             follow_target: None,
+            approach_target: None,
             npc_trade_quantity: 1,
         };
         if let Some(save_data) = save_data {
@@ -7322,16 +7342,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         }
     }
     if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::E) {
-        game.map_open = false;
-        game.research_open = false;
-        game.upgrades_open = false;
-        game.content_open = false;
-        game.contracts_open = false;
-        game.selected_planet = None;
-        game.selected_station = None;
-        game.selected_npc_ship = None;
-        game.selected_station_service = None;
-        game.inventory_open = !game.inventory_open;
+        handle_inventory_shortcut(game);
     }
     if is_key_pressed(KeyCode::K) {
         game.research_open = !game.research_open;
@@ -7563,6 +7574,14 @@ fn update_game(game: &mut GameState, dt: f32) {
         } else {
             update_ship_follow(game, dt);
         }
+    } else if game.approach_target.is_some() {
+        if movement_input_pressed() {
+            game.approach_target = None;
+            let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
+            update_ship(&mut game.ship, dt, energy_recharge);
+        } else {
+            update_ship_approach(game, dt);
+        }
     } else {
         let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
         update_ship(&mut game.ship, dt, energy_recharge);
@@ -7570,6 +7589,36 @@ fn update_game(game: &mut GameState, dt: f32) {
     if game_save_snapshot(game) != save_snapshot {
         game.save_dirty = true;
     }
+}
+
+fn handle_inventory_shortcut(game: &mut GameState) {
+    if game.context_action_menu.take().is_some() {
+        return;
+    }
+
+    if game.inventory_open
+        && (game.selected_planet.is_some()
+            || game.selected_station.is_some()
+            || game.selected_npc_ship.is_some())
+    {
+        game.inventory_open = false;
+        game.selected_planet = None;
+        game.selected_station = None;
+        game.selected_npc_ship = None;
+        game.selected_station_service = None;
+        return;
+    }
+
+    game.map_open = false;
+    game.research_open = false;
+    game.upgrades_open = false;
+    game.content_open = false;
+    game.contracts_open = false;
+    game.selected_planet = None;
+    game.selected_station = None;
+    game.selected_npc_ship = None;
+    game.selected_station_service = None;
+    game.inventory_open = !game.inventory_open;
 }
 
 fn handle_escape_pressed(game: &mut GameState) {
@@ -7593,6 +7642,147 @@ fn movement_input_pressed() -> bool {
 
 fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<ContextMenuEntry> {
     match target {
+        ContextTarget::Planet(index) => {
+            let Some(planet) = game.planets.get(index) else {
+                return Vec::new();
+            };
+            let in_range = planet_in_interaction_range(&game.ship, planet);
+            let has_drone = core_item(&game.content_registry, "survey_drone")
+                .is_some_and(|item| game.inventory.count(&item) > 0)
+                || core_item(&game.content_registry, "improved_survey_drone")
+                    .is_some_and(|item| game.inventory.count(&item) > 0);
+            let surveyed = planet_has_composition_scan(planet);
+            vec![
+                ContextMenuEntry {
+                    action: ContextAction::Inspect,
+                    label: "Inspect",
+                    enabled: true,
+                    detail: "Open planet survey record",
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Approach,
+                    label: "Approach",
+                    enabled: true,
+                    detail: "Set navigation target",
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Orbit,
+                    label: "Orbit",
+                    enabled: in_range && game.orbiting_planet != Some(index),
+                    detail: if in_range {
+                        "Enter stable orbit"
+                    } else {
+                        "Approach planet"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Scan,
+                    label: "Scan",
+                    enabled: in_range && has_drone && planet.scan_level < MAX_SCAN_LEVEL,
+                    detail: if !in_range {
+                        "Approach planet"
+                    } else if !has_drone {
+                        "Requires survey drone"
+                    } else if planet.scan_level >= MAX_SCAN_LEVEL {
+                        "Survey complete"
+                    } else {
+                        "Launch survey drone"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Mine,
+                    label: "Mine",
+                    enabled: in_range && surveyed,
+                    detail: if !in_range {
+                        "Approach planet"
+                    } else if surveyed {
+                        "Open mining controls"
+                    } else {
+                        "Complete composition scan"
+                    },
+                },
+            ]
+        }
+        ContextTarget::Station(index) => {
+            let Some(station) = game.stations.get(index) else {
+                return Vec::new();
+            };
+            let in_range = station_in_interaction_range(&game.ship, station);
+            let trade_service = station.services.iter().position(|service| {
+                !service.trade.is_empty() && station_service_is_available(game, station, service)
+            });
+            let contract_service = station.services.iter().position(|service| {
+                !service.contracts.is_empty()
+                    && station_service_is_available(game, station, service)
+            });
+            let repair_service = station.services.iter().position(|service| {
+                service.kind == "garage" && station_service_is_available(game, station, service)
+            });
+            vec![
+                ContextMenuEntry {
+                    action: ContextAction::Inspect,
+                    label: "Inspect",
+                    enabled: in_range,
+                    detail: if in_range {
+                        "Open station services"
+                    } else {
+                        "Approach dock range"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Approach,
+                    label: "Approach",
+                    enabled: true,
+                    detail: "Approach dock range",
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Dock,
+                    label: "Dock",
+                    enabled: in_range,
+                    detail: if in_range {
+                        "Open station services"
+                    } else {
+                        "Approach dock range"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Trade,
+                    label: "Trade",
+                    enabled: in_range && trade_service.is_some(),
+                    detail: if !in_range {
+                        "Approach dock range"
+                    } else if trade_service.is_some() {
+                        "Open trade service"
+                    } else {
+                        "No available trade service"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Contracts,
+                    label: "Contracts",
+                    enabled: in_range && contract_service.is_some(),
+                    detail: if !in_range {
+                        "Approach dock range"
+                    } else if contract_service.is_some() {
+                        "Open contracts service"
+                    } else {
+                        "No available contracts"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Repair,
+                    label: "Repair",
+                    enabled: in_range && repair_service.is_some(),
+                    detail: if !in_range {
+                        "Approach dock range"
+                    } else if repair_service.is_some() {
+                        "Open repair service"
+                    } else {
+                        "No available repair service"
+                    },
+                },
+            ]
+        }
         ContextTarget::NpcShip(index) => {
             let Some(npc_ship) = game.npc_ships.get(index) else {
                 return Vec::new();
@@ -7645,6 +7835,22 @@ fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<Contex
                         "Identify and approach"
                     },
                 },
+                ContextMenuEntry {
+                    action: ContextAction::Inspect,
+                    label: "Inspect",
+                    enabled: in_range,
+                    detail: if in_range {
+                        "Open contact detail"
+                    } else {
+                        "Approach contact"
+                    },
+                },
+                ContextMenuEntry {
+                    action: ContextAction::Approach,
+                    label: "Approach",
+                    enabled: true,
+                    detail: "Approach to interact",
+                },
             ]
         }
     }
@@ -7687,7 +7893,16 @@ fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
             return true;
         }
         if is_mouse_button_pressed(MouseButton::Right) {
-            game.context_action_menu = None;
+            if let Some(target) = clicked_context_target(game, mouse) {
+                select_context_target(game, target);
+                game.inventory_open = false;
+                game.context_action_menu = Some(ContextActionMenu {
+                    target,
+                    position: mouse,
+                });
+            } else {
+                game.context_action_menu = None;
+            }
             return true;
         }
         return false;
@@ -7696,22 +7911,65 @@ fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
     if !is_mouse_button_pressed(MouseButton::Right) {
         return false;
     }
-    let Some(npc_index) = clicked_npc_ship_index(
-        mouse,
-        &game.ship,
-        &game.npc_ships,
-        &game.current_system_id,
-        game.camera_zoom,
-    ) else {
+    let Some(target) = clicked_context_target(game, mouse) else {
         return false;
     };
-    select_npc_ship_for_context(game, npc_index);
+    select_context_target(game, target);
     game.inventory_open = false;
     game.context_action_menu = Some(ContextActionMenu {
-        target: ContextTarget::NpcShip(npc_index),
+        target,
         position: mouse,
     });
     true
+}
+
+fn clicked_context_target(game: &GameState, mouse: Vec2) -> Option<ContextTarget> {
+    clicked_planet_index(
+        mouse,
+        &game.ship,
+        &game.planets,
+        &game.current_system_id,
+        game.camera_zoom,
+    )
+    .map(ContextTarget::Planet)
+    .or_else(|| {
+        clicked_station_index(
+            mouse,
+            &game.ship,
+            &game.stations,
+            &game.current_system_id,
+            game.camera_zoom,
+        )
+        .map(ContextTarget::Station)
+    })
+    .or_else(|| {
+        clicked_npc_ship_index(
+            mouse,
+            &game.ship,
+            &game.npc_ships,
+            &game.current_system_id,
+            game.camera_zoom,
+        )
+        .map(ContextTarget::NpcShip)
+    })
+}
+
+fn select_context_target(game: &mut GameState, target: ContextTarget) {
+    match target {
+        ContextTarget::Planet(index) => {
+            game.selected_planet = Some(index);
+            game.selected_station = None;
+            game.selected_npc_ship = None;
+            game.selected_station_service = None;
+        }
+        ContextTarget::Station(index) => {
+            game.selected_planet = None;
+            game.selected_station = Some(index);
+            game.selected_npc_ship = None;
+            game.selected_station_service = None;
+        }
+        ContextTarget::NpcShip(index) => select_npc_ship_for_context(game, index),
+    }
 }
 
 fn select_npc_ship_for_context(game: &mut GameState, npc_index: usize) {
@@ -7724,6 +7982,86 @@ fn select_npc_ship_for_context(game: &mut GameState, npc_index: usize) {
 
 fn execute_context_action(game: &mut GameState, target: ContextTarget, action: ContextAction) {
     match (target, action) {
+        (ContextTarget::Planet(_), ContextAction::Inspect) => {
+            select_context_target(game, target);
+            game.inventory_open = true;
+        }
+        (ContextTarget::Planet(index), ContextAction::Approach) => {
+            select_context_target(game, target);
+            set_destination_planet(game, Some(index));
+            begin_approach(game, ApproachTarget::Planet(index));
+            push_operation_feedback(game, "Route", "Planet set as navigation target".to_string());
+        }
+        (ContextTarget::Planet(index), ContextAction::Orbit) => {
+            select_context_target(game, target);
+            enter_planet_orbit(game, index);
+        }
+        (ContextTarget::Planet(index), ContextAction::Scan) => {
+            select_context_target(game, target);
+            launch_planet_scan(game, index);
+        }
+        (ContextTarget::Planet(index), ContextAction::Mine) => {
+            let can_mine = game.planets.get(index).is_some_and(|planet| {
+                planet_in_interaction_range(&game.ship, planet)
+                    && planet_has_composition_scan(planet)
+            });
+            if can_mine {
+                select_context_target(game, target);
+                game.inventory_open = true;
+            }
+        }
+        (ContextTarget::Station(index), ContextAction::Inspect) => {
+            if game
+                .stations
+                .get(index)
+                .is_some_and(|station| station_in_interaction_range(&game.ship, station))
+            {
+                select_context_target(game, target);
+                game.inventory_open = true;
+            }
+        }
+        (ContextTarget::Station(index), ContextAction::Dock) => {
+            select_context_target(game, target);
+            if station_in_interaction_range(&game.ship, &game.stations[index]) {
+                game.inventory_open = true;
+            } else {
+                push_operation_feedback(game, "Station", "Approach dock range to dock".to_string());
+            }
+        }
+        (
+            ContextTarget::Station(index),
+            action @ (ContextAction::Trade | ContextAction::Contracts | ContextAction::Repair),
+        ) => {
+            let service_index = game.stations.get(index).and_then(|station| {
+                station.services.iter().position(|service| {
+                    let matches = match action {
+                        ContextAction::Trade => !service.trade.is_empty(),
+                        ContextAction::Contracts => !service.contracts.is_empty(),
+                        ContextAction::Repair => service.kind == "garage",
+                        _ => false,
+                    };
+                    matches && station_service_is_available(game, station, service)
+                })
+            });
+            select_context_target(game, target);
+            if let Some(service_index) = service_index {
+                select_station_service(game, index, service_index);
+                if station_in_interaction_range(&game.ship, &game.stations[index]) {
+                    game.inventory_open = true;
+                } else {
+                    push_operation_feedback(
+                        game,
+                        "Station",
+                        "Approach dock range to use service".to_string(),
+                    );
+                }
+            }
+        }
+        (ContextTarget::Station(index), ContextAction::Approach) => {
+            select_context_target(game, target);
+            begin_approach(game, ApproachTarget::Station(index));
+            push_operation_feedback(game, "Station", "Autopilot approaching station".to_string());
+        }
         (ContextTarget::NpcShip(index), ContextAction::Follow) => {
             if game.npc_ships.get(index).is_some() {
                 game.follow_target = Some(FollowTarget::NpcShip(index));
@@ -7749,7 +8087,95 @@ fn execute_context_action(game: &mut GameState, target: ContextTarget, action: C
                 npc_ship.trade_open = true;
             }
         }
+        (ContextTarget::NpcShip(index), ContextAction::Inspect) => {
+            if game
+                .npc_ships
+                .get(index)
+                .is_some_and(|npc_ship| npc_ship_in_interaction_range(&game.ship, npc_ship))
+            {
+                select_npc_ship_for_context(game, index);
+                game.inventory_open = true;
+            }
+        }
+        (ContextTarget::NpcShip(index), ContextAction::Approach) => {
+            select_npc_ship_for_context(game, index);
+            begin_approach(game, ApproachTarget::NpcShip(index));
+            push_operation_feedback(game, "Contact", "Autopilot approaching contact".to_string());
+        }
+        _ => {}
     }
+}
+
+fn begin_approach(game: &mut GameState, target: ApproachTarget) {
+    game.follow_target = None;
+    game.approach_target = Some(target);
+    game.orbiting_planet = None;
+}
+
+fn update_ship_approach(game: &mut GameState, dt: f32) {
+    let Some(target) = game.approach_target else {
+        return;
+    };
+
+    let target_state = match target {
+        ApproachTarget::Planet(index) => game.planets.get(index).and_then(|planet| {
+            planet_is_in_system(planet, &game.current_system_id)
+                .then_some((planet.position, planet_interaction_radius(planet)))
+        }),
+        ApproachTarget::Station(index) => game.stations.get(index).and_then(|station| {
+            station_is_in_system(station, &game.current_system_id)
+                .then_some((station.position, station_interaction_radius(station)))
+        }),
+        ApproachTarget::NpcShip(index) => game.npc_ships.get(index).and_then(|npc_ship| {
+            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0)
+                .then_some((npc_ship.position, npc_ship_interaction_radius(npc_ship)))
+        }),
+    };
+
+    let Some((target_position, interaction_radius)) = target_state else {
+        game.approach_target = None;
+        push_operation_feedback(
+            game,
+            "Autopilot",
+            "Approach target is no longer available".to_string(),
+        );
+        return;
+    };
+
+    let offset = target_position - game.ship.position;
+    if offset.length() <= interaction_radius {
+        game.ship.velocity = Vec2::ZERO;
+        game.ship.angular_velocity = 0.0;
+        game.approach_target = None;
+        push_operation_feedback(game, "Autopilot", "Approach target reached".to_string());
+        return;
+    }
+
+    let desired_position =
+        target_position - offset.normalize() * (interaction_radius - SHIP_RADIUS).max(0.0);
+    let desired_velocity = clamp_vec2_length(
+        (desired_position - game.ship.position) * 0.8,
+        PLAYER_APPROACH_SPEED,
+    );
+    game.ship.velocity = move_toward_vec2(
+        game.ship.velocity,
+        desired_velocity,
+        game.ship.forward_acceleration() * dt,
+    );
+    if game.ship.velocity.length_squared() > 0.01 {
+        game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x) + std::f32::consts::PI;
+    }
+    game.ship.position += game.ship.velocity * dt;
+    if game.ship.position.distance(target_position) <= interaction_radius {
+        game.ship.velocity = Vec2::ZERO;
+        game.ship.angular_velocity = 0.0;
+        game.approach_target = None;
+        push_operation_feedback(game, "Autopilot", "Approach target reached".to_string());
+    }
+    game.ship
+        .systems
+        .energy
+        .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
 }
 
 fn stop_following(game: &mut GameState, message: &str) {
@@ -8474,6 +8900,7 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.selected_station_service = None;
     game.context_action_menu = None;
     game.follow_target = None;
+    game.approach_target = None;
     game.orbiting_planet = None;
     game.destination_planet = destination_planet_for_system(
         &game.planets,
@@ -11668,7 +12095,13 @@ fn draw_scene(
         zoom,
     );
     draw_ship_status_arcs(center, ship, zoom);
-    draw_ship(center, ship, game.ship_texture.as_ref(), zoom);
+    draw_ship(
+        center,
+        ship,
+        game.ship_texture.as_ref(),
+        zoom,
+        game.approach_target.is_some() || game.follow_target.is_some(),
+    );
     for event in &game.weapon_fire_events {
         draw_weapon_fire_event(center, ship, event, zoom);
     }
@@ -12304,7 +12737,7 @@ fn clicked_planet_index(
             return None;
         }
         let screen_pos = world_to_screen(planet.position, center, ship, zoom);
-        (mouse.distance(screen_pos) <= (planet.radius * zoom).max(48.0)).then_some(index)
+        (mouse.distance(screen_pos) <= planet_interaction_radius(planet) * zoom).then_some(index)
     })
 }
 
@@ -12323,7 +12756,7 @@ fn clicked_station_index(
         .filter(|(_, station)| station_is_in_system(station, current_system_id))
         .filter_map(|(index, station)| {
             let screen_pos = world_to_screen(station.position, center, ship, zoom);
-            (mouse.distance(screen_pos) <= (station.radius * zoom).max(44.0))
+            (mouse.distance(screen_pos) <= station_interaction_radius(station) * zoom)
                 .then_some((index, mouse.distance_squared(screen_pos)))
         })
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
@@ -12345,12 +12778,16 @@ fn clicked_npc_ship_index(
         .filter(|(_, npc_ship)| npc_ship_is_in_system(npc_ship, current_system_id))
         .filter_map(|(index, npc_ship)| {
             let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
-            let hit_radius = (npc_ship.radius * 2.0 * zoom).clamp(30.0, 74.0);
+            let hit_radius = npc_ship_click_radius(npc_ship, zoom);
             (mouse.distance(screen_pos) <= hit_radius)
                 .then_some((index, mouse.distance_squared(screen_pos)))
         })
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(index, _)| index)
+}
+
+fn npc_ship_click_radius(npc_ship: &NpcShip, zoom: f32) -> f32 {
+    (npc_ship.radius * zoom).clamp(14.0, 36.0) + 6.0
 }
 
 fn clicked_starmap_planet_index(mouse: Vec2, game: &GameState) -> Option<usize> {
@@ -13243,8 +13680,14 @@ fn draw_star_trail(screen_pos: Vec2, star: &Star, layer: &StarLayer, screen_velo
     draw_circle(screen_pos.x, screen_pos.y, star.size, base);
 }
 
-fn draw_ship(center: Vec2, ship: &Ship, texture: Option<&Texture2D>, zoom: f32) {
-    let thrusting = is_key_down(KeyCode::W) || is_key_down(KeyCode::S);
+fn draw_ship(
+    center: Vec2,
+    ship: &Ship,
+    texture: Option<&Texture2D>,
+    zoom: f32,
+    autopilot_thrusting: bool,
+) {
+    let thrusting = autopilot_thrusting || is_key_down(KeyCode::W) || is_key_down(KeyCode::S);
     draw_ship_sprite(
         center,
         texture,
@@ -22665,6 +23108,259 @@ mod tests {
     }
 
     #[test]
+    fn npc_context_click_radius_matches_ship_footprint() {
+        let npc = test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO);
+        let click_radius = npc_ship_click_radius(&npc, 1.0);
+        let rendered_size = (npc.radius * 2.0_f32).clamp(22.0, 72.0);
+
+        assert!(click_radius >= rendered_size * 0.5);
+        assert!(click_radius <= rendered_size * 0.5 + 6.0);
+    }
+
+    #[test]
+    fn contextual_action_entries_cover_planets_stations_and_hostile_contacts() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let planet = test_planet("core:context_planet", STARTER_SYSTEM_ID, Vec2::ZERO, true);
+        let mut game = test_game_with_systems(registry, vec![planet]);
+
+        let planet_actions = context_action_entries(&game, ContextTarget::Planet(0));
+        assert_eq!(planet_actions[0].action, ContextAction::Inspect);
+        assert!(planet_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Approach));
+        assert!(planet_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Orbit));
+        assert!(planet_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Scan));
+        assert!(planet_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Mine));
+        game.ship.position = vec2(5_000.0, 0.0);
+        assert!(
+            context_action_entries(&game, ContextTarget::Planet(0))
+                .into_iter()
+                .find(|entry| entry.action == ContextAction::Inspect)
+                .expect("planet Inspect entry should exist")
+                .enabled
+        );
+        execute_context_action(&mut game, ContextTarget::Planet(0), ContextAction::Inspect);
+        assert!(game.inventory_open);
+        assert_eq!(game.selected_planet, Some(0));
+        game.inventory_open = false;
+        game.ship.position = Vec2::ZERO;
+
+        game.stations = vec![test_station_destination(
+            "core:context_station",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+        )];
+        let station_actions = context_action_entries(&game, ContextTarget::Station(0));
+        assert!(station_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Inspect));
+        assert!(station_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Dock));
+        assert!(station_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Approach));
+        assert!(station_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Repair));
+        game.ship.position = vec2(5_000.0, 0.0);
+        assert!(
+            !context_action_entries(&game, ContextTarget::Station(0))
+                .into_iter()
+                .find(|entry| entry.action == ContextAction::Inspect)
+                .expect("station Inspect entry should exist")
+                .enabled
+        );
+        game.ship.position = Vec2::ZERO;
+
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile.role = "hostile".to_string();
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        hostile.identified = true;
+        game.npc_ships = vec![hostile];
+        let hostile_actions = context_action_entries(&game, ContextTarget::NpcShip(0));
+        assert!(hostile_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Inspect));
+        assert!(hostile_actions
+            .iter()
+            .any(|entry| entry.action == ContextAction::Approach));
+        game.ship.position = vec2(-5_000.0, 0.0);
+        assert!(
+            !context_action_entries(&game, ContextTarget::NpcShip(0))
+                .into_iter()
+                .find(|entry| entry.action == ContextAction::Inspect)
+                .expect("contact Inspect entry should exist")
+                .enabled
+        );
+        assert!(
+            !hostile_actions
+                .iter()
+                .find(|entry| entry.action == ContextAction::Hail)
+                .expect("hostile contacts retain a readable Hail entry")
+                .enabled
+        );
+        assert!(
+            !hostile_actions
+                .iter()
+                .find(|entry| entry.action == ContextAction::Trade)
+                .expect("hostile contacts retain a readable Trade entry")
+                .enabled
+        );
+    }
+
+    #[test]
+    fn approach_action_flies_to_planet_and_stops_in_interaction_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let planet = test_planet(
+            "core:approach_planet",
+            STARTER_SYSTEM_ID,
+            vec2(600.0, 0.0),
+            true,
+        );
+        let mut game = test_game_with_systems(registry, vec![planet]);
+
+        execute_context_action(&mut game, ContextTarget::Planet(0), ContextAction::Approach);
+        assert_eq!(game.approach_target, Some(ApproachTarget::Planet(0)));
+
+        for _ in 0..100 {
+            if game.approach_target.is_none() {
+                break;
+            }
+            update_ship_approach(&mut game, 0.1);
+        }
+
+        assert!(game.approach_target.is_none());
+        assert!(
+            game.ship.position.distance(game.planets[0].position)
+                <= planet_interaction_radius(&game.planets[0])
+        );
+        assert!((game.ship.angle - std::f32::consts::PI).abs() < 0.01);
+    }
+
+    #[test]
+    fn mine_context_action_opens_the_selected_planet_pane_only_when_usable() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:mine_context_planet",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+
+        execute_context_action(&mut game, ContextTarget::Planet(0), ContextAction::Mine);
+
+        assert_eq!(game.selected_planet, Some(0));
+        assert!(game.inventory_open);
+        assert_eq!(game.selected_station, None);
+        assert_eq!(game.selected_npc_ship, None);
+
+        game.inventory_open = false;
+        game.ship.position = vec2(5_000.0, 0.0);
+        execute_context_action(&mut game, ContextTarget::Planet(0), ContextAction::Mine);
+        assert!(!game.inventory_open);
+    }
+
+    #[test]
+    fn inventory_shortcut_does_not_convert_object_menu_or_pane_to_ship_pane() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let planet = test_planet("core:shortcut_planet", STARTER_SYSTEM_ID, Vec2::ZERO, true);
+        let mut game = test_game_with_systems(registry, vec![planet]);
+
+        game.selected_planet = Some(0);
+        game.context_action_menu = Some(ContextActionMenu {
+            target: ContextTarget::Planet(0),
+            position: Vec2::ZERO,
+        });
+        handle_inventory_shortcut(&mut game);
+        assert!(game.context_action_menu.is_none());
+        assert!(!game.inventory_open);
+        assert_eq!(game.selected_planet, Some(0));
+
+        game.inventory_open = true;
+        handle_inventory_shortcut(&mut game);
+        assert!(!game.inventory_open);
+        assert_eq!(game.selected_planet, None);
+
+        handle_inventory_shortcut(&mut game);
+        assert!(game.inventory_open);
+        assert_eq!(game.selected_planet, None);
+    }
+
+    #[test]
+    fn station_approach_leaves_inspect_enabled_and_opens_station_pane() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:approach_station",
+            STARTER_SYSTEM_ID,
+            vec2(900.0, 0.0),
+        )];
+
+        begin_approach(&mut game, ApproachTarget::Station(0));
+        for _ in 0..120 {
+            if game.approach_target.is_none() {
+                break;
+            }
+            update_ship_approach(&mut game, 0.1);
+        }
+
+        let inspect = context_action_entries(&game, ContextTarget::Station(0))
+            .into_iter()
+            .find(|entry| entry.action == ContextAction::Inspect)
+            .expect("station Inspect entry should exist");
+        assert!(inspect.enabled);
+        execute_context_action(&mut game, ContextTarget::Station(0), ContextAction::Inspect);
+        assert!(game.inventory_open);
+        assert_eq!(game.selected_station, Some(0));
+        assert_eq!(game.selected_planet, None);
+        assert_eq!(game.selected_npc_ship, None);
+    }
+
+    #[test]
+    fn station_content_only_marks_true_repair_yards_as_garages() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let frontier = registry
+            .stations
+            .values()
+            .find(|station| station.id.ends_with("frontier_exchange"))
+            .expect("Frontier Exchange should load");
+        let cinder = registry
+            .stations
+            .values()
+            .find(|station| station.id.ends_with("cinder_repair_yard"))
+            .expect("Cinder Repair Yard should load");
+
+        assert!(frontier
+            .services
+            .iter()
+            .any(|service| !service.trade.is_empty()));
+        assert!(!frontier
+            .services
+            .iter()
+            .any(|service| service.kind == "garage"));
+        assert!(cinder
+            .services
+            .iter()
+            .any(|service| service.kind == "garage"));
+    }
+
+    #[test]
     fn npc_cargo_save_round_trip_restores_valid_runtime_items() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -24777,6 +25473,7 @@ mod tests {
             debug_console: DebugConsole::default(),
             context_action_menu: None,
             follow_target: None,
+            approach_target: None,
             npc_trade_quantity: 1,
         }
     }

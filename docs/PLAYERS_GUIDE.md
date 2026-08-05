@@ -34,7 +34,7 @@ confirmation for removing the selected save without leaving the menu.
 | Forward thrust | `W` |
 | Reverse thrust | `S` |
 | Turn | `A` / `D` or left / right arrows |
-| Open inventory and production | `Tab` or `E` |
+| Open/close inventory and production | `Tab` or `E` |
 | Open map | `M` |
 | Open research | `K` |
 | Open content browser | `C` |
@@ -42,10 +42,15 @@ confirmation for removing the selected save without leaving the menu.
 | Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
 | Inspect nearby planet or station | `Space` |
 | Select a visible planet | Left click the planet; press `Space` to inspect |
-| Open object actions | Right click a visible NPC ship |
+| Open object actions | Right click a visible planet, station, or ship |
 | Set a starmap destination | Left click a planet in the map |
 | Open ship upgrades | Click the ship preview in inventory |
 | Close menu / pause actions | `Esc` |
+
+`Tab` and `E` close an active planet, station, or contact pane without changing
+it into the Ship Pane. If a right-click Actions menu is open, they close that
+menu first. With no object pane active, they continue to toggle the general
+inventory and production pane.
 
 On the title screen, use the visible buttons or keyboard shortcuts shown beside
 them. `Esc` backs out of submenus or leaves the title flow when available.
@@ -67,9 +72,10 @@ stocks it. If the ship can warp but the route leads to harsher remote space, the
 row can recommend scanner preparation before departure.
 
 Planets can be selected from local space or the map without opening an overlay.
-Press `Space` when close enough to inspect the planet panel and its available
-actions. You can enter orbit from the planet panel while in range; applying
-manual thrust or starting warp breaks orbit.
+Inspecting a planet opens its survey record even when it is distant; the record
+shows what remains unknown and what scan equipment is required. Launch scans
+only when close enough to the planet. You can enter orbit from the planet panel
+while in range; applying manual thrust or starting warp breaks orbit.
 
 ## Surveying
 
@@ -203,6 +209,11 @@ delay clears.
 Stations appear as local-space destinations. Fly within dock range and inspect
 or select them with `Space` or left click where supported. The station panel
 shows name, range, summary, ownership, culture, disposition, and service groups.
+Right-click a station for contextual Inspect, Approach, Dock, Trade, Contracts,
+and available service actions such as Repair. Approach engages the ship's
+autopilot until you reach the station's interaction range. Actions show their
+range, reputation, or availability requirements before they can be used; a
+station without a repair service does not advertise Repair.
 
 Current service groups can include trade stock and research leads. Trade rows
 let you buy one unit with left click or sell one unit with right click when the
@@ -260,7 +271,11 @@ full mechanics exist.
 
 ## NPC Ships And Factions
 
-NPC ships appear as moving contacts in local space. They have names, roles,
+Planets, stations, and NPC ships can be selected with left click or `Space`,
+then right-clicked for an object-specific Actions menu. Planet menus include
+Inspect and Approach, plus Orbit, Scan, and Mine when their range and survey
+requirements are met. NPC ships appear as moving contacts in local space. They
+have names, roles,
 archetypes, cargo defaults, stats, loadouts, faction ownership, and behavior
 modes such as patrol, traffic, trade-route travel, follow, flee, or hostile
 intercept. These behaviors make local space feel active while keeping ship
@@ -278,7 +293,8 @@ for steps of 10 or `Shift` for steps of 5. Hail a hauler first for a short
 price or supply rumor. Their remaining cargo is saved with the game, so trades
 survive a save and reload. Right-click a visible NPC ship for its contextual
 Actions menu. Follow matches your ship's course and pace while keeping you near
-the contact; manual thrust, turning, a system change, or target destruction
+the contact; Approach engages the autopilot until you reach interaction range.
+Manual thrust, turning, a system change, or target destruction
 cancels following. Hail and Trade are also available there when their range and
 identification requirements are met.
 
