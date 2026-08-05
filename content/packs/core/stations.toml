@@ -55,7 +55,7 @@ restock_days = 5.0
 [[stations.services]]
 id = "garage"
 name = "Market Services"
-kind = "garage"
+kind = "support"
 description = "Light refit and market-service hooks; heavy repairs belong at Cinder Repair Yard."
 
 [[stations.services]]
