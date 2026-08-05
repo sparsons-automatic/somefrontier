@@ -51,6 +51,10 @@ const REDWAKE_PRESSURE_HULL_SPILLOVER: f32 = 0.35;
 const NPC_ROUTE_RADIUS: f32 = 520.0;
 const NPC_ROUTE_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 const NPC_INTERACTION_PADDING: f32 = 126.0;
+const COLLISION_MIN_CLOSING_SPEED: f32 = 24.0;
+const COLLISION_DAMAGE_COEFFICIENT: f32 = 0.006;
+const COLLISION_REFERENCE_MASS: f32 = 100_000.0;
+const COLLISION_COOLDOWN_SECONDS: f32 = 0.6;
 const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
 const STATION_INTERACTION_PADDING: f32 = 86.0;
@@ -186,6 +190,7 @@ struct GameState {
     equipped_shields: Vec<ShieldSystem>,
     equipped_weapons: Vec<WeaponSystem>,
     npc_ships: Vec<NpcShip>,
+    collision_cooldowns: HashMap<String, f32>,
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
     ship_texture: Option<Texture2D>,
@@ -609,6 +614,7 @@ struct NpcShip {
     system: String,
     position: Vec2,
     velocity: Vec2,
+    mass: f32,
     angle: f32,
     radius: f32,
     texture: Option<Texture2D>,
@@ -627,6 +633,8 @@ struct NpcShip {
     credit_reward_max: u32,
     hull: ShipResource,
     shields: ShipResource,
+    equipped_shields: Vec<ShieldSystem>,
+    shield_recharge_delay_remaining: f32,
     energy: ShipResource,
     shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
@@ -1291,6 +1299,7 @@ impl GameState {
             equipped_shields,
             equipped_weapons,
             npc_ships,
+            collision_cooldowns: HashMap::new(),
             defense_threats,
             weapon_fire_events: Vec::new(),
             ship_texture,
@@ -2336,6 +2345,7 @@ async fn make_npc_ships(
             system: npc_ship_def.system.clone(),
             position,
             velocity: Vec2::ZERO,
+            mass: npc_ship_def.mass,
             angle: 0.0,
             radius: npc_ship_def.radius,
             texture,
@@ -2354,6 +2364,11 @@ async fn make_npc_ships(
             credit_reward_max: npc_ship_def.credit_reward_max,
             hull: ShipResource::full(npc_ship_def.hull_capacity),
             shields: ShipResource::full(npc_ship_def.shield_capacity),
+            equipped_shields: equipped_shields_from_ids(
+                content_registry,
+                &npc_ship_def.shield_slots,
+            ),
+            shield_recharge_delay_remaining: 0.0,
             energy: ShipResource::full(npc_ship_def.energy_capacity),
             shield_slots: npc_ship_def.shield_slots.clone(),
             weapon_slots: npc_ship_def.weapon_slots.clone(),
@@ -3350,22 +3365,13 @@ fn ship_pressure_damage_after_resistance(game: &GameState, damage: f32) -> f32 {
 
 fn apply_ship_pressure_damage(game: &mut GameState, amount: f32) -> bool {
     let damage = ship_pressure_damage_after_resistance(game, amount);
-    if damage <= 0.0 {
-        return false;
-    }
-
-    let shields_before = game.ship.systems.shields.current;
-    let hull_before = game.ship.systems.hull.current;
-    let shield_absorbed = damage.min(game.ship.systems.shields.current);
-    game.ship.systems.shields.spend(shield_absorbed);
-
-    let spillover = (damage - shield_absorbed) * REDWAKE_PRESSURE_HULL_SPILLOVER;
-    if spillover > 0.0 {
-        game.ship.systems.hull.spend(spillover);
-    }
-
-    let changed = game.ship.systems.shields.current < shields_before
-        || game.ship.systems.hull.current < hull_before;
+    let application = apply_damage_to_resources(
+        &mut game.ship.systems.shields,
+        &mut game.ship.systems.hull,
+        damage,
+        REDWAKE_PRESSURE_HULL_SPILLOVER,
+    );
+    let changed = application.changed();
     if changed {
         game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
         game.save_dirty = true;
@@ -3375,27 +3381,246 @@ fn apply_ship_pressure_damage(game: &mut GameState, amount: f32) -> bool {
 
 fn apply_ship_weapon_damage(game: &mut GameState, amount: f32) -> bool {
     let damage = ship_pressure_damage_after_resistance(game, amount);
-    if damage <= 0.0 {
-        return false;
-    }
-
-    let shields_before = game.ship.systems.shields.current;
-    let hull_before = game.ship.systems.hull.current;
-    let shield_absorbed = damage.min(game.ship.systems.shields.current);
-    game.ship.systems.shields.spend(shield_absorbed);
-
-    let spillover = damage - shield_absorbed;
-    if spillover > 0.0 {
-        game.ship.systems.hull.spend(spillover);
-    }
-
-    let changed = game.ship.systems.shields.current < shields_before
-        || game.ship.systems.hull.current < hull_before;
+    let application = apply_damage_to_resources(
+        &mut game.ship.systems.shields,
+        &mut game.ship.systems.hull,
+        damage,
+        1.0,
+    );
+    let changed = application.changed();
     if changed {
         game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
         game.save_dirty = true;
     }
     changed
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DamageApplication {
+    shield_absorbed: f32,
+    hull_damage: f32,
+}
+
+impl DamageApplication {
+    fn changed(self) -> bool {
+        self.shield_absorbed > 0.0 || self.hull_damage > 0.0
+    }
+}
+
+fn apply_damage_to_resources(
+    shields: &mut ShipResource,
+    hull: &mut ShipResource,
+    amount: f32,
+    hull_spillover: f32,
+) -> DamageApplication {
+    let damage = if amount.is_finite() {
+        amount.max(0.0)
+    } else {
+        0.0
+    };
+    let shield_absorbed = damage.min(shields.current.max(0.0));
+    shields.spend(shield_absorbed);
+    let hull_damage = ((damage - shield_absorbed) * hull_spillover.max(0.0)).max(0.0);
+    hull.spend(hull_damage);
+    DamageApplication {
+        shield_absorbed,
+        hull_damage,
+    }
+}
+
+fn active_npc_shield(npc_ship: &NpcShip) -> Option<&ShieldSystem> {
+    npc_ship.equipped_shields.first()
+}
+
+fn npc_shield_damage_resistance(npc_ship: &NpcShip) -> f32 {
+    active_npc_shield(npc_ship)
+        .map(|shield| shield.damage_resistance)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
+fn npc_shield_recharge_delay(npc_ship: &NpcShip) -> f32 {
+    active_npc_shield(npc_ship)
+        .map(|shield| shield.recharge_delay)
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn npc_shield_recharge_rate(npc_ship: &NpcShip) -> f32 {
+    active_npc_shield(npc_ship)
+        .map(|shield| shield.recharge_rate)
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn apply_npc_collision_damage(npc_ship: &mut NpcShip, amount: f32) -> DamageApplication {
+    let resisted_damage = amount.max(0.0) * (1.0 - npc_shield_damage_resistance(npc_ship));
+    let application = apply_damage_to_resources(
+        &mut npc_ship.shields,
+        &mut npc_ship.hull,
+        resisted_damage,
+        1.0,
+    );
+    if application.changed() {
+        npc_ship.shield_recharge_delay_remaining = npc_shield_recharge_delay(npc_ship);
+    }
+    application
+}
+
+fn update_npc_shield_recharge(npc_ship: &mut NpcShip, dt: f32) {
+    if npc_ship.shields.current >= npc_ship.shields.max {
+        npc_ship.shield_recharge_delay_remaining = 0.0;
+        return;
+    }
+    if npc_ship.shield_recharge_delay_remaining > 0.0 {
+        npc_ship.shield_recharge_delay_remaining =
+            (npc_ship.shield_recharge_delay_remaining - dt).max(0.0);
+        return;
+    }
+    npc_ship
+        .shields
+        .restore(npc_shield_recharge_rate(npc_ship) * dt);
+}
+
+fn collision_pair_key(left: &str, right: &str) -> String {
+    if left <= right {
+        format!("{left}|{right}")
+    } else {
+        format!("{right}|{left}")
+    }
+}
+
+fn collision_closing_speed(
+    left_position: Vec2,
+    left_velocity: Vec2,
+    left_radius: f32,
+    right_position: Vec2,
+    right_velocity: Vec2,
+    right_radius: f32,
+) -> Option<f32> {
+    let separation = right_position - left_position;
+    let contact_distance = left_radius.max(0.0) + right_radius.max(0.0);
+    if !separation.is_finite()
+        || !left_velocity.is_finite()
+        || !right_velocity.is_finite()
+        || separation.length() > contact_distance
+    {
+        return None;
+    }
+    let normal = safe_direction(
+        separation,
+        safe_direction(left_velocity - right_velocity, vec2(1.0, 0.0)),
+    );
+    let closing_speed = (left_velocity - right_velocity).dot(normal);
+    (closing_speed.is_finite() && closing_speed >= COLLISION_MIN_CLOSING_SPEED)
+        .then_some(closing_speed)
+}
+
+fn collision_impact_damage(closing_speed: f32, left_mass: f32, right_mass: f32) -> f32 {
+    if !closing_speed.is_finite() || !left_mass.is_finite() || !right_mass.is_finite() {
+        return 0.0;
+    }
+    let average_mass =
+        ((left_mass.max(0.0) + right_mass.max(0.0)) * 0.5) / COLLISION_REFERENCE_MASS;
+    (closing_speed.max(0.0).powi(2) * average_mass * COLLISION_DAMAGE_COEFFICIENT).max(0.0)
+}
+
+fn update_ship_collisions(game: &mut GameState, dt: f32) {
+    if dt <= 0.0 || !dt.is_finite() {
+        return;
+    }
+    game.collision_cooldowns.retain(|_, remaining| {
+        *remaining = (*remaining - dt).max(0.0);
+        *remaining > 0.0
+    });
+
+    let player_id = "__player__";
+    let player_position = game.ship.position;
+    let player_velocity = game.ship.velocity;
+    let player_mass = game.ship.attributes.mass;
+    let current_system_id = game.current_system_id.clone();
+
+    for npc_index in 0..game.npc_ships.len() {
+        let Some(npc) = game.npc_ships.get(npc_index) else {
+            continue;
+        };
+        if npc.system != current_system_id || npc.hull.current <= 0.0 {
+            continue;
+        }
+        let key = collision_pair_key(player_id, &npc.id);
+        let Some(closing_speed) = collision_closing_speed(
+            player_position,
+            player_velocity,
+            SHIP_RADIUS,
+            npc.position,
+            npc.velocity,
+            npc.radius,
+        ) else {
+            continue;
+        };
+        if game.collision_cooldowns.contains_key(&key) {
+            continue;
+        }
+        let damage = collision_impact_damage(closing_speed, player_mass, npc.mass);
+        if damage <= 0.0 {
+            continue;
+        }
+        let player_resistance = active_shield_damage_resistance(game);
+        let player_application = apply_damage_to_resources(
+            &mut game.ship.systems.shields,
+            &mut game.ship.systems.hull,
+            damage * (1.0 - player_resistance),
+            1.0,
+        );
+        if player_application.changed() {
+            game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        }
+        let npc_application = apply_npc_collision_damage(&mut game.npc_ships[npc_index], damage);
+        if player_application.changed() || npc_application.changed() {
+            game.save_dirty = true;
+        }
+        game.collision_cooldowns
+            .insert(key, COLLISION_COOLDOWN_SECONDS);
+    }
+
+    for left_index in 0..game.npc_ships.len() {
+        for right_index in (left_index + 1)..game.npc_ships.len() {
+            let (left, right) = (&game.npc_ships[left_index], &game.npc_ships[right_index]);
+            if left.system != current_system_id
+                || right.system != current_system_id
+                || left.hull.current <= 0.0
+                || right.hull.current <= 0.0
+            {
+                continue;
+            }
+            let key = collision_pair_key(&left.id, &right.id);
+            let Some(closing_speed) = collision_closing_speed(
+                left.position,
+                left.velocity,
+                left.radius,
+                right.position,
+                right.velocity,
+                right.radius,
+            ) else {
+                continue;
+            };
+            if game.collision_cooldowns.contains_key(&key) {
+                continue;
+            }
+            let damage = collision_impact_damage(closing_speed, left.mass, right.mass);
+            if damage <= 0.0 {
+                continue;
+            }
+            let (left, right) = game.npc_ships.split_at_mut(right_index);
+            let left_application = apply_npc_collision_damage(&mut left[left_index], damage);
+            let right_application = apply_npc_collision_damage(&mut right[0], damage);
+            if left_application.changed() || right_application.changed() {
+                game.save_dirty = true;
+            }
+            game.collision_cooldowns
+                .insert(key, COLLISION_COOLDOWN_SECONDS);
+        }
+    }
 }
 
 fn make_defense_threats() -> Vec<DefenseThreat> {
@@ -7586,6 +7811,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
         update_ship(&mut game.ship, dt, energy_recharge);
     }
+    update_ship_collisions(game, dt);
     if game_save_snapshot(game) != save_snapshot {
         game.save_dirty = true;
     }
@@ -11167,6 +11393,7 @@ fn update_npc_ships(game: &mut GameState, dt: f32) {
         if game.npc_ships[index].system != current_system_id {
             continue;
         }
+        update_npc_shield_recharge(&mut game.npc_ships[index], dt);
         let target = npc_behavior_target(&game.npc_ships[index], player_position, &stations);
         update_npc_route_progress(&mut game.npc_ships[index], target);
         update_npc_ship_motion(
@@ -22595,6 +22822,132 @@ mod tests {
     }
 
     #[test]
+    fn collision_requires_contact_and_meaningful_closing_speed() {
+        assert_eq!(
+            collision_closing_speed(
+                Vec2::ZERO,
+                vec2(10.0, 0.0),
+                20.0,
+                vec2(30.0, 0.0),
+                Vec2::ZERO,
+                20.0,
+            ),
+            None
+        );
+        assert_eq!(
+            collision_closing_speed(
+                Vec2::ZERO,
+                vec2(10.0, 0.0),
+                20.0,
+                vec2(35.0, 0.0),
+                Vec2::ZERO,
+                20.0,
+            ),
+            None
+        );
+        assert_eq!(
+            collision_closing_speed(
+                Vec2::ZERO,
+                vec2(50.0, 0.0),
+                20.0,
+                vec2(35.0, 0.0),
+                Vec2::ZERO,
+                20.0,
+            ),
+            Some(50.0)
+        );
+    }
+
+    #[test]
+    fn collision_damage_scales_with_speed_and_mass_and_rejects_invalid_values() {
+        let light = collision_impact_damage(50.0, 50_000.0, 50_000.0);
+        let heavy = collision_impact_damage(50.0, 100_000.0, 100_000.0);
+
+        assert!(heavy > light);
+        assert_eq!(collision_impact_damage(f32::NAN, 100_000.0, 100_000.0), 0.0);
+        assert_eq!(collision_impact_damage(50.0, f32::INFINITY, 100_000.0), 0.0);
+    }
+
+    #[test]
+    fn collision_damage_absorbs_shields_then_spills_to_hull() {
+        let mut shields = ShipResource::full(10.0);
+        let mut hull = ShipResource::full(100.0);
+
+        let application = apply_damage_to_resources(&mut shields, &mut hull, 25.0, 1.0);
+
+        assert_eq!(application.shield_absorbed, 10.0);
+        assert_eq!(application.hull_damage, 15.0);
+        assert_eq!(shields.current, 0.0);
+        assert_eq!(hull.current, 85.0);
+    }
+
+    #[test]
+    fn npc_collision_damage_respects_equipped_shield_resistance_and_delay() {
+        let mut npc = test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO);
+        npc.equipped_shields = vec![ShieldSystem {
+            id: "test:shield".to_string(),
+            name: "Test shield".to_string(),
+            install_item: "test:shield".to_string(),
+            capacity: 25.0,
+            recharge_delay: 3.0,
+            recharge_rate: 5.0,
+            damage_resistance: 0.2,
+            hazard_resistance: 0.0,
+        }];
+
+        let application = apply_npc_collision_damage(&mut npc, 10.0);
+
+        assert_eq!(application.shield_absorbed, 8.0);
+        assert_eq!(application.hull_damage, 0.0);
+        assert_eq!(npc.shields.current, 17.0);
+        assert_eq!(npc.shield_recharge_delay_remaining, 3.0);
+    }
+
+    #[test]
+    fn ship_collision_applies_once_until_pair_cooldown_expires() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut npc = test_npc_ship(NpcBehaviorMode::Patrol, vec2(40.0, 0.0));
+        npc.velocity = Vec2::ZERO;
+        game.npc_ships = vec![npc];
+        game.ship.position = Vec2::ZERO;
+        game.ship.velocity = vec2(50.0, 0.0);
+
+        update_ship_collisions(&mut game, 0.1);
+        let first_player_shields = game.ship.systems.shields.current;
+        let first_npc_shields = game.npc_ships[0].shields.current;
+
+        update_ship_collisions(&mut game, 0.1);
+        assert_eq!(game.ship.systems.shields.current, first_player_shields);
+        assert_eq!(game.npc_ships[0].shields.current, first_npc_shields);
+
+        update_ship_collisions(&mut game, 0.6);
+        assert!(game.ship.systems.shields.current < first_player_shields);
+        assert!(game.npc_ships[0].shields.current < first_npc_shields);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn npc_pair_collision_applies_to_both_ships_in_same_system_only() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut left = test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO);
+        left.id = "core:left".to_string();
+        left.velocity = vec2(50.0, 0.0);
+        let mut right = test_npc_ship(NpcBehaviorMode::Patrol, vec2(40.0, 0.0));
+        right.id = "core:right".to_string();
+        right.velocity = Vec2::ZERO;
+        game.npc_ships = vec![left, right];
+
+        update_ship_collisions(&mut game, 0.1);
+
+        assert!(game.npc_ships[0].shields.current < game.npc_ships[0].shields.max);
+        assert!(game.npc_ships[1].shields.current < game.npc_ships[1].shields.max);
+    }
+
+    #[test]
     fn pressure_requires_hostile_pressure_tag_active_system_and_range() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -25355,6 +25708,7 @@ mod tests {
             system: STARTER_SYSTEM_ID.to_string(),
             position,
             velocity: Vec2::ZERO,
+            mass: 60_000.0,
             angle: 0.0,
             radius: 24.0,
             texture: None,
@@ -25373,6 +25727,8 @@ mod tests {
             credit_reward_max: 0,
             hull: ShipResource::full(50.0),
             shields: ShipResource::full(25.0),
+            equipped_shields: Vec::new(),
+            shield_recharge_delay_remaining: 0.0,
             energy: ShipResource::full(20.0),
             shield_slots: Vec::new(),
             weapon_slots: Vec::new(),
@@ -25408,6 +25764,7 @@ mod tests {
             equipped_shields: Vec::new(),
             equipped_weapons: Vec::new(),
             npc_ships: Vec::new(),
+            collision_cooldowns: HashMap::new(),
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
             ship_texture: None,
