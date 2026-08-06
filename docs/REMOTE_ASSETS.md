@@ -4,11 +4,10 @@ Some Frontier can consume optional runtime assets published by the project's
 asset host. The first delivery phase is limited to audio; remote content packs
 are a separate future feature.
 
-This document defines the delivery contract and local cache behavior. The game
-now has the cache and verification layer needed to store downloaded files
-safely; startup downloading, presentation, and audio playback are separate
-follow-up steps. Until those steps are connected, local committed assets remain
-the only runtime source.
+This document defines the delivery contract, local cache behavior, and startup
+status display. The game can prepare optional remote audio during startup;
+audio playback and cue wiring remain separate follow-up work. Local committed
+assets remain the fallback source whenever remote delivery is unavailable.
 
 ## Release contract
 
@@ -77,8 +76,12 @@ files that already match the cached size and digest, and downloads only missing
 or invalid files. Network and server failures that may be temporary receive a
 small bounded retry with backoff. Manifest validation, unsupported responses,
 unsafe paths, and checksum failures are reported without accepting the file.
-Downloads can run on a background worker so they do not block the game frame
-loop. Startup status and audio playback will be connected by later tasks.
+Downloads run on a background worker so they do not block the game frame loop.
+During startup, the game shows checking, downloading, verifying, ready, failed,
+or offline status with the current file and overall asset progress. The game
+does not wait indefinitely: if remote preparation takes too long, startup
+continues with local assets while the worker is allowed to finish separately.
+Audio playback and cue wiring will be connected by a later task.
 
 For local tests, use the deterministic fake-transport tests rather than the
 public service:
@@ -100,8 +103,8 @@ and `Sci-Fi Sounds` packs. They are distributed under the Creative Commons Zero
 
 ## Failure behavior
 
-The game should show checking, downloading, verifying, ready, and failed states
-during startup. Remote audio is optional: network errors, incompatible
-manifests, unsafe paths, and checksum failures should produce a useful warning
-and allow offline startup using whatever local or previously verified assets are
-available.
+During startup, remote audio is optional: network errors, incompatible
+manifests, unsafe paths, and checksum failures show a useful status and allow
+offline startup using whatever local or previously verified assets are
+available. A warm cache skips verified downloads and reaches the ready state
+quickly.

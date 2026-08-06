@@ -8,6 +8,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -87,9 +88,11 @@ pub struct UreqTransport;
 
 impl RemoteAssetTransport for UreqTransport {
     fn get(&self, url: &str) -> Result<RemoteResponse, String> {
-        let response = ureq::get(url)
-            .call()
-            .map_err(|error| format!("Remote asset request failed: {error}"))?;
+        let response = match ureq::get(url).call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(_status, response)) => response,
+            Err(error) => return Err(format!("Remote asset request failed: {error}")),
+        };
         let status = response.status();
         let content_type = response.header("Content-Type").map(str::to_string);
         Ok(RemoteResponse::new(
@@ -114,6 +117,43 @@ pub struct DownloadReport {
     pub total_assets: usize,
     pub cache_hits: usize,
     pub downloaded_assets: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteAssetPhase {
+    Checking,
+    Downloading,
+    Verifying,
+    Ready,
+    Failed,
+    Offline,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAssetProgress {
+    pub phase: RemoteAssetPhase,
+    pub current_path: Option<String>,
+    pub completed_assets: usize,
+    pub total_assets: usize,
+    pub current_bytes: u64,
+    pub current_total_bytes: u64,
+    pub message: String,
+}
+
+pub type RemoteAssetProgressHandle = Arc<Mutex<RemoteAssetProgress>>;
+
+impl RemoteAssetProgress {
+    pub fn checking() -> Self {
+        Self {
+            phase: RemoteAssetPhase::Checking,
+            current_path: None,
+            completed_assets: 0,
+            total_assets: 0,
+            current_bytes: 0,
+            current_total_bytes: 0,
+            message: "Checking remote audio ...".to_string(),
+        }
+    }
 }
 
 impl Default for RemoteAssetClient {
@@ -178,6 +218,18 @@ impl RemoteAssetClient {
         &self,
         transport: &T,
     ) -> Result<RemoteAssetManifest, String> {
+        self.fetch_manifest_with_progress(transport, None)
+    }
+
+    fn fetch_manifest_with_progress<T: RemoteAssetTransport>(
+        &self,
+        transport: &T,
+        progress: Option<&RemoteAssetProgressHandle>,
+    ) -> Result<RemoteAssetManifest, String> {
+        update_progress(progress, |state| {
+            state.phase = RemoteAssetPhase::Checking;
+            state.message = "Checking remote audio manifest ...".to_string();
+        });
         let mut response = self.request_with_retry(transport, &self.manifest_url)?;
         if !response
             .content_type
@@ -187,10 +239,12 @@ impl RemoteAssetClient {
             return Err("Remote asset manifest did not return JSON".to_string());
         }
         let body = read_bounded(&mut response.body, MAX_MANIFEST_BYTES)?;
-        parse_manifest(
+        let manifest = parse_manifest(
             std::str::from_utf8(&body)
                 .map_err(|error| format!("Remote asset manifest was not UTF-8: {error}"))?,
-        )
+        )?;
+        validate_game_compatibility(&manifest, env!("CARGO_PKG_VERSION"))?;
+        Ok(manifest)
     }
 
     pub fn download_requested<T: RemoteAssetTransport>(
@@ -199,7 +253,34 @@ impl RemoteAssetClient {
         cache: &RemoteAssetCache,
         requested_paths: &[String],
     ) -> Result<DownloadReport, String> {
-        let manifest = self.fetch_manifest(transport)?;
+        self.download_requested_with_progress(transport, cache, requested_paths, None)
+    }
+
+    pub fn download_requested_with_progress<T: RemoteAssetTransport>(
+        &self,
+        transport: &T,
+        cache: &RemoteAssetCache,
+        requested_paths: &[String],
+        progress: Option<&RemoteAssetProgressHandle>,
+    ) -> Result<DownloadReport, String> {
+        let result = self.download_requested_inner(transport, cache, requested_paths, progress);
+        if let Err(error) = &result {
+            update_progress(progress, |state| {
+                state.phase = RemoteAssetPhase::Failed;
+                state.message = error.clone();
+            });
+        }
+        result
+    }
+
+    fn download_requested_inner<T: RemoteAssetTransport>(
+        &self,
+        transport: &T,
+        cache: &RemoteAssetCache,
+        requested_paths: &[String],
+        progress: Option<&RemoteAssetProgressHandle>,
+    ) -> Result<DownloadReport, String> {
+        let manifest = self.fetch_manifest_with_progress(transport, progress)?;
         let requested = requested_paths.iter().collect::<HashSet<_>>();
         let entries = manifest
             .assets
@@ -210,12 +291,29 @@ impl RemoteAssetClient {
             return Err("Remote asset request included an unknown path".to_string());
         }
 
+        update_progress(progress, |state| {
+            state.total_assets = entries.len();
+            state.message = format!("Preparing {} remote audio asset(s) ...", entries.len());
+        });
+
         let mut cache_hits = 0;
         let mut downloaded_assets = 0;
         for entry in entries.iter().copied() {
+            update_progress(progress, |state| {
+                state.phase = RemoteAssetPhase::Downloading;
+                state.current_path = Some(entry.path.clone());
+                state.current_bytes = 0;
+                state.current_total_bytes = entry.bytes;
+                state.message = format!("Downloading {} ...", entry.path);
+            });
             let url = resolve_asset_url(&self.manifest_url, &entry.url)?;
             if cache.has_verified_asset(&manifest, entry)? {
                 cache_hits += 1;
+                update_progress(progress, |state| {
+                    state.completed_assets += 1;
+                    state.current_bytes = entry.bytes;
+                    state.message = format!("Cached {}", entry.path);
+                });
                 continue;
             }
             let mut response = self.request_with_retry(transport, &url)?;
@@ -232,9 +330,30 @@ impl RemoteAssetClient {
                     entry.path
                 ));
             }
-            cache.write_verified(&manifest, entry, &mut response.body)?;
+            update_progress(progress, |state| {
+                state.phase = RemoteAssetPhase::Verifying;
+                state.message = format!("Verifying {} ...", entry.path);
+            });
+            let mut reader = ProgressReader {
+                reader: &mut response.body,
+                progress,
+            };
+            cache.write_verified(&manifest, entry, &mut reader)?;
             downloaded_assets += 1;
+            update_progress(progress, |state| {
+                state.completed_assets += 1;
+                state.current_bytes = entry.bytes;
+                state.message = format!("Ready {}", entry.path);
+            });
         }
+        update_progress(progress, |state| {
+            state.phase = RemoteAssetPhase::Ready;
+            state.message = if entries.is_empty() {
+                "No remote audio assets requested".to_string()
+            } else {
+                format!("Remote audio ready ({} asset(s))", entries.len())
+            };
+        });
         Ok(DownloadReport {
             release_id: manifest.release_id,
             total_assets: entries.len(),
@@ -249,8 +368,25 @@ impl RemoteAssetClient {
         cache: RemoteAssetCache,
         requested_paths: Vec<String>,
     ) -> JoinHandle<Result<DownloadReport, String>> {
+        self.spawn_download_with_progress(transport, cache, requested_paths, None)
+    }
+
+    pub fn spawn_download_with_progress<T: RemoteAssetTransport>(
+        &self,
+        transport: T,
+        cache: RemoteAssetCache,
+        requested_paths: Vec<String>,
+        progress: Option<RemoteAssetProgressHandle>,
+    ) -> JoinHandle<Result<DownloadReport, String>> {
         let client = self.clone();
-        thread::spawn(move || client.download_requested(&transport, &cache, &requested_paths))
+        thread::spawn(move || {
+            client.download_requested_with_progress(
+                &transport,
+                &cache,
+                &requested_paths,
+                progress.as_ref(),
+            )
+        })
     }
 
     fn request_with_retry<T: RemoteAssetTransport>(
@@ -441,6 +577,28 @@ pub fn validate_manifest(manifest: &RemoteAssetManifest) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_game_compatibility(
+    manifest: &RemoteAssetManifest,
+    game_version: &str,
+) -> Result<(), String> {
+    let game = version_tuple(game_version)?;
+    let minimum = version_tuple(&manifest.game_compatibility.min_version)?;
+    if game < minimum {
+        return Err(format!(
+            "Remote audio requires game version {} or newer",
+            manifest.game_compatibility.min_version
+        ));
+    }
+    if let Some(maximum) = manifest.game_compatibility.max_version.as_deref() {
+        if game > version_tuple(maximum)? {
+            return Err(format!(
+                "Remote audio supports game versions through {maximum}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_entry(manifest: &RemoteAssetManifest, entry: &RemoteAssetEntry) -> Result<(), String> {
     if !entry.path.starts_with("audio/")
         || entry.path.contains('\\')
@@ -493,6 +651,29 @@ fn valid_release_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn version_tuple(value: &str) -> Result<[u64; 3], String> {
+    let mut parts = value.split('.');
+    let parsed = [parts.next(), parts.next(), parts.next()]
+        .into_iter()
+        .map(|part| {
+            part.and_then(|part| {
+                part.split_once('-')
+                    .map(|(number, _)| number)
+                    .or(Some(part))
+            })
+            .ok_or_else(|| format!("Invalid game version: {value}"))
+            .and_then(|part| {
+                part.parse::<u64>()
+                    .map_err(|_| format!("Invalid game version: {value}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.next().is_some() || parsed.len() != 3 {
+        return Err(format!("Invalid game version: {value}"));
+    }
+    Ok([parsed[0], parsed[1], parsed[2]])
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -516,6 +697,34 @@ fn remove_partials(root: &Path) -> std::io::Result<usize> {
         }
     }
     Ok(removed)
+}
+
+struct ProgressReader<'a> {
+    reader: &'a mut dyn Read,
+    progress: Option<&'a RemoteAssetProgressHandle>,
+}
+
+impl Read for ProgressReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.reader.read(buffer)?;
+        if read > 0 {
+            update_progress(self.progress, |state| {
+                state.current_bytes = state.current_bytes.saturating_add(read as u64);
+            });
+        }
+        Ok(read)
+    }
+}
+
+fn update_progress(
+    progress: Option<&RemoteAssetProgressHandle>,
+    update: impl FnOnce(&mut RemoteAssetProgress),
+) {
+    if let Some(progress) = progress {
+        if let Ok(mut state) = progress.lock() {
+            update(&mut state);
+        }
+    }
 }
 
 fn validate_endpoint(value: &str, allow_insecure_http: bool) -> Result<(), String> {
@@ -757,6 +966,7 @@ mod tests {
         )
         .unwrap();
         let cache = RemoteAssetCache::new(&root);
+        let progress = Arc::new(Mutex::new(RemoteAssetProgress::checking()));
         let transport = FakeTransport::new(vec![
             Ok(RemoteResponse::new(
                 200,
@@ -770,7 +980,7 @@ mod tests {
             )),
         ]);
         let report = client
-            .download_requested(&transport, &cache, &[])
+            .download_requested_with_progress(&transport, &cache, &[], Some(&progress))
             .expect("fake remote download should succeed");
         assert_eq!(
             report,
@@ -786,6 +996,10 @@ mod tests {
         assert!(cache
             .has_verified_asset(&manifest, &manifest.assets[0])
             .unwrap());
+        let progress = progress.lock().unwrap().clone();
+        assert_eq!(progress.phase, RemoteAssetPhase::Ready);
+        assert_eq!(progress.completed_assets, 1);
+        assert_eq!(progress.current_bytes, 5);
         fs::remove_dir_all(root).expect("temp cache should be removed");
     }
 
@@ -827,5 +1041,16 @@ mod tests {
             client.fetch_manifest(&transport).unwrap().release_id,
             "retry-release"
         );
+    }
+
+    #[test]
+    fn rejects_incompatible_game_versions() {
+        let mut manifest = manifest("compatibility", b"hello");
+        manifest.game_compatibility.min_version = "2.0.0".to_string();
+        assert!(validate_game_compatibility(&manifest, "1.9.9").is_err());
+        manifest.game_compatibility.min_version = "0.1.0".to_string();
+        manifest.game_compatibility.max_version = Some("0.9.0".to_string());
+        assert!(validate_game_compatibility(&manifest, "1.0.0").is_err());
+        assert!(validate_game_compatibility(&manifest, "0.8.0").is_ok());
     }
 }

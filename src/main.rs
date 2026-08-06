@@ -9,6 +9,8 @@ use std::{
     collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread::JoinHandle,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -423,6 +425,88 @@ enum GameStartMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RuntimeFlags {
     debug: bool,
+}
+
+struct RemoteAudioStartup {
+    progress: remote_assets::RemoteAssetProgressHandle,
+    handle: Option<JoinHandle<Result<remote_assets::DownloadReport, String>>>,
+}
+
+impl RemoteAudioStartup {
+    fn start() -> Self {
+        let progress = Arc::new(Mutex::new(remote_assets::RemoteAssetProgress::checking()));
+        let handle = match remote_assets::RemoteAssetClient::from_environment() {
+            Ok(client) => Some(client.spawn_download_with_progress(
+                remote_assets::UreqTransport,
+                remote_assets::RemoteAssetCache::new(config_dir().join("remote-assets")),
+                Vec::new(),
+                Some(progress.clone()),
+            )),
+            Err(error) => {
+                if let Ok(mut state) = progress.lock() {
+                    state.phase = remote_assets::RemoteAssetPhase::Failed;
+                    state.message = error;
+                }
+                None
+            }
+        };
+        Self { progress, handle }
+    }
+
+    fn poll(&mut self) {
+        let finished = self.handle.as_ref().is_some_and(JoinHandle::is_finished);
+        if !finished {
+            return;
+        }
+        if let Some(handle) = self.handle.take() {
+            if let Err(error) = handle
+                .join()
+                .unwrap_or_else(|_| Err("Remote audio worker stopped unexpectedly".to_string()))
+            {
+                if let Ok(mut state) = self.progress.lock() {
+                    state.phase = remote_assets::RemoteAssetPhase::Failed;
+                    state.message = error;
+                }
+            }
+        }
+    }
+
+    fn draw(&mut self) {
+        self.poll();
+        let progress = self.snapshot();
+        draw_remote_audio_startup(&progress);
+    }
+
+    fn draw_overlay(&mut self) {
+        self.poll();
+        draw_remote_audio_startup_overlay(&self.snapshot());
+    }
+
+    fn snapshot(&self) -> remote_assets::RemoteAssetProgress {
+        self.progress
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_else(|_| remote_assets::RemoteAssetProgress::checking())
+    }
+
+    async fn finish(mut self) {
+        let started = get_time();
+        while self.handle.is_some() && get_time() - started < 5.0 {
+            self.draw();
+            next_frame().await;
+        }
+        if self.handle.is_some() {
+            self.handle.take();
+            if let Ok(mut state) = self.progress.lock() {
+                state.phase = remote_assets::RemoteAssetPhase::Offline;
+                state.message =
+                    "Remote audio is still loading; continuing with local assets".to_string();
+            }
+        } else {
+            self.draw();
+        }
+        next_frame().await;
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1177,7 +1261,8 @@ enum ShipUpgradeKind {
 
 impl GameState {
     async fn new(start_mode: GameStartMode, runtime_flags: RuntimeFlags) -> Self {
-        draw_startup_transition(None, "Loading content packs ... core", 1.0);
+        let mut remote_audio_startup = RemoteAudioStartup::start();
+        remote_audio_startup.draw();
         next_frame().await;
         let start_pack_options = match &start_mode {
             GameStartMode::NewGame { pack_options, .. } => pack_options.clone(),
@@ -1186,6 +1271,7 @@ impl GameState {
         let content_registry = load_game_content_registry_with_options(&start_pack_options);
 
         draw_startup_transition(None, "Loading save data ...", 1.0);
+        remote_audio_startup.draw_overlay();
         next_frame().await;
         let save_path = match &start_mode {
             GameStartMode::NewGame { seed, .. } => new_save_slot_path(*seed),
@@ -1218,6 +1304,7 @@ impl GameState {
         };
 
         draw_startup_transition(None, "Preparing production chains ...", 1.0);
+        remote_audio_startup.draw_overlay();
         next_frame().await;
         let smelt_recipes = make_smelting_recipes(&content_registry);
         let craft_recipes = make_crafting_recipes(&content_registry);
@@ -1251,6 +1338,7 @@ impl GameState {
             "Loading ship asset ... frontier_cargo_ship_01",
             1.0,
         );
+        remote_audio_startup.draw_overlay();
         next_frame().await;
         let starter_ship_def = content_registry.ships.get(STARTER_SHIP_ID).cloned();
         let ship_texture_path = starter_ship_def
@@ -1395,10 +1483,12 @@ impl GameState {
                 "Restoring saved flight state ...",
                 1.0,
             );
+            remote_audio_startup.draw_overlay();
             next_frame().await;
             game.apply_save(save_data);
             game.save_dirty = false;
         }
+        remote_audio_startup.finish().await;
         run_startup_transition_out(&game.transition_assets, startup_preferred_transition_id).await;
         game
     }
@@ -5200,6 +5290,79 @@ fn draw_startup_transition(background: Option<&Texture2D>, label: &str, opacity:
         4.0,
         Color::new(0.59, 0.87, 0.89, 0.82 * opacity),
     );
+}
+
+fn draw_remote_audio_startup(progress: &remote_assets::RemoteAssetProgress) {
+    draw_startup_transition(None, &progress.message, 1.0);
+    draw_remote_audio_startup_overlay(progress);
+}
+
+fn draw_remote_audio_startup_overlay(progress: &remote_assets::RemoteAssetProgress) {
+    let screen_w = screen_width();
+    let screen_h = screen_height();
+    let detail = match progress.phase {
+        remote_assets::RemoteAssetPhase::Checking => "Checking the optional remote audio release",
+        remote_assets::RemoteAssetPhase::Downloading => "Downloading remote audio",
+        remote_assets::RemoteAssetPhase::Verifying => "Verifying remote audio",
+        remote_assets::RemoteAssetPhase::Ready => "Remote audio is ready",
+        remote_assets::RemoteAssetPhase::Failed => {
+            "Remote audio unavailable; startup will continue offline"
+        }
+        remote_assets::RemoteAssetPhase::Offline => "Continuing offline with local audio assets",
+    };
+    let detail_size = 16.0;
+    let detail_width = measure_text(detail, None, detail_size as u16, 1.0).width;
+    draw_text(
+        detail,
+        ((screen_w - detail_width) * 0.5).max(0.0),
+        screen_h * 0.8 + 92.0,
+        detail_size,
+        Color::new(0.59, 0.87, 0.89, 0.9),
+    );
+
+    let fraction = if progress.total_assets == 0 {
+        0.0
+    } else {
+        let current = if progress.current_total_bytes == 0 {
+            0.0
+        } else {
+            progress.current_bytes as f32 / progress.current_total_bytes as f32
+        };
+        ((progress.completed_assets as f32 + current) / progress.total_assets as f32)
+            .clamp(0.0, 1.0)
+    };
+    let bar_width = 320.0;
+    let bar_x = (screen_w - bar_width) * 0.5;
+    let bar_y = screen_h * 0.8 + 112.0;
+    draw_rectangle_lines(
+        bar_x,
+        bar_y,
+        bar_width,
+        6.0,
+        1.0,
+        Color::new(0.33, 0.47, 0.51, 0.7),
+    );
+    draw_rectangle(
+        bar_x,
+        bar_y,
+        bar_width * fraction,
+        6.0,
+        Color::new(0.59, 0.87, 0.89, 0.9),
+    );
+    if progress.total_assets > 0 {
+        let count = format!(
+            "{} / {} assets",
+            progress.completed_assets, progress.total_assets
+        );
+        let count_width = measure_text(&count, None, 14, 1.0).width;
+        draw_text(
+            &count,
+            ((screen_w - count_width) * 0.5).max(0.0),
+            bar_y + 26.0,
+            14.0,
+            Color::new(0.72, 0.76, 0.74, 0.86),
+        );
+    }
 }
 
 fn draw_startup_transition_assets(
