@@ -65,6 +65,31 @@ without removing verified releases.
 The repository's `assets/audio/` directory remains the place for committed
 shared fallback audio, not a mutable download cache.
 
+## Client behavior
+
+The remote client uses the public HTTPS manifest by default. For local testing,
+set `SOME_FRONTIER_ASSET_MANIFEST_URL` to another endpoint. Plain HTTP is
+rejected unless `SOME_FRONTIER_ALLOW_INSECURE_ASSET_HTTP=1` (or `true`) is also
+set; production configuration should continue to use HTTPS.
+
+The client fetches the manifest, selects the requested audio entries, skips
+files that already match the cached size and digest, and downloads only missing
+or invalid files. Network and server failures that may be temporary receive a
+small bounded retry with backoff. Manifest validation, unsupported responses,
+unsafe paths, and checksum failures are reported without accepting the file.
+Downloads can run on a background worker so they do not block the game frame
+loop. Startup status and audio playback will be connected by later tasks.
+
+For local tests, use the deterministic fake-transport tests rather than the
+public service:
+
+```text
+cargo test --all-targets --all-features
+```
+
+These tests cover manifest parsing, endpoint security, retries, missing-file
+downloads, cache reuse, and the existing size/checksum safeguards.
+
 ## First audio release
 
 The initial release contains a small set of optional interface cues—click,
