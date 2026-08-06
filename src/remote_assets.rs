@@ -4,14 +4,23 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
+    env,
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RELEASE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const DEFAULT_MANIFEST_URL: &str = "https://somefrontier.space/game-assets/manifest.json";
+const MANIFEST_URL_ENV: &str = "SOME_FRONTIER_ASSET_MANIFEST_URL";
+const ALLOW_INSECURE_HTTP_ENV: &str = "SOME_FRONTIER_ALLOW_INSECURE_ASSET_HTTP";
+const DEFAULT_RETRY_COUNT: u32 = 2;
+const DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RemoteAssetManifest {
@@ -47,6 +56,222 @@ pub enum CacheWrite {
 #[derive(Debug, Clone)]
 pub struct RemoteAssetCache {
     root: PathBuf,
+}
+
+pub struct RemoteResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    body: Box<dyn Read + Send>,
+}
+
+impl RemoteResponse {
+    pub fn new(
+        status: u16,
+        content_type: Option<String>,
+        body: impl Read + Send + 'static,
+    ) -> Self {
+        Self {
+            status,
+            content_type,
+            body: Box::new(body),
+        }
+    }
+}
+
+pub trait RemoteAssetTransport: Send + Sync + 'static {
+    fn get(&self, url: &str) -> Result<RemoteResponse, String>;
+}
+
+#[derive(Default)]
+pub struct UreqTransport;
+
+impl RemoteAssetTransport for UreqTransport {
+    fn get(&self, url: &str) -> Result<RemoteResponse, String> {
+        let response = ureq::get(url)
+            .call()
+            .map_err(|error| format!("Remote asset request failed: {error}"))?;
+        let status = response.status();
+        let content_type = response.header("Content-Type").map(str::to_string);
+        Ok(RemoteResponse::new(
+            status,
+            content_type,
+            response.into_reader(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteAssetClient {
+    manifest_url: String,
+    allow_insecure_http: bool,
+    retry_count: u32,
+    retry_delay: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadReport {
+    pub release_id: String,
+    pub total_assets: usize,
+    pub cache_hits: usize,
+    pub downloaded_assets: usize,
+}
+
+impl Default for RemoteAssetClient {
+    fn default() -> Self {
+        Self {
+            manifest_url: DEFAULT_MANIFEST_URL.to_string(),
+            allow_insecure_http: false,
+            retry_count: DEFAULT_RETRY_COUNT,
+            retry_delay: DEFAULT_RETRY_DELAY,
+        }
+    }
+}
+
+impl RemoteAssetClient {
+    pub fn from_environment() -> Result<Self, String> {
+        let manifest_url =
+            env::var(MANIFEST_URL_ENV).unwrap_or_else(|_| DEFAULT_MANIFEST_URL.to_string());
+        let allow_insecure_http = env::var(ALLOW_INSECURE_HTTP_ENV)
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        Self::with_options(
+            manifest_url,
+            allow_insecure_http,
+            DEFAULT_RETRY_COUNT,
+            DEFAULT_RETRY_DELAY,
+        )
+    }
+
+    pub fn new(manifest_url: impl Into<String>) -> Result<Self, String> {
+        Self::with_options(
+            manifest_url,
+            false,
+            DEFAULT_RETRY_COUNT,
+            DEFAULT_RETRY_DELAY,
+        )
+    }
+
+    pub fn with_options(
+        manifest_url: impl Into<String>,
+        allow_insecure_http: bool,
+        retry_count: u32,
+        retry_delay: Duration,
+    ) -> Result<Self, String> {
+        let manifest_url = manifest_url.into();
+        validate_endpoint(&manifest_url, allow_insecure_http)?;
+        Ok(Self {
+            manifest_url,
+            allow_insecure_http,
+            retry_count,
+            retry_delay,
+        })
+    }
+
+    pub fn manifest_url(&self) -> &str {
+        &self.manifest_url
+    }
+
+    pub fn allow_insecure_http(&self) -> bool {
+        self.allow_insecure_http
+    }
+
+    pub fn fetch_manifest<T: RemoteAssetTransport>(
+        &self,
+        transport: &T,
+    ) -> Result<RemoteAssetManifest, String> {
+        let mut response = self.request_with_retry(transport, &self.manifest_url)?;
+        if !response
+            .content_type
+            .as_deref()
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+        {
+            return Err("Remote asset manifest did not return JSON".to_string());
+        }
+        let body = read_bounded(&mut response.body, MAX_MANIFEST_BYTES)?;
+        parse_manifest(
+            std::str::from_utf8(&body)
+                .map_err(|error| format!("Remote asset manifest was not UTF-8: {error}"))?,
+        )
+    }
+
+    pub fn download_requested<T: RemoteAssetTransport>(
+        &self,
+        transport: &T,
+        cache: &RemoteAssetCache,
+        requested_paths: &[String],
+    ) -> Result<DownloadReport, String> {
+        let manifest = self.fetch_manifest(transport)?;
+        let requested = requested_paths.iter().collect::<HashSet<_>>();
+        let entries = manifest
+            .assets
+            .iter()
+            .filter(|entry| requested_paths.is_empty() || requested.contains(&entry.path))
+            .collect::<Vec<_>>();
+        if !requested_paths.is_empty() && entries.len() != requested.len() {
+            return Err("Remote asset request included an unknown path".to_string());
+        }
+
+        let mut cache_hits = 0;
+        let mut downloaded_assets = 0;
+        for entry in entries.iter().copied() {
+            let url = resolve_asset_url(&self.manifest_url, &entry.url)?;
+            if cache.has_verified_asset(&manifest, entry)? {
+                cache_hits += 1;
+                continue;
+            }
+            let mut response = self.request_with_retry(transport, &url)?;
+            if response.status != 200 {
+                return Err(format!("Remote asset returned HTTP {}", response.status));
+            }
+            if response
+                .content_type
+                .as_deref()
+                .is_some_and(|value| !value.to_ascii_lowercase().starts_with(&entry.content_type))
+            {
+                return Err(format!(
+                    "Remote asset returned an unexpected type: {}",
+                    entry.path
+                ));
+            }
+            cache.write_verified(&manifest, entry, &mut response.body)?;
+            downloaded_assets += 1;
+        }
+        Ok(DownloadReport {
+            release_id: manifest.release_id,
+            total_assets: entries.len(),
+            cache_hits,
+            downloaded_assets,
+        })
+    }
+
+    pub fn spawn_download<T: RemoteAssetTransport>(
+        &self,
+        transport: T,
+        cache: RemoteAssetCache,
+        requested_paths: Vec<String>,
+    ) -> JoinHandle<Result<DownloadReport, String>> {
+        let client = self.clone();
+        thread::spawn(move || client.download_requested(&transport, &cache, &requested_paths))
+    }
+
+    fn request_with_retry<T: RemoteAssetTransport>(
+        &self,
+        transport: &T,
+        url: &str,
+    ) -> Result<RemoteResponse, String> {
+        for attempt in 0..=self.retry_count {
+            match transport.get(url) {
+                Ok(response) if response.status == 200 || !retryable_status(response.status) => {
+                    return Ok(response);
+                }
+                Ok(_) | Err(_) if attempt < self.retry_count => {
+                    thread::sleep(self.retry_delay.saturating_mul(attempt + 1));
+                }
+                Ok(response) => return Ok(response),
+                Err(error) => return Err(error),
+            }
+        }
+        Err("Remote asset request exhausted retries".to_string())
+    }
 }
 
 impl RemoteAssetCache {
@@ -293,10 +518,71 @@ fn remove_partials(root: &Path) -> std::io::Result<usize> {
     Ok(removed)
 }
 
+fn validate_endpoint(value: &str, allow_insecure_http: bool) -> Result<(), String> {
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return Err("Remote asset endpoint is empty or contains whitespace".to_string());
+    }
+    let https = value.starts_with("https://") && value.len() > "https://".len();
+    let http = value.starts_with("http://") && value.len() > "http://".len();
+    if !(https || allow_insecure_http && http) {
+        return Err("Remote asset endpoint must use HTTPS".to_string());
+    }
+    if value.contains('#') || value.contains('?') {
+        return Err("Remote asset endpoint cannot contain a query or fragment".to_string());
+    }
+    Ok(())
+}
+
+fn resolve_asset_url(manifest_url: &str, relative_url: &str) -> Result<String, String> {
+    let base = manifest_url
+        .rsplit_once('/')
+        .map(|(base, _)| base)
+        .ok_or_else(|| "Remote asset endpoint has no base path".to_string())?;
+    Ok(format!("{base}/{relative_url}"))
+}
+
+fn read_bounded(reader: &mut dyn Read, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read remote asset response: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err("Remote asset response exceeded its size limit".to_string());
+    }
+    Ok(bytes)
+}
+
+fn retryable_status(status: u16) -> bool {
+    status == 408 || status == 429 || (500..=599).contains(&status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, io::Cursor, time::SystemTime};
+    use std::{collections::VecDeque, fs, io::Cursor, sync::Mutex, time::SystemTime};
+
+    struct FakeTransport {
+        responses: Mutex<VecDeque<Result<RemoteResponse, String>>>,
+    }
+
+    impl FakeTransport {
+        fn new(responses: Vec<Result<RemoteResponse, String>>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+            }
+        }
+    }
+
+    impl RemoteAssetTransport for FakeTransport {
+        fn get(&self, _url: &str) -> Result<RemoteResponse, String> {
+            self.responses
+                .lock()
+                .expect("fake response queue should not be poisoned")
+                .pop_front()
+                .unwrap_or_else(|| Err("fake transport ran out of responses".to_string()))
+        }
+    }
 
     fn manifest(release_id: &str, bytes: &[u8]) -> RemoteAssetManifest {
         RemoteAssetManifest {
@@ -444,5 +730,102 @@ mod tests {
         assert_eq!(cache.cleanup_partials(&first).unwrap(), 1);
         assert!(!partial.exists());
         fs::remove_dir_all(root).expect("temp cache should be removed");
+    }
+
+    #[test]
+    fn downloads_missing_assets_and_reuses_verified_cache() {
+        let root = temp_root("remote-download");
+        let manifest_json = r#"{
+          "schema_version": 1,
+          "release_id": "download-release",
+          "channel": "stable",
+          "game_compatibility": { "min_version": "0.1.0", "max_version": null },
+          "asset_root": "releases/download-release",
+          "assets": [{
+            "path": "audio/ui/click.ogg",
+            "url": "releases/download-release/audio/ui/click.ogg",
+            "bytes": 5,
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "content_type": "audio/ogg"
+          }]
+        }"#;
+        let client = RemoteAssetClient::with_options(
+            "https://example.test/game-assets/manifest.json",
+            false,
+            0,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let cache = RemoteAssetCache::new(&root);
+        let transport = FakeTransport::new(vec![
+            Ok(RemoteResponse::new(
+                200,
+                Some("application/json".to_string()),
+                Cursor::new(manifest_json.as_bytes()),
+            )),
+            Ok(RemoteResponse::new(
+                200,
+                Some("audio/ogg".to_string()),
+                Cursor::new(b"hello"),
+            )),
+        ]);
+        let report = client
+            .download_requested(&transport, &cache, &[])
+            .expect("fake remote download should succeed");
+        assert_eq!(
+            report,
+            DownloadReport {
+                release_id: "download-release".to_string(),
+                total_assets: 1,
+                cache_hits: 0,
+                downloaded_assets: 1,
+            }
+        );
+
+        let manifest = parse_manifest(manifest_json).unwrap();
+        assert!(cache
+            .has_verified_asset(&manifest, &manifest.assets[0])
+            .unwrap());
+        fs::remove_dir_all(root).expect("temp cache should be removed");
+    }
+
+    #[test]
+    fn retries_transient_http_failures_but_rejects_insecure_defaults() {
+        let manifest_json = r#"{
+          "schema_version": 1,
+          "release_id": "retry-release",
+          "channel": "stable",
+          "game_compatibility": { "min_version": "0.1.0", "max_version": null },
+          "asset_root": "releases/retry-release",
+          "assets": []
+        }"#;
+        assert!(RemoteAssetClient::new("http://localhost/manifest.json").is_err());
+        assert!(RemoteAssetClient::with_options(
+            "http://localhost/manifest.json",
+            true,
+            0,
+            Duration::ZERO
+        )
+        .is_ok());
+
+        let client = RemoteAssetClient::with_options(
+            "https://example.test/game-assets/manifest.json",
+            false,
+            1,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let transport = FakeTransport::new(vec![
+            Ok(RemoteResponse::new(503, None, Cursor::new(Vec::new()))),
+            Ok(RemoteResponse::new(
+                200,
+                Some("application/json".to_string()),
+                Cursor::new(manifest_json.as_bytes()),
+            )),
+        ]);
+        assert_eq!(
+            client.fetch_manifest(&transport).unwrap().release_id,
+            "retry-release"
+        );
     }
 }
