@@ -27,6 +27,15 @@ quotas, and content-pack options. The Load Game list can be scrolled when many
 saves exist, supports double-click loading, and includes a two-step delete
 confirmation for removing the selected save without leaving the menu.
 
+### Startup and Optional Remote Audio
+
+When a game starts, the transition screen may check for optional remote audio.
+It can show the current phase, file name, asset count, and verification
+progress. A later start with a verified cache should move through this step
+quickly. Remote audio is not required to play: if the network is unavailable or
+an asset fails validation, startup continues with local audio and shows an
+offline or unavailable status.
+
 ## Controls
 
 | Action | Control |
@@ -369,6 +378,9 @@ Window size is saved in the same configuration area.
   `assets/` paths resolve correctly.
 - If startup reports content validation errors, check recently edited pack files
   for missing IDs, missing textures, invalid references, or unsupported values.
+- If startup reports that remote audio is unavailable, check the network if you
+  want to refresh it; otherwise continue offline. A checksum or compatibility
+  failure is rejected automatically and does not invalidate your save.
 - If a save behaves strangely after pack changes, restore the previous pack set
   or start a new game with the current pack configuration.
 - If production rows are unavailable, check that the required ingredients are in
