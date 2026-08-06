@@ -95,6 +95,30 @@ cargo test --all-targets --all-features
 These tests cover manifest parsing, endpoint security, retries, missing-file
 downloads, cache reuse, and the existing size/checksum safeguards.
 
+## Release verification checklist
+
+Before treating a remote audio release as ready, verify the following:
+
+- The active manifest uses the intended release ID and points only to immutable
+  files below that release namespace.
+- The webpage release validator passes every file's path, content type, byte
+  count, and SHA-256 checksum.
+- `scripts/verify-remote-audio-release.sh` passes against the public manifest
+  URL, including the manifest's no-cache header and each asset's immutable
+  cache header.
+- A clean game cache reaches startup ready after downloading and verifying the
+  release, while a warm cache reuses the verified files.
+- An unavailable endpoint, interrupted download, or modified cached file does
+  not prevent offline startup and does not replace a verified file.
+- The selected Kenney sound files and their CC0 license and attribution record
+  remain present in the companion release repository.
+
+The current public release can be checked with:
+
+```text
+./scripts/verify-remote-audio-release.sh
+```
+
 ## Current audio release
 
 The current release contains optional interface cues—click, select, confirm,

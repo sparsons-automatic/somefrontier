@@ -386,6 +386,8 @@ Window size is saved in the same configuration area.
 - If startup reports that remote audio is unavailable, check the network if you
   want to refresh it; otherwise continue offline. A checksum or compatibility
   failure is rejected automatically and does not invalidate your save.
+- A warm cache should make the remote-audio startup step quick. If the step is
+  slow or unavailable, the game can still continue without remote sounds.
 - If a save behaves strangely after pack changes, restore the previous pack set
   or start a new game with the current pack configuration.
 - If production rows are unavailable, check that the required ingredients are in
