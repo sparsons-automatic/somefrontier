@@ -117,6 +117,7 @@ pub struct DownloadReport {
     pub total_assets: usize,
     pub cache_hits: usize,
     pub downloaded_assets: usize,
+    pub ready_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +299,7 @@ impl RemoteAssetClient {
 
         let mut cache_hits = 0;
         let mut downloaded_assets = 0;
+        let mut ready_paths = Vec::with_capacity(entries.len());
         for entry in entries.iter().copied() {
             update_progress(progress, |state| {
                 state.phase = RemoteAssetPhase::Downloading;
@@ -309,6 +311,7 @@ impl RemoteAssetClient {
             let url = resolve_asset_url(&self.manifest_url, &entry.url)?;
             if cache.has_verified_asset(&manifest, entry)? {
                 cache_hits += 1;
+                ready_paths.push(entry.path.clone());
                 update_progress(progress, |state| {
                     state.completed_assets += 1;
                     state.current_bytes = entry.bytes;
@@ -340,6 +343,7 @@ impl RemoteAssetClient {
             };
             cache.write_verified(&manifest, entry, &mut reader)?;
             downloaded_assets += 1;
+            ready_paths.push(entry.path.clone());
             update_progress(progress, |state| {
                 state.completed_assets += 1;
                 state.current_bytes = entry.bytes;
@@ -359,6 +363,7 @@ impl RemoteAssetClient {
             total_assets: entries.len(),
             cache_hits,
             downloaded_assets,
+            ready_paths,
         })
     }
 
@@ -989,6 +994,7 @@ mod tests {
                 total_assets: 1,
                 cache_hits: 0,
                 downloaded_assets: 1,
+                ready_paths: vec!["audio/ui/click.ogg".to_string()],
             }
         );
 

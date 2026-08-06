@@ -6,8 +6,8 @@ are a separate future feature.
 
 This document defines the delivery contract, local cache behavior, and startup
 status display. The game can prepare optional remote audio during startup;
-audio playback and cue wiring remain separate follow-up work. Local committed
-assets remain the fallback source whenever remote delivery is unavailable.
+audio playback covers interface and combat cues. Local committed assets remain
+the fallback source whenever remote delivery is unavailable.
 
 ## Release contract
 
@@ -81,7 +81,9 @@ During startup, the game shows checking, downloading, verifying, ready, failed,
 or offline status with the current file and overall asset progress. The game
 does not wait indefinitely: if remote preparation takes too long, startup
 continues with local assets while the worker is allowed to finish separately.
-Audio playback and cue wiring will be connected by a later task.
+Available cues include interface actions, rotating weapon-fire variants, shield
+impacts, hull impacts, and destruction explosions. Missing optional cues are
+skipped without preventing startup.
 
 For local tests, use the deterministic fake-transport tests rather than the
 public service:
@@ -93,13 +95,14 @@ cargo test --all-targets --all-features
 These tests cover manifest parsing, endpoint security, retries, missing-file
 downloads, cache reuse, and the existing size/checksum safeguards.
 
-## First audio release
+## Current audio release
 
-The initial release contains a small set of optional interface cues—click,
-select, confirm, back, error, open, and close—plus force-field, metal-impact,
-and small-laser effects. These sounds come from Kenney's `Interface Sounds`
-and `Sci-Fi Sounds` packs. They are distributed under the Creative Commons Zero
-(CC0) license; see the release attribution and license files for details.
+The current release contains optional interface cues—click, select, confirm,
+back, error, open, and close—plus small, large, and retro laser effects,
+force-field shield impacts, metal hull impacts, and destruction explosions.
+These sounds come from Kenney's `Interface Sounds` and `Sci-Fi Sounds` packs.
+They are distributed under the Creative Commons Zero (CC0) license; see the
+release attribution and license files for details.
 
 ## Failure behavior
 
