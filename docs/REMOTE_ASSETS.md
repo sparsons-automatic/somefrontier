@@ -4,10 +4,11 @@ Some Frontier can consume optional runtime assets published by the project's
 asset host. The first delivery phase is limited to audio; remote content packs
 are a separate future feature.
 
-This document defines the delivery contract introduced in the current
-development work. The game client will begin downloading and presenting these
-assets during a later implementation step; until then, local committed assets
-remain the only runtime source.
+This document defines the delivery contract and local cache behavior. The game
+now has the cache and verification layer needed to store downloaded files
+safely; startup downloading, presentation, and audio playback are separate
+follow-up steps. Until those steps are connected, local committed assets remain
+the only runtime source.
 
 ## Release contract
 
@@ -55,9 +56,12 @@ corrupted downloads but does not replace signature verification.
 
 ## Local cache
 
-Downloaded files belong in the per-user Some Frontier cache/config area, under a
-release-specific directory. They must be written to a temporary file, checked
-for the declared size and digest, and atomically renamed only after validation.
+Downloaded files belong in the per-user Some Frontier cache/config area, under
+`remote-assets/<release_id>/`. They must be written to a temporary `.part`
+file, checked for the declared size and digest, and atomically renamed only
+after validation. A verified file can be reused when its size and SHA-256
+digest still match the manifest. Incomplete temporary files can be cleaned up
+without removing verified releases.
 The repository's `assets/audio/` directory remains the place for committed
 shared fallback audio, not a mutable download cache.
 

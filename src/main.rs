@@ -1,5 +1,6 @@
 mod branding_icon;
 mod content;
+mod remote_assets;
 
 use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
