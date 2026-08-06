@@ -61,6 +61,14 @@ for the declared size and digest, and atomically renamed only after validation.
 The repository's `assets/audio/` directory remains the place for committed
 shared fallback audio, not a mutable download cache.
 
+## First audio release
+
+The initial release contains a small set of optional interface cues—click,
+select, confirm, back, error, open, and close—plus force-field, metal-impact,
+and small-laser effects. These sounds come from Kenney's `Interface Sounds`
+and `Sci-Fi Sounds` packs. They are distributed under the Creative Commons Zero
+(CC0) license; see the release attribution and license files for details.
+
 ## Failure behavior
 
 The game should show checking, downloading, verifying, ready, and failed states
