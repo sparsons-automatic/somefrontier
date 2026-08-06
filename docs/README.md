@@ -17,6 +17,8 @@ world content that stacks on top.
   recipes, planet sources, and planned fuel/material directions.
 - [Plugin System](PLUGIN_SYSTEM.md): implementation and authoring guide for
   file-based content packs.
+- [Remote Assets](REMOTE_ASSETS.md): the optional, checksum-validated runtime
+  audio delivery contract and offline/failure expectations.
 
 ## Working Rules
 
