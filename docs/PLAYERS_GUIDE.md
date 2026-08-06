@@ -36,6 +36,11 @@ quickly. Remote audio is not required to play: if the network is unavailable or
 an asset fails validation, startup continues with local audio and shows an
 offline or unavailable status.
 
+Remote audio currently includes menu selection, confirmation, back/close, and
+warning sounds, plus rotating laser-fire sounds, shield impacts, hull impacts,
+and ship-destruction explosions. The Audio settings panel controls the master
+volume; setting it to zero mutes these cues without disabling gameplay.
+
 ## Controls
 
 | Action | Control |

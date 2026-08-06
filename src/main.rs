@@ -1,3 +1,4 @@
+mod audio;
 mod branding_icon;
 mod content;
 mod remote_assets;
@@ -181,6 +182,7 @@ enum TransitionPhase {
 
 struct GameState {
     runtime_flags: RuntimeFlags,
+    audio: audio::AudioManager,
     content_registry: content::ContentRegistry,
     content_pack_options: Vec<PackOptionSelection>,
     transition_assets: Vec<TransitionAsset>,
@@ -430,6 +432,7 @@ struct RuntimeFlags {
 struct RemoteAudioStartup {
     progress: remote_assets::RemoteAssetProgressHandle,
     handle: Option<JoinHandle<Result<remote_assets::DownloadReport, String>>>,
+    report: Option<remote_assets::DownloadReport>,
 }
 
 impl RemoteAudioStartup {
@@ -450,7 +453,11 @@ impl RemoteAudioStartup {
                 None
             }
         };
-        Self { progress, handle }
+        Self {
+            progress,
+            handle,
+            report: None,
+        }
     }
 
     fn poll(&mut self) {
@@ -459,13 +466,16 @@ impl RemoteAudioStartup {
             return;
         }
         if let Some(handle) = self.handle.take() {
-            if let Err(error) = handle
+            match handle
                 .join()
                 .unwrap_or_else(|_| Err("Remote audio worker stopped unexpectedly".to_string()))
             {
-                if let Ok(mut state) = self.progress.lock() {
-                    state.phase = remote_assets::RemoteAssetPhase::Failed;
-                    state.message = error;
+                Ok(report) => self.report = Some(report),
+                Err(error) => {
+                    if let Ok(mut state) = self.progress.lock() {
+                        state.phase = remote_assets::RemoteAssetPhase::Failed;
+                        state.message = error;
+                    }
                 }
             }
         }
@@ -489,7 +499,7 @@ impl RemoteAudioStartup {
             .unwrap_or_else(|_| remote_assets::RemoteAssetProgress::checking())
     }
 
-    async fn finish(mut self) {
+    async fn finish(mut self) -> Option<remote_assets::DownloadReport> {
         let started = get_time();
         while self.handle.is_some() && get_time() - started < 5.0 {
             self.draw();
@@ -506,6 +516,7 @@ impl RemoteAudioStartup {
             self.draw();
         }
         next_frame().await;
+        self.report
     }
 }
 
@@ -1391,6 +1402,7 @@ impl GameState {
 
         let mut game = Self {
             runtime_flags,
+            audio: audio::AudioManager::empty(read_app_settings().master_volume),
             content_registry,
             content_pack_options,
             transition_assets,
@@ -1488,7 +1500,14 @@ impl GameState {
             game.apply_save(save_data);
             game.save_dirty = false;
         }
-        remote_audio_startup.finish().await;
+        let remote_audio_report = remote_audio_startup.finish().await;
+        game.audio = audio::AudioManager::load_from_report(
+            remote_audio_report.as_ref(),
+            config_dir().join("remote-assets"),
+            read_app_settings().master_volume,
+        )
+        .await;
+        game.audio.play(audio::AudioCue::Ready);
         run_startup_transition_out(&game.transition_assets, startup_preferred_transition_id).await;
         game
     }
@@ -3688,6 +3707,12 @@ fn record_collision_impact(
             suffix
         ),
     );
+    if application.shield_absorbed > 0.0 {
+        game.audio.play(audio::AudioCue::ShieldImpact);
+    }
+    if application.hull_damage > 0.0 {
+        game.audio.play(audio::AudioCue::HullImpact);
+    }
     game.collision_impact_events.push(CollisionImpactEvent {
         position,
         timer: COLLISION_EVENT_SECONDS,
@@ -4085,9 +4110,16 @@ fn push_operation_feedback(
     category: impl Into<String>,
     message: impl Into<String>,
 ) {
+    let message = message.into();
+    if ["failed", "cannot", "unable", "warning", "need "]
+        .iter()
+        .any(|marker| message.to_ascii_lowercase().contains(marker))
+    {
+        game.audio.play(audio::AudioCue::Warning);
+    }
     let entry = OperationFeedback {
         category: category.into(),
-        message: message.into(),
+        message,
         aggregate_key: None,
         count: 1,
     };
@@ -7826,6 +7858,11 @@ fn update_game(game: &mut GameState, dt: f32) {
 
     if is_key_pressed(KeyCode::M) {
         game.map_open = !game.map_open;
+        game.audio.play(if game.map_open {
+            audio::AudioCue::Select
+        } else {
+            audio::AudioCue::Back
+        });
         if game.map_open {
             game.starmap_pan = Vec2::ZERO;
             game.starmap_drag_previous_mouse = None;
@@ -7857,6 +7894,11 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
     if is_key_pressed(KeyCode::K) {
         game.research_open = !game.research_open;
+        game.audio.play(if game.research_open {
+            audio::AudioCue::Select
+        } else {
+            audio::AudioCue::Back
+        });
         if game.research_open {
             game.map_open = false;
             game.inventory_open = false;
@@ -7871,6 +7913,11 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
     if is_key_pressed(KeyCode::C) {
         game.content_open = !game.content_open;
+        game.audio.play(if game.content_open {
+            audio::AudioCue::Select
+        } else {
+            audio::AudioCue::Back
+        });
         if game.content_open {
             game.map_open = false;
             game.inventory_open = false;
@@ -7885,6 +7932,11 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
     if is_key_pressed(KeyCode::J) {
         game.contracts_open = !game.contracts_open;
+        game.audio.play(if game.contracts_open {
+            audio::AudioCue::Select
+        } else {
+            audio::AudioCue::Back
+        });
         if game.contracts_open {
             game.map_open = false;
             game.inventory_open = false;
@@ -8069,9 +8121,16 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.selected_npc_ship = None;
             game.selected_station_service = None;
             game.inventory_open = true;
+            game.audio.play(audio::AudioCue::Select);
         } else {
             select_clicked_destination(game, mouse);
             identify_selected_npc_ship(game);
+            if game.selected_planet.is_some()
+                || game.selected_station.is_some()
+                || game.selected_npc_ship.is_some()
+            {
+                game.audio.play(audio::AudioCue::Select);
+            }
         }
     }
 
@@ -8105,6 +8164,7 @@ fn update_game(game: &mut GameState, dt: f32) {
 
 fn handle_inventory_shortcut(game: &mut GameState) {
     if game.context_action_menu.take().is_some() {
+        game.audio.play(audio::AudioCue::Back);
         return;
     }
 
@@ -8118,6 +8178,7 @@ fn handle_inventory_shortcut(game: &mut GameState) {
         game.selected_station = None;
         game.selected_npc_ship = None;
         game.selected_station_service = None;
+        game.audio.play(audio::AudioCue::Back);
         return;
     }
 
@@ -8131,14 +8192,21 @@ fn handle_inventory_shortcut(game: &mut GameState) {
     game.selected_npc_ship = None;
     game.selected_station_service = None;
     game.inventory_open = !game.inventory_open;
+    game.audio.play(if game.inventory_open {
+        audio::AudioCue::Select
+    } else {
+        audio::AudioCue::Back
+    });
 }
 
 fn handle_escape_pressed(game: &mut GameState) {
     if close_topmost_gameplay_overlay(game) {
+        game.audio.play(audio::AudioCue::Back);
         return;
     }
 
     game.escape_dialog_open = true;
+    game.audio.play(audio::AudioCue::Select);
 }
 
 fn movement_input_pressed() -> bool {
@@ -8399,8 +8467,13 @@ fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
                     .then_some((entry.action, entry.enabled))
             });
             game.context_action_menu = None;
-            if let Some((action, true)) = selected {
-                execute_context_action(game, menu.target, action);
+            if let Some((action, enabled)) = selected {
+                if enabled {
+                    execute_context_action(game, menu.target, action);
+                    game.audio.play(audio::AudioCue::Confirm);
+                } else {
+                    game.audio.play(audio::AudioCue::Warning);
+                }
             }
             return true;
         }
@@ -8432,6 +8505,7 @@ fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
         target,
         position: mouse,
     });
+    game.audio.play(audio::AudioCue::Select);
     true
 }
 
@@ -11999,6 +12073,7 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
             }
             surviving_npc_ships.push(npc_ship);
         } else {
+            game.audio.play(audio::AudioCue::Explosion);
             let cargo_items = transfer_destroyed_npc_loot(
                 &mut game.inventory,
                 &game.ship_upgrades,
@@ -12133,6 +12208,7 @@ fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
             timer: WEAPON_FIRE_EVENT_SECONDS,
             origin: WeaponFireOrigin::Player,
         });
+        game.audio.play(audio::AudioCue::WeaponFire);
         game.save_dirty = true;
     }
 }
@@ -12200,6 +12276,7 @@ fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_inde
         timer: WEAPON_FIRE_EVENT_SECONDS,
         origin: WeaponFireOrigin::Npc,
     });
+    game.audio.play(audio::AudioCue::WeaponFire);
     true
 }
 
@@ -12243,6 +12320,7 @@ fn fire_npc_weapon_at_defense_threat(
         timer: WEAPON_FIRE_EVENT_SECONDS,
         origin: WeaponFireOrigin::Npc,
     });
+    game.audio.play(audio::AudioCue::WeaponFire);
     true
 }
 
@@ -26265,6 +26343,7 @@ mod tests {
     ) -> GameState {
         GameState {
             runtime_flags: RuntimeFlags::default(),
+            audio: audio::AudioManager::empty(1.0),
             content_registry,
             content_pack_options: Vec::new(),
             transition_assets: Vec::new(),
