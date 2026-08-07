@@ -42,6 +42,7 @@ mass = 42000.0
 cargo_capacity = 12000.0
 cargo_defaults = [
   { item = "fuel_canister", count = 1 },
+  { item = "interceptor_round", count = 80 },
 ]
 credit_reward_min = 0
 credit_reward_max = 0
@@ -69,6 +70,7 @@ mass = 18000.0
 cargo_capacity = 2500.0
 cargo_defaults = [
   { item = "circuit", count = 1 },
+  { item = "interceptor_round", count = 60 },
 ]
 credit_reward_min = 35
 credit_reward_max = 70

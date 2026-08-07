@@ -684,7 +684,29 @@ range = 460.0
 cooldown_seconds = 1.4
 damage = 18.0
 energy_cost = 7.0
+ammo_item = "interceptor_round"
+ammo_per_shot = 1
 tracking_degrees = 360.0
+targeting = "all_hostiles"
+effect = "arc"
+path_curve_strength = 0.18
+path_wobble = 8.0
+path_cycles = 3.0
+trail_length = 0.4
+burst_count = 3
+# travel_speed = 900.0
+projectile_texture = "./assets/projectiles/point-defense.png"
+projectile_size = 28.0
+impact = "chain"
+chain_targets = 5
+chain_range = 260.0
+chain_damage_multiplier = 0.72
+friendly_fire = "hostiles_only"
+beam_color = "#3db2ffff"
+core_color = "#b8f5ffff"
+impact_color = "#8febffff"
+fire_duration_seconds = 0.55
+# fire_audio = "./assets/audio/point-defense-fire.wav"
 summary = "Automatic defensive turret that engages hostile threats near the ship."
 ```
 
@@ -698,11 +720,71 @@ Rules:
   installed and returned when the weapon is swapped out.
 - `range`, `cooldown_seconds`, and `damage` must be positive.
 - `energy_cost` defaults to 0.0 and must not be negative.
+- `ammo_item` is optional and resolves like other pack-local item references.
+  Omit it for energy weapons. When present, the player consumes the item from
+  inventory and NPC ships consume it from their saved `cargo_defaults`.
+- `ammo_per_shot` defaults to 1 and must be positive. Ammunition and energy are
+  consumed only after a valid target is acquired and the shot actually fires.
+  A weapon without enough ammunition reports `out of ammo` and does not spend
+  energy or begin its cooldown.
 - `tracking_degrees` defaults to 360.0 and must not be negative. Values at or
   above 359 degrees behave as full-coverage defensive turrets.
-- Turret defense weapons only engage valid hostile threats. Neutral, owned, and
-  environmental entities are ignored by the base targeting rules.
+- `targeting` defaults to `all_hostiles`. Packs can use `ships_only` for
+  anti-ship weapons or `threats_only` for dedicated interceptors. Neutral,
+  owned, and environmental entities remain ineligible.
+- `effect` selects an engine-owned visual path and defaults to `arc`. Supported
+  values are `beam`, `straight`, `arc`, `spiral`, `zigzag`, `homing`, and
+  `burst`. These names select curated mechanics; packs do not execute code.
+- `path_curve_strength` controls distance-relative bending and defaults to
+  0.18. It must not be negative.
+- `path_wobble` controls lateral variation in screen pixels and defaults to
+  8.0. It must not be negative.
+- `path_cycles` controls spiral, zigzag, homing, and burst oscillations. It
+  defaults to 3.0 and must be positive.
+- `trail_length` is the normalized portion of the path retained behind a
+  projectile. It defaults to 0.4 and must be within 0.01 through 1.0.
+- `burst_count` controls parallel projectiles for the `burst` path. It defaults
+  to 3 and must be between 1 and 8.
+- `travel_speed` is optional and must be positive. When supplied, the visual
+  duration is calculated from shot distance divided by this speed; otherwise
+  `fire_duration_seconds` supplies a fixed duration.
+- `projectile_texture` is optional. Relative image paths resolve inside the
+  declaring pack and are validated at startup. The sprite should point right;
+  the engine rotates it along the selected path and moves it to the impact.
+  Without a texture, the engine falls back to its procedural projectile.
+- `projectile_size` controls the sprite's length in world units, defaults to
+  28.0, and must be positive. The original image aspect ratio is preserved.
+- `impact` defaults to `single`. `chain` jumps between nearby targets,
+  `splash` damages an area at impact, and `chain_splash` creates an area impact
+  at every chain hop. Damage resolves when the visual reaches its target.
+- `chain_targets` counts the primary target and defaults to 3 (1 through 16).
+  `chain_range` defaults to 240.0 and is the maximum distance between hops.
+  `chain_damage_multiplier` defaults to 0.75 and scales each successive hop.
+- `splash_radius` is required for `splash` and `chain_splash` and may be up to
+  5000.0. `splash_falloff` accepts `none`, `linear`, or `quadratic`.
+  `splash_min_multiplier` defaults to 0.2 and controls edge damage.
+- `friendly_fire` defaults to `hostiles_only`. Packs may explicitly opt into
+  `all_except_owner` or `everyone`; the default never damages neutral, friendly,
+  owned, or environmental entities.
+- `beam_color`, `core_color`, and `impact_color` accept six- or eight-digit
+  hexadecimal RGBA colors.
+- `fire_duration_seconds` defaults to 0.55 and must be positive.
+- `fire_audio` is optional. Relative paths resolve inside the declaring pack,
+  are validated at startup, and fall back to the base weapon cue if decoding
+  fails at runtime.
 - `summary` is optional player-facing metadata.
+
+`content/packs/turrets-galore/` is the reference implementation. It defines
+four inventory items and recipes, contrasting targeting and path policies, a
+five-target chain turret, a wide-radius SUPER NUKE, pack-local fire sounds, and
+an NPC loadout without adding turret-specific Rust code. It also demonstrates
+pack-owned ammunition items and recipes for its physical flak and nuke weapons;
+the Ember Lance and Storm Chain remain energy-only.
+
+Weapon-slot saves preserve slot positions and unresolved namespaced IDs. If a
+pack is temporarily removed, its weapon is shown as missing rather than being
+silently replaced with core equipment; restoring the pack resolves it on the
+next load. Legacy compact `weapon_slots` saves remain readable.
 
 ## `shields.toml`
 
@@ -740,10 +822,11 @@ Rules:
 
 ## `ships.toml`
 
-Ship definitions provide data-driven hull and handling stats. The current
-starter ship uses this content metadata, while the base game still owns flight,
-damage, energy, save/load, shield and weapon slot behavior, and upgrade
-behavior.
+Ship definitions provide data-driven hull and handling stats. A content pack can
+select one as the new-game ship through `starter.toml`, while the base game owns
+flight, damage, energy, save/load, shield and weapon slot behavior, and upgrade
+behavior. Every loaded ship appears as an independent choice in the New Game
+ship grid; it does not need to be nominated in `starter.toml` to be selectable.
 
 ```toml
 [[ships]]
@@ -769,14 +852,27 @@ Rules:
 - `id` resolves to a namespaced ship ID.
 - `name` must not be empty.
 - `texture` is optional and uses the same path rules as planet and station
-  textures.
+  textures. The New Game card removes transparent canvas padding, preserves the
+  visible image's aspect ratio, and applies a quarter-turn for presentation.
+  Gameplay rendering follows ship heading and preserves the source texture's
+  aspect ratio without that card-only crop, so authors should still trim large
+  transparent margins from the source asset. Do not pre-rotate an asset merely
+  to compensate for the New Game card. A missing or unreadable image leaves the
+  ship selectable and uses the engine's fallback presentation.
 - `mass`, acceleration, energy, drag, hull, and shield values must be positive.
 - `power_modules` defaults to an empty list. Entries resolve to namespaced power
   module IDs and must reference loaded power modules.
 - `shield_slots` defaults to an empty list. Entries resolve to namespaced shield
   IDs and must reference loaded shields.
-- `weapon_slots` defaults to an empty list. Entries resolve to namespaced weapon
-  IDs and must reference loaded weapons.
+- `weapon_slots` defaults to an empty list. Each entry creates one independently
+  configurable `Turret Bank` and supplies that bank's initially fitted weapon.
+  List order is bank order, repeated weapon IDs are allowed, and every entry
+  resolves to a namespaced weapon ID that must reference a loaded weapon.
+
+`content/packs/turrets-galore/ships.toml` is the reference multi-bank player
+ship. Its two ordered `weapon_slots` entries produce two independently swappable
+banks in the Defense rail, while its `starter.toml` nomination only controls the
+picker's initial highlight.
 
 ## `npc_ships.toml`
 
@@ -903,6 +999,8 @@ stacks through the content item registry and stores registry-backed item IDs in
 inventory.
 
 ```toml
+ship = "core:frontier_cargo_ship_01"
+
 inventory = [
   { item = "core:iron_ore", count = 18 },
   { item = "core:copper_ore", count = 14 },
@@ -914,10 +1012,41 @@ inventory = [
 
 Rules:
 
+- `ship` is optional. When present, it resolves to a namespaced ship ID and must
+  reference a loaded ship. It controls the initially highlighted hull in the New
+  Game ship picker; the player may select any loaded ship before launch. A
+  later-loaded pack declaration replaces an earlier default and emits a loader
+  warning.
 - Starter item IDs must exist.
 - Counts must be positive.
 - Multiple packs can contribute starter inventory while the framework is in
   development. Later scenario support may choose one start profile explicitly.
+- Starter inventory contributions are additive and independent of the hull the
+  player selects. `starter.toml` does not currently define a ship-specific
+  loadout or cargo profile; use the ship's module and weapon slot lists for its
+  fitted equipment.
+
+The starter ship selection and inventory contributions apply to new games, not
+load-time grants. The runtime persists the active namespaced ship ID alongside
+its slot loadout. Legacy saves and saves whose ship pack is unavailable fall
+back to the core Frontier Cargo Ship. The runtime
+builds a new inventory from all loaded packs and then, when loading an existing
+save, replaces it with the inventory stored in that save. Removing and restoring
+a pack therefore cannot duplicate its starter items in an established game.
+
+For example, `content/packs/turrets-galore/starter.toml` grants one of each
+reference turret and selects its two-bank Twinspire Gunship for new games:
+
+```toml
+ship = "twinspire_gunship"
+
+inventory = [
+  { item = "ember_lance_turret", count = 1 },
+  { item = "sentinel_flak_turret", count = 1 },
+  { item = "storm_chain_turret", count = 1 },
+  { item = "super_nuke_turret", count = 1 },
+]
+```
 
 Runtime note:
 
@@ -1199,7 +1328,7 @@ validation as ordinary pack content.
 17. Load planet definitions.
 18. Load station definitions and station services.
 19. Load upgrade cost definitions.
-20. Load starter inventory definitions.
+20. Load starter ship and inventory definitions.
 21. Validate cross-references.
 22. Record duplicate recipe-output warnings.
 23. Build runtime registries.
@@ -1242,6 +1371,7 @@ Reject startup when:
 - A ship references a missing weapon.
 - A ship has an empty name or non-positive mass, acceleration, energy, drag,
   hull, or shield values.
+- Starter configuration references a missing ship.
 - A faction has an empty name or kind, or an unsupported default disposition.
 - An NPC ship references a missing system, faction, cargo item, shield, or
   weapon.

@@ -52,8 +52,10 @@ impl AudioCue {
 
 pub struct AudioManager {
     sounds: HashMap<AudioCue, Vec<Sound>>,
+    custom_sounds: HashMap<String, Sound>,
     master_volume: f32,
     last_played: HashMap<AudioCue, f64>,
+    last_custom_played: HashMap<String, f64>,
     next_variant: HashMap<AudioCue, usize>,
 }
 
@@ -61,8 +63,10 @@ impl AudioManager {
     pub fn empty(master_volume: f32) -> Self {
         Self {
             sounds: HashMap::new(),
+            custom_sounds: HashMap::new(),
             master_volume: master_volume.clamp(0.0, 1.0),
             last_played: HashMap::new(),
+            last_custom_played: HashMap::new(),
             next_variant: HashMap::new(),
         }
     }
@@ -98,6 +102,20 @@ impl AudioManager {
         manager
     }
 
+    pub async fn load_custom_paths<'a>(&mut self, paths: impl Iterator<Item = &'a str>) {
+        for path in paths {
+            if self.custom_sounds.contains_key(path) {
+                continue;
+            }
+            let Ok(bytes) = fs::read(path) else {
+                continue;
+            };
+            if let Ok(sound) = load_sound_from_bytes(&bytes).await {
+                self.custom_sounds.insert(path.to_string(), sound);
+            }
+        }
+    }
+
     pub fn play(&mut self, cue: AudioCue) -> bool {
         if self.master_volume <= 0.0 {
             return false;
@@ -126,6 +144,35 @@ impl AudioManager {
         );
         true
     }
+
+    pub fn play_custom_or(&mut self, path: Option<&str>, fallback: AudioCue) -> bool {
+        let Some(path) = path else {
+            return self.play(fallback);
+        };
+        if self.master_volume <= 0.0 {
+            return false;
+        }
+        let Some(sound) = self.custom_sounds.get(path) else {
+            return self.play(fallback);
+        };
+        let now = macroquad::prelude::get_time();
+        if self
+            .last_custom_played
+            .get(path)
+            .is_some_and(|last| now - last < REPEAT_SUPPRESSION_SECONDS)
+        {
+            return false;
+        }
+        play_sound(
+            sound,
+            PlaySoundParams {
+                looped: false,
+                volume: self.master_volume,
+            },
+        );
+        self.last_custom_played.insert(path.to_string(), now);
+        true
+    }
 }
 
 #[cfg(test)]
@@ -144,8 +191,10 @@ mod tests {
     fn volume_is_clamped_for_mute_and_safety() {
         let manager = AudioManager {
             sounds: HashMap::new(),
+            custom_sounds: HashMap::new(),
             master_volume: 2.0_f32.clamp(0.0, 1.0),
             last_played: HashMap::new(),
+            last_custom_played: HashMap::new(),
             next_variant: HashMap::new(),
         };
         assert_eq!(manager.master_volume, 1.0);

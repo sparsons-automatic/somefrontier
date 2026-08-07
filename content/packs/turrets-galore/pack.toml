@@ -1,0 +1,6 @@
+id = "turrets-galore"
+name = "Turrets Galore"
+version = "0.1.0"
+description = "Reference pack proving that selectable player ships, multi-bank turret loadouts, turret items, recipes, effects, audio, NPC loadouts, and saves are content-pack safe."
+depends_on = ["core"]
+optional_depends_on = []

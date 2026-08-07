@@ -53,6 +53,7 @@ pub struct ContentRegistry {
     pub vendor_order: Vec<String>,
     pub upgrades: HashMap<String, UpgradeDef>,
     pub upgrade_order: Vec<String>,
+    pub starter_ship: Option<String>,
     pub starter_inventory: Vec<StackDef>,
     pub warnings: Vec<String>,
 }
@@ -223,13 +224,138 @@ pub struct WeaponDef {
     pub cooldown_seconds: f32,
     pub damage: f32,
     pub energy_cost: f32,
+    pub ammo_item: Option<String>,
+    pub ammo_per_shot: u32,
     pub tracking_degrees: f32,
+    pub targeting: WeaponTargeting,
+    pub effect: WeaponEffect,
+    pub beam_color: [u8; 4],
+    pub core_color: [u8; 4],
+    pub impact_color: [u8; 4],
+    pub fire_duration_seconds: f32,
+    pub path_curve_strength: f32,
+    pub path_wobble: f32,
+    pub path_cycles: f32,
+    pub trail_length: f32,
+    pub burst_count: u8,
+    pub travel_speed: Option<f32>,
+    pub projectile_texture: Option<String>,
+    pub projectile_size: f32,
+    pub impact: WeaponImpact,
+    pub splash_radius: f32,
+    pub splash_falloff: DamageFalloff,
+    pub splash_min_multiplier: f32,
+    pub chain_targets: u8,
+    pub chain_range: f32,
+    pub chain_damage_multiplier: f32,
+    pub friendly_fire: FriendlyFire,
+    pub fire_audio: Option<String>,
     pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeaponKind {
     TurretDefense,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponTargeting {
+    AllHostiles,
+    ShipsOnly,
+    ThreatsOnly,
+}
+
+impl WeaponTargeting {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "all_hostiles" => Some(Self::AllHostiles),
+            "ships_only" => Some(Self::ShipsOnly),
+            "threats_only" => Some(Self::ThreatsOnly),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponEffect {
+    Arc,
+    Beam,
+    Straight,
+    Spiral,
+    Zigzag,
+    Homing,
+    Burst,
+}
+
+impl WeaponEffect {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "arc" => Some(Self::Arc),
+            "beam" => Some(Self::Beam),
+            "straight" => Some(Self::Straight),
+            "spiral" => Some(Self::Spiral),
+            "zigzag" => Some(Self::Zigzag),
+            "homing" => Some(Self::Homing),
+            "burst" => Some(Self::Burst),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponImpact {
+    Single,
+    Chain,
+    Splash,
+    ChainSplash,
+}
+
+impl WeaponImpact {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "single" => Some(Self::Single),
+            "chain" => Some(Self::Chain),
+            "splash" => Some(Self::Splash),
+            "chain_splash" => Some(Self::ChainSplash),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageFalloff {
+    None,
+    Linear,
+    Quadratic,
+}
+
+impl DamageFalloff {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "none" => Some(Self::None),
+            "linear" => Some(Self::Linear),
+            "quadratic" => Some(Self::Quadratic),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendlyFire {
+    HostilesOnly,
+    AllExceptOwner,
+    Everyone,
+}
+
+impl FriendlyFire {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "hostiles_only" => Some(Self::HostilesOnly),
+            "all_except_owner" => Some(Self::AllExceptOwner),
+            "everyone" => Some(Self::Everyone),
+            _ => None,
+        }
+    }
 }
 
 impl WeaponKind {
@@ -754,9 +880,116 @@ struct WeaponFileDef {
     damage: f32,
     #[serde(default)]
     energy_cost: f32,
+    ammo_item: Option<String>,
+    #[serde(default = "default_ammo_per_shot")]
+    ammo_per_shot: u32,
     #[serde(default = "default_full_tracking_degrees")]
     tracking_degrees: f32,
+    #[serde(default = "default_weapon_targeting")]
+    targeting: String,
+    #[serde(default = "default_weapon_effect")]
+    effect: String,
+    #[serde(default = "default_beam_color")]
+    beam_color: String,
+    #[serde(default = "default_core_color")]
+    core_color: String,
+    #[serde(default = "default_impact_color")]
+    impact_color: String,
+    #[serde(default = "default_weapon_fire_duration")]
+    fire_duration_seconds: f32,
+    #[serde(default = "default_path_curve_strength")]
+    path_curve_strength: f32,
+    #[serde(default = "default_path_wobble")]
+    path_wobble: f32,
+    #[serde(default = "default_path_cycles")]
+    path_cycles: f32,
+    #[serde(default = "default_trail_length")]
+    trail_length: f32,
+    #[serde(default = "default_burst_count")]
+    burst_count: u8,
+    travel_speed: Option<f32>,
+    projectile_texture: Option<String>,
+    #[serde(default = "default_projectile_size")]
+    projectile_size: f32,
+    #[serde(default = "default_weapon_impact")]
+    impact: String,
+    #[serde(default)]
+    splash_radius: f32,
+    #[serde(default = "default_damage_falloff")]
+    splash_falloff: String,
+    #[serde(default = "default_splash_min_multiplier")]
+    splash_min_multiplier: f32,
+    #[serde(default = "default_chain_targets")]
+    chain_targets: u8,
+    #[serde(default = "default_chain_range")]
+    chain_range: f32,
+    #[serde(default = "default_chain_damage_multiplier")]
+    chain_damage_multiplier: f32,
+    #[serde(default = "default_friendly_fire")]
+    friendly_fire: String,
+    fire_audio: Option<String>,
     summary: Option<String>,
+}
+
+fn default_weapon_targeting() -> String {
+    "all_hostiles".to_string()
+}
+fn default_ammo_per_shot() -> u32 {
+    1
+}
+fn default_weapon_effect() -> String {
+    "arc".to_string()
+}
+fn default_beam_color() -> String {
+    "#3db2ffff".to_string()
+}
+fn default_core_color() -> String {
+    "#b8f5ffff".to_string()
+}
+fn default_impact_color() -> String {
+    "#8febffff".to_string()
+}
+fn default_weapon_fire_duration() -> f32 {
+    0.55
+}
+fn default_path_curve_strength() -> f32 {
+    0.18
+}
+fn default_path_wobble() -> f32 {
+    8.0
+}
+fn default_path_cycles() -> f32 {
+    3.0
+}
+fn default_trail_length() -> f32 {
+    0.4
+}
+fn default_burst_count() -> u8 {
+    3
+}
+fn default_projectile_size() -> f32 {
+    28.0
+}
+fn default_weapon_impact() -> String {
+    "single".to_string()
+}
+fn default_damage_falloff() -> String {
+    "linear".to_string()
+}
+fn default_splash_min_multiplier() -> f32 {
+    0.2
+}
+fn default_chain_targets() -> u8 {
+    3
+}
+fn default_chain_range() -> f32 {
+    240.0
+}
+fn default_chain_damage_multiplier() -> f32 {
+    0.75
+}
+fn default_friendly_fire() -> String {
+    "hostiles_only".to_string()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1068,6 +1301,7 @@ struct UpgradeCostFileDef {
 
 #[derive(Debug, Default, Deserialize)]
 struct StarterFile {
+    ship: Option<String>,
     #[serde(default)]
     inventory: Vec<StackFileDef>,
 }
@@ -1500,9 +1734,67 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         if weapon.energy_cost < 0.0 {
             errors.push(format!("Weapon `{id}` has negative energy cost"));
         }
+        if weapon.ammo_per_shot == 0 {
+            errors.push(format!("Weapon `{id}` has zero ammo per shot"));
+        }
         if weapon.tracking_degrees < 0.0 {
             errors.push(format!("Weapon `{id}` has negative tracking degrees"));
         }
+        validate_positive(
+            weapon.fire_duration_seconds,
+            "Weapon",
+            &id,
+            "fire duration",
+            errors,
+        );
+        if weapon.path_curve_strength < 0.0 {
+            errors.push(format!("Weapon `{id}` has negative path curve strength"));
+        }
+        if weapon.path_wobble < 0.0 {
+            errors.push(format!("Weapon `{id}` has negative path wobble"));
+        }
+        validate_positive(weapon.path_cycles, "Weapon", &id, "path cycles", errors);
+        if !(0.01..=1.0).contains(&weapon.trail_length) {
+            errors.push(format!("Weapon `{id}` has trail length outside 0.01..1.0"));
+        }
+        if !(1..=8).contains(&weapon.burst_count) {
+            errors.push(format!("Weapon `{id}` has burst count outside 1..8"));
+        }
+        if weapon.travel_speed.is_some_and(|speed| speed <= 0.0) {
+            errors.push(format!("Weapon `{id}` has non-positive travel speed"));
+        }
+        validate_positive(
+            weapon.projectile_size,
+            "Weapon",
+            &id,
+            "projectile size",
+            errors,
+        );
+        if !(0.0..=5000.0).contains(&weapon.splash_radius) {
+            errors.push(format!("Weapon `{id}` has splash radius outside 0..5000"));
+        }
+        validate_fraction(
+            weapon.splash_min_multiplier,
+            "Weapon",
+            &id,
+            "splash minimum multiplier",
+            errors,
+        );
+        if !(1..=16).contains(&weapon.chain_targets) {
+            errors.push(format!(
+                "Weapon `{id}` has chain target count outside 1..16"
+            ));
+        }
+        if !(0.0..=5000.0).contains(&weapon.chain_range) {
+            errors.push(format!("Weapon `{id}` has chain range outside 0..5000"));
+        }
+        validate_fraction(
+            weapon.chain_damage_multiplier,
+            "Weapon",
+            &id,
+            "chain damage multiplier",
+            errors,
+        );
         let Some(kind) = WeaponKind::from_id(&weapon.kind) else {
             errors.push(format!(
                 "Weapon `{id}` has unsupported kind `{}`",
@@ -1510,6 +1802,79 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             ));
             continue;
         };
+        let Some(targeting) = WeaponTargeting::from_id(&weapon.targeting) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported targeting `{}`",
+                weapon.targeting
+            ));
+            continue;
+        };
+        let Some(effect) = WeaponEffect::from_id(&weapon.effect) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported effect `{}`",
+                weapon.effect
+            ));
+            continue;
+        };
+        let Some(impact) = WeaponImpact::from_id(&weapon.impact) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported impact `{}`",
+                weapon.impact
+            ));
+            continue;
+        };
+        let Some(splash_falloff) = DamageFalloff::from_id(&weapon.splash_falloff) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported splash falloff `{}`",
+                weapon.splash_falloff
+            ));
+            continue;
+        };
+        let Some(friendly_fire) = FriendlyFire::from_id(&weapon.friendly_fire) else {
+            errors.push(format!(
+                "Weapon `{id}` has unsupported friendly fire `{}`",
+                weapon.friendly_fire
+            ));
+            continue;
+        };
+        if matches!(impact, WeaponImpact::Splash | WeaponImpact::ChainSplash)
+            && weapon.splash_radius <= 0.0
+        {
+            errors.push(format!("Weapon `{id}` uses splash impact with zero radius"));
+        }
+        if matches!(impact, WeaponImpact::Chain | WeaponImpact::ChainSplash)
+            && weapon.chain_range <= 0.0
+        {
+            errors.push(format!("Weapon `{id}` uses chain impact with zero range"));
+        }
+        let Some(beam_color) = parse_hex_color(&weapon.beam_color) else {
+            errors.push(format!(
+                "Weapon `{id}` has invalid beam color `{}`",
+                weapon.beam_color
+            ));
+            continue;
+        };
+        let Some(core_color) = parse_hex_color(&weapon.core_color) else {
+            errors.push(format!(
+                "Weapon `{id}` has invalid core color `{}`",
+                weapon.core_color
+            ));
+            continue;
+        };
+        let Some(impact_color) = parse_hex_color(&weapon.impact_color) else {
+            errors.push(format!(
+                "Weapon `{id}` has invalid impact color `{}`",
+                weapon.impact_color
+            ));
+            continue;
+        };
+        let fire_audio = weapon
+            .fire_audio
+            .as_deref()
+            .map(|path| resolve_asset_path(&raw_pack.path, path, &id, "audio", errors));
+        let projectile_texture = weapon.projectile_texture.as_deref().map(|path| {
+            resolve_asset_path(&raw_pack.path, path, &id, "projectile texture", errors)
+        });
         let inserted = registry
             .weapons
             .insert(
@@ -1523,7 +1888,32 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     cooldown_seconds: weapon.cooldown_seconds,
                     damage: weapon.damage,
                     energy_cost: weapon.energy_cost,
+                    ammo_item: weapon.ammo_item.map(|item| namespaced_id(&pack_id, &item)),
+                    ammo_per_shot: weapon.ammo_per_shot,
                     tracking_degrees: weapon.tracking_degrees,
+                    targeting,
+                    effect,
+                    beam_color,
+                    core_color,
+                    impact_color,
+                    fire_duration_seconds: weapon.fire_duration_seconds,
+                    path_curve_strength: weapon.path_curve_strength,
+                    path_wobble: weapon.path_wobble,
+                    path_cycles: weapon.path_cycles,
+                    trail_length: weapon.trail_length,
+                    burst_count: weapon.burst_count,
+                    travel_speed: weapon.travel_speed,
+                    projectile_texture,
+                    projectile_size: weapon.projectile_size,
+                    impact,
+                    splash_radius: weapon.splash_radius,
+                    splash_falloff,
+                    splash_min_multiplier: weapon.splash_min_multiplier,
+                    chain_targets: weapon.chain_targets,
+                    chain_range: weapon.chain_range,
+                    chain_damage_multiplier: weapon.chain_damage_multiplier,
+                    friendly_fire,
+                    fire_audio,
                     summary: weapon.summary,
                 },
             )
@@ -2376,6 +2766,14 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
     }
 
     let starter = read_optional_toml::<StarterFile>(&raw_pack.path.join("starter.toml"), errors);
+    if let Some(ship) = starter.ship {
+        let ship = namespaced_id(&pack_id, &ship);
+        if let Some(previous) = registry.starter_ship.replace(ship.clone()) {
+            registry.warnings.push(format!(
+                "Starter ship `{previous}` replaced by `{ship}` from pack `{pack_id}`"
+            ));
+        }
+    }
     for stack in starter.inventory {
         let stack = resolve_stack(&pack_id, stack);
         if stack.count == 0 {
@@ -2671,6 +3069,14 @@ fn parse_pack_option_default(
 }
 
 fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
+    if let Some(starter_ship) = registry.starter_ship.as_deref() {
+        if !registry.ships.contains_key(starter_ship) {
+            errors.push(format!(
+                "Starter configuration references missing ship `{starter_ship}`"
+            ));
+        }
+    }
+
     for recipe in registry.recipes.values() {
         if !registry.stations.contains_key(&recipe.station) {
             errors.push(format!(
@@ -2765,6 +3171,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
             &weapon.install_item,
             errors,
         );
+        if let Some(ammo_item) = weapon.ammo_item.as_deref() {
+            validate_reference(
+                registry.items.contains_key(ammo_item),
+                "Weapon",
+                &weapon.id,
+                "ammo item",
+                ammo_item,
+                errors,
+            );
+        }
     }
 
     for shield in registry.shields.values() {
@@ -3581,6 +3997,44 @@ fn resolve_texture_path(
     path.to_string_lossy().to_string()
 }
 
+fn resolve_asset_path(
+    pack_path: &Path,
+    asset: &str,
+    content_id: &str,
+    asset_kind: &str,
+    errors: &mut Vec<String>,
+) -> String {
+    let path = if asset.starts_with("./") || asset.starts_with("../") {
+        pack_path.join(asset)
+    } else if asset.starts_with("assets/") || asset.starts_with("content/") {
+        PathBuf::from(asset)
+    } else {
+        pack_path.join(asset)
+    };
+    if !path.is_file() {
+        errors.push(format!(
+            "Content `{content_id}` references missing {asset_kind} `{asset}`"
+        ));
+    }
+    path.to_string_lossy().to_string()
+}
+
+fn parse_hex_color(value: &str) -> Option<[u8; 4]> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 && hex.len() != 8 {
+        return None;
+    }
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    let alpha = if hex.len() == 8 {
+        u8::from_str_radix(&hex[6..8], 16).ok()?
+    } else {
+        255
+    };
+    Some([red, green, blue, alpha])
+}
+
 fn default_true() -> bool {
     true
 }
@@ -3660,7 +4114,7 @@ mod tests {
         let registry = load_content_packs(Path::new("content/packs"))
             .expect("core content pack should load and validate");
 
-        assert_eq!(registry.packs.len(), 2);
+        assert!(registry.packs.len() >= 3);
         assert!(registry
             .packs
             .iter()
@@ -3672,6 +4126,10 @@ mod tests {
                     .iter()
                     .any(|option| option.id == "remote-duskfall:redwake_hostility")
         }));
+        assert!(registry
+            .packs
+            .iter()
+            .any(|pack| pack.id == "turrets-galore"));
         assert!(registry.items.contains_key("core:iron_ore"));
         assert!(registry.items.contains_key("core:survey_drone"));
         assert!(registry.items.contains_key("core:point_defense_turret"));
@@ -3727,7 +4185,7 @@ mod tests {
                     && faction.tags.iter().any(|tag| tag == "raider")
                     && faction.tags.iter().any(|tag| tag == "probe")
             }));
-        assert_eq!(registry.npc_ships.len(), 4);
+        assert_eq!(registry.npc_ships.len(), 5);
         assert!(registry
             .npc_ships
             .get("remote-duskfall:redwake_remote_probe")
@@ -3762,6 +4220,12 @@ mod tests {
                     && weapon.cooldown_seconds == 1.4
                     && weapon.damage == 18.0
                     && weapon.energy_cost == 7.0
+                    && weapon.ammo_item.as_deref() == Some("core:interceptor_round")
+                    && weapon.ammo_per_shot == 1
+                    && weapon.projectile_size == 34.0
+                    && weapon.projectile_texture.as_deref().is_some_and(|texture| {
+                        texture.ends_with("core/./assets/projectiles/point-defense.png")
+                    })
             }));
         assert!(registry
             .shields
@@ -3787,10 +4251,16 @@ mod tests {
                     && npc_ship.credit_reward_min == 0
                     && npc_ship.credit_reward_max == 0
                     && npc_ship.cargo_defaults
-                        == [StackDef {
-                            item: "core:fuel_canister".to_string(),
-                            count: 1,
-                        }]
+                        == [
+                            StackDef {
+                                item: "core:fuel_canister".to_string(),
+                                count: 1,
+                            },
+                            StackDef {
+                                item: "core:interceptor_round".to_string(),
+                                count: 80,
+                            },
+                        ]
                     && npc_ship.shield_slots == ["core:balanced_shield_matrix"]
                     && npc_ship.weapon_slots == ["core:point_defense_turret"]
                     && npc_ship.texture.as_deref().is_some_and(|texture| {
@@ -3807,6 +4277,12 @@ mod tests {
                 texture.contains("content/packs/core/./assets/ships/redwake-raider.png")
             }));
         assert!(registry.recipes.contains_key("core:point_defense_turret"));
+        assert!(registry
+            .recipes
+            .get("core:interceptor_rounds")
+            .is_some_and(|recipe| {
+                recipe.output.item == "core:interceptor_round" && recipe.output.count == 20
+            }));
         assert!(registry.recipes.contains_key("core:balanced_shield_matrix"));
         assert!(registry.recipes.contains_key("core:hazard_shield_matrix"));
         assert_eq!(
@@ -4141,12 +4617,137 @@ mod tests {
             .starter_inventory
             .iter()
             .any(|stack| stack.item == "core:reactor_pellet" && stack.count == 3));
+        assert!(registry
+            .starter_inventory
+            .iter()
+            .any(|stack| stack.item == "core:interceptor_round" && stack.count == 120));
         assert!(!registry.warnings.iter().any(|warning| {
             warning.contains("station `core:processing`")
                 && warning.contains("output `core:reactor_pellet`")
                 && warning.contains("core:uranium_reactor_pellet")
                 && warning.contains("core:thorium_reactor_pellet")
         }));
+    }
+
+    #[test]
+    fn turrets_galore_is_a_pack_owned_weapon_proof() {
+        let registry = load_content_packs(Path::new("content/packs"))
+            .expect("reference turret pack should load and validate");
+
+        assert_eq!(
+            registry.starter_ship.as_deref(),
+            Some("turrets-galore:twinspire_gunship")
+        );
+        let twinspire = registry
+            .ships
+            .get("turrets-galore:twinspire_gunship")
+            .expect("pack-owned two-bank starter ship should load");
+        assert_eq!(twinspire.name, "Twinspire Gunship");
+        assert_eq!(
+            twinspire.weapon_slots,
+            [
+                "turrets-galore:ember_lance_turret",
+                "turrets-galore:sentinel_flak_turret"
+            ]
+        );
+        assert!(twinspire.texture.as_deref().is_some_and(
+            |path| path.ends_with("turrets-galore/./assets/ships/twinspire-gunship.png")
+        ));
+
+        let ember = registry
+            .weapons
+            .get("turrets-galore:ember_lance_turret")
+            .expect("pack-owned anti-ship turret should load");
+        assert_eq!(ember.install_item, "turrets-galore:ember_lance_turret");
+        assert_eq!(ember.targeting, WeaponTargeting::ShipsOnly);
+        assert_eq!(ember.effect, WeaponEffect::Beam);
+        assert_eq!(ember.beam_color, [255, 90, 50, 255]);
+        assert_eq!(ember.projectile_size, 54.0);
+        assert!(ember.projectile_texture.as_deref().is_some_and(
+            |path| path.ends_with("turrets-galore/./assets/projectiles/ember-lance.png")
+        ));
+        assert!(ember.fire_audio.as_deref().is_some_and(
+            |path| path.ends_with("turrets-galore/./assets/audio/ember-lance-fire.wav")
+        ));
+
+        let flak = registry
+            .weapons
+            .get("turrets-galore:sentinel_flak_turret")
+            .expect("pack-owned threat turret should load");
+        assert_eq!(flak.targeting, WeaponTargeting::AllHostiles);
+        assert_eq!(flak.effect, WeaponEffect::Burst);
+        assert_eq!(flak.burst_count, 5);
+        assert_eq!(flak.travel_speed, Some(900.0));
+        assert_eq!(
+            flak.ammo_item.as_deref(),
+            Some("turrets-galore:sentinel_flak_canister")
+        );
+        assert!(flak.projectile_texture.as_deref().is_some_and(
+            |path| path.ends_with("turrets-galore/./assets/projectiles/sentinel-flak.png")
+        ));
+        let chain = registry
+            .weapons
+            .get("turrets-galore:storm_chain_turret")
+            .expect("pack-owned chain turret should load");
+        assert_eq!(chain.impact, WeaponImpact::Chain);
+        assert_eq!(chain.chain_targets, 5);
+        assert_eq!(chain.chain_range, 260.0);
+        assert_eq!(chain.friendly_fire, FriendlyFire::HostilesOnly);
+        assert!(chain.projectile_texture.as_deref().is_some_and(
+            |path| path.ends_with("turrets-galore/./assets/projectiles/storm-chain.png")
+        ));
+
+        let nuke = registry
+            .weapons
+            .get("turrets-galore:super_nuke_turret")
+            .expect("pack-owned splash turret should load");
+        assert_eq!(nuke.impact, WeaponImpact::Splash);
+        assert_eq!(nuke.splash_radius, 520.0);
+        assert_eq!(nuke.splash_falloff, DamageFalloff::Linear);
+        assert_eq!(nuke.friendly_fire, FriendlyFire::HostilesOnly);
+        assert_eq!(
+            nuke.ammo_item.as_deref(),
+            Some("turrets-galore:super_nuke_warhead")
+        );
+        assert_eq!(nuke.projectile_size, 64.0);
+        assert!(nuke.projectile_texture.as_deref().is_some_and(
+            |path| path.ends_with("turrets-galore/./assets/projectiles/super-nuke.png")
+        ));
+        assert!(registry
+            .recipes
+            .contains_key("turrets-galore:ember_lance_turret"));
+        assert!(registry
+            .npc_ships
+            .get("turrets-galore:galore_proving_drone")
+            .is_some_and(|ship| ship.weapon_slots == ["turrets-galore:sentinel_flak_turret"]));
+        assert!(registry.starter_inventory.iter().any(|stack| {
+            stack.item == "turrets-galore:ember_lance_turret" && stack.count == 1
+        }));
+        assert!(registry.starter_inventory.iter().any(|stack| {
+            stack.item == "turrets-galore:sentinel_flak_turret" && stack.count == 1
+        }));
+        assert!(registry.starter_inventory.iter().any(|stack| {
+            stack.item == "turrets-galore:storm_chain_turret" && stack.count == 1
+        }));
+        assert!(registry
+            .starter_inventory
+            .iter()
+            .any(|stack| { stack.item == "turrets-galore:super_nuke_turret" && stack.count == 1 }));
+        assert!(registry.starter_inventory.iter().any(|stack| {
+            stack.item == "turrets-galore:sentinel_flak_canister" && stack.count == 150
+        }));
+        assert!(registry.starter_inventory.iter().any(|stack| {
+            stack.item == "turrets-galore:super_nuke_warhead" && stack.count == 4
+        }));
+
+        for path_type in [
+            "beam", "straight", "arc", "spiral", "zigzag", "homing", "burst",
+        ] {
+            assert!(
+                WeaponEffect::from_id(path_type).is_some(),
+                "{path_type} should be a supported content-pack path type"
+            );
+        }
     }
 
     #[test]
@@ -5134,6 +5735,7 @@ id = "point_defense"
 name = "Point Defense"
 kind = "turret_defense"
 install_item = "missing_turret_item"
+ammo_item = "missing_ammo"
 range = 300.0
 cooldown_seconds = 1.0
 damage = 12.0
@@ -5277,6 +5879,10 @@ weapon_slots = ["missing_npc_weapon"]
         assert!(errors.iter().any(|error| {
             error
                 == "Weapon `bad-ship-pack:point_defense` references missing install item `bad-ship-pack:missing_turret_item`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Weapon `bad-ship-pack:point_defense` references missing ammo item `bad-ship-pack:missing_ammo`"
         }));
         assert!(errors.iter().any(|error| {
             error == "Shield `bad-ship-pack:bad_shield` has damage resistance outside 0.0..1.0"

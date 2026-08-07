@@ -72,11 +72,15 @@ Game progress autosaves to `$XDG_CONFIG_HOME/some-frontier/save.toml`, or
 stores the world seed, ship state, inventory, completed and active research,
 upgrades, active destination, equipped shield and weapon slots, production
 settings, scanned planets, mining quotas, elapsed world time, and finite station
-market stock and restock schedules.
+market stock and restock schedules. The active content-defined ship ID is also
+saved, so its hull stats, art, and turret-bank capacity return with the loadout.
 
 New games generate a world seed that lightly rotates and offsets content-defined
 planet positions. Loading a save reuses its seed so the same world layout comes
-back every time.
+back every time. The expanded New Game screen presents every loaded
+content-defined player ship in a scrollable three-column grid. Each card loads
+the ship's pack-owned image and includes hull, shield, and turret-bank capacity,
+so the ship and world seed are selected together.
 
 ## Production and Mining
 
@@ -157,9 +161,18 @@ Ships can mount automatic defensive turrets through weapon slots. Turrets scan
 for hostile threats near the ship, fire when they are ready, and spend ship
 energy for each shot. They ignore neutral, owned, and environmental objects, and
 do not require manual targeting or a fire button. Weapon definitions are backed
-by inventory install items, so future equipment screens can swap crafted turret
-objects in and out of ship weapon slots while saves preserve the equipped weapon
-IDs.
+by inventory install items. Each `Turret Bank` exposes a `Turret List` dropdown
+populated from the player's inventory, allowing an exact turret to be selected
+while saves preserve bank positions and equipped weapon IDs. Content packs can
+define multi-turret ships by adding one default weapon per `weapon_slots` entry;
+the Turrets Galore pack initially highlights its two-bank Twinspire Gunship in
+the New Game picker while still allowing any loaded hull to be selected.
+Weapons can use beam, projectile, homing, burst, chain, splash, or combined chain-splash
+behavior; projectile damage resolves on impact and hostile-only friendly-fire
+safety is the default. Packs may also provide transparent projectile sprites;
+the engine points each image along its configured flight path. Physical weapons
+can consume pack-defined, craftable ammunition from player inventory or NPC
+cargo, while energy weapons remain power-only.
 
 ## Content Debugging
 

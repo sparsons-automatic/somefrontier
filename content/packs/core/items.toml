@@ -305,6 +305,12 @@ tier = "component"
 unit_mass = 1.5
 
 [[items]]
+id = "interceptor_round"
+name = "Interceptor round"
+tier = "ammunition"
+unit_mass = 0.8
+
+[[items]]
 id = "survey_drone"
 name = "Survey drone"
 tier = "utility"

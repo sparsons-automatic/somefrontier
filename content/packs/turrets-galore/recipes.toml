@@ -1,0 +1,68 @@
+[[recipes]]
+id = "ember_lance_turret"
+station = "core:crafting"
+output = { item = "ember_lance_turret", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 2 },
+  { item = "core:circuit", count = 2 },
+  { item = "core:structural_alloy", count = 2 },
+  { item = "core:copper_wire", count = 6 },
+]
+purpose = "Pack-defined high-energy anti-ship turret."
+
+[[recipes]]
+id = "sentinel_flak_turret"
+station = "core:crafting"
+output = { item = "sentinel_flak_turret", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 1 },
+  { item = "core:gear", count = 3 },
+  { item = "core:copper_wire", count = 4 },
+]
+purpose = "Pack-defined rapid defensive interceptor turret."
+
+[[recipes]]
+id = "storm_chain_turret"
+station = "core:crafting"
+output = { item = "storm_chain_turret", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 3 },
+  { item = "core:circuit", count = 2 },
+  { item = "core:copper_wire", count = 8 },
+]
+purpose = "Pack-defined turret that chains between nearby hostile ships."
+
+[[recipes]]
+id = "super_nuke_turret"
+station = "core:crafting"
+output = { item = "super_nuke_turret", count = 1 }
+ingredients = [
+  { item = "core:electronics", count = 4 },
+  { item = "core:circuit", count = 4 },
+  { item = "core:structural_alloy", count = 8 },
+  { item = "core:copper_wire", count = 12 },
+]
+purpose = "Pack-defined heavy turret with a vast hostile-only blast radius."
+
+[[recipes]]
+id = "sentinel_flak_canisters"
+station = "core:crafting"
+output = { item = "sentinel_flak_canister", count = 30 }
+ingredients = [
+  { item = "core:iron_plate", count = 1 },
+  { item = "core:gear", count = 1 },
+  { item = "core:sulfur", count = 1 },
+]
+purpose = "Fragmenting canisters for Sentinel flak turrets."
+
+[[recipes]]
+id = "super_nuke_warheads"
+station = "core:crafting"
+output = { item = "super_nuke_warhead", count = 2 }
+ingredients = [
+  { item = "core:structural_alloy", count = 2 },
+  { item = "core:circuit", count = 1 },
+  { item = "core:uranium_ore", count = 2 },
+  { item = "core:sulfur", count = 2 },
+]
+purpose = "Armored guided warheads for the SUPER NUKE turret."

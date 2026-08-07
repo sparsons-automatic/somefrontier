@@ -345,3 +345,14 @@ ingredients = [
   { item = "core:eldridium_nodule", count = 1 },
 ]
 purpose = "Late-game jump system component."
+
+[[recipes]]
+id = "interceptor_rounds"
+station = "crafting"
+output = { item = "core:interceptor_round", count = 20 }
+ingredients = [
+  { item = "core:iron_plate", count = 1 },
+  { item = "core:copper_wire", count = 2 },
+  { item = "core:electronics", count = 1 },
+]
+purpose = "Guided kinetic ammunition for point-defense turrets."

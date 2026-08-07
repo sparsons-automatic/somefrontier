@@ -1,0 +1,35 @@
+[[items]]
+id = "ember_lance_turret"
+name = "Ember Lance turret"
+tier = "weapon"
+unit_mass = 210.0
+
+[[items]]
+id = "sentinel_flak_turret"
+name = "Sentinel flak turret"
+tier = "weapon"
+unit_mass = 165.0
+
+[[items]]
+id = "storm_chain_turret"
+name = "Storm chain turret"
+tier = "weapon"
+unit_mass = 190.0
+
+[[items]]
+id = "super_nuke_turret"
+name = "SUPER NUKE turret"
+tier = "weapon"
+unit_mass = 480.0
+
+[[items]]
+id = "sentinel_flak_canister"
+name = "Sentinel flak canister"
+tier = "ammunition"
+unit_mass = 1.2
+
+[[items]]
+id = "super_nuke_warhead"
+name = "SUPER NUKE warhead"
+tier = "ammunition"
+unit_mass = 45.0
