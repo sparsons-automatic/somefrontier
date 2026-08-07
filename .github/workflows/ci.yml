@@ -21,6 +21,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install native audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev
+
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2.9.1
 
