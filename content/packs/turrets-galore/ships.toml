@@ -1,0 +1,16 @@
+[[ships]]
+id = "twinspire_gunship"
+name = "Twinspire Gunship"
+texture = "./assets/ships/twinspire-gunship.png"
+mass = 72000.0
+forward_acceleration = 385.0
+reverse_acceleration = 245.0
+turn_acceleration = 4.3
+energy_capacity = 135.0
+energy_recharge = 11.0
+linear_drag = 0.984
+hull_capacity = 125.0
+shield_capacity = 110.0
+power_modules = ["core:compact_fission_cell"]
+shield_slots = ["core:balanced_shield_matrix"]
+weapon_slots = ["ember_lance_turret", "sentinel_flak_turret"]

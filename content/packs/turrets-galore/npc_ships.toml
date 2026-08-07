@@ -1,0 +1,25 @@
+[[npc_ships]]
+id = "galore_proving_drone"
+name = "Galore Proving Drone"
+texture = "content/packs/core/assets/ships/npc-scout-01.png"
+system = "core:frontier"
+position = [-560.0, -760.0]
+radius = 22.0
+archetype = "turret-test-drone"
+role = "patrol"
+faction = "core:cinder_cooperative"
+behavior_tags = ["security", "patrol", "non-hostile"]
+spawn_weight = 0.25
+spawn_count = 1
+mass = 17000.0
+cargo_capacity = 900.0
+cargo_defaults = [
+  { item = "sentinel_flak_canister", count = 90 },
+]
+credit_reward_min = 0
+credit_reward_max = 0
+hull_capacity = 44.0
+shield_capacity = 16.0
+energy_capacity = 75.0
+weapon_slots = ["sentinel_flak_turret"]
+summary = "A friendly test drone mounting a turret defined entirely by Turrets Galore."

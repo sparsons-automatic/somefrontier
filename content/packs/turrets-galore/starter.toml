@@ -1,0 +1,10 @@
+ship = "twinspire_gunship"
+
+inventory = [
+  { item = "ember_lance_turret", count = 1 },
+  { item = "sentinel_flak_turret", count = 1 },
+  { item = "storm_chain_turret", count = 1 },
+  { item = "super_nuke_turret", count = 1 },
+  { item = "sentinel_flak_canister", count = 150 },
+  { item = "super_nuke_warhead", count = 4 },
+]

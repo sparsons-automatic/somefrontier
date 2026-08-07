@@ -7,7 +7,7 @@ use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -23,6 +23,9 @@ const TITLE_PANEL_CONTENT_PAD_X: f32 = 56.0;
 const TITLE_PANEL_HEADER_BASELINE: f32 = 76.0;
 const TITLE_PANEL_SUBHEADER_BASELINE: f32 = 106.0;
 const TITLE_PANEL_BODY_TOP: f32 = 128.0;
+const TITLE_SHIP_GRID_COLUMNS: usize = 3;
+const TITLE_SHIP_CARD_HEIGHT: f32 = 218.0;
+const TITLE_SHIP_CARD_GAP: f32 = 14.0;
 const GAME_PANEL_CONTENT_PAD_X: f32 = 56.0;
 const GAME_PANEL_HEADER_PAD_X: f32 = 92.0;
 const GAME_PANEL_HEADER_BASELINE: f32 = 62.0;
@@ -86,6 +89,7 @@ const OBJECT_ACTION_RAIL_MIN_WIDTH: f32 = 280.0;
 const OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION: f32 = 0.55;
 const OBJECT_ACTION_RAIL_GAP: f32 = 8.0;
 const ACTION_RAIL_RESIZE_HITBOX_WIDTH: f32 = 28.0;
+const INVENTORY_OVERLAY_SCREEN_MARGIN: f32 = 8.0;
 const DEBUG_CONSOLE_DEFAULT_HEIGHT: f32 = 280.0;
 const DEBUG_CONSOLE_MIN_HEIGHT: f32 = 180.0;
 const DEBUG_CONSOLE_MAX_SCREEN_FRACTION: f32 = 0.82;
@@ -192,6 +196,7 @@ struct GameState {
     world_seed: u64,
     world_elapsed_days: f32,
     credits: u32,
+    ship_id: String,
     ship: Ship,
     installed_power_modules: Vec<PowerModule>,
     equipped_shields: Vec<ShieldSystem>,
@@ -201,6 +206,8 @@ struct GameState {
     collision_impact_events: Vec<CollisionImpactEvent>,
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
+    weapon_area_effect_events: Vec<WeaponAreaEffectEvent>,
+    weapon_projectile_textures: HashMap<String, Texture2D>,
     ship_texture: Option<Texture2D>,
     system_light_haze_texture: Option<Texture2D>,
     system_stars: Vec<SystemStar>,
@@ -226,6 +233,7 @@ struct GameState {
     starmap_drag_previous_mouse: Option<Vec2>,
     action_rail_width_override: Option<f32>,
     action_rail_resize_previous_mouse: Option<Vec2>,
+    open_turret_bank: Option<usize>,
     inventory: Inventory,
     smelt_recipes: Vec<Recipe>,
     smelt_settings: Vec<CraftSetting>,
@@ -356,13 +364,17 @@ enum SaveFeedback {
 }
 
 enum AppState {
-    Title(TitleMenu),
+    Title(Box<TitleMenu>),
     Playing(Box<GameState>),
 }
 
 struct TitleMenu {
     view: TitleView,
     new_game_seed_text: String,
+    ships: Vec<TitleShip>,
+    selected_ship_index: usize,
+    ship_grid_scroll: f32,
+    ship_textures: HashMap<String, TitleShipPreview>,
     save_slots: Vec<TitleSaveSlot>,
     selected_save_index: usize,
     save_slots_scroll: f32,
@@ -374,6 +386,21 @@ struct TitleMenu {
     selected_pack_index: usize,
     settings: AppSettings,
     selected_settings_category: SettingsCategory,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TitleShip {
+    id: String,
+    name: String,
+    texture: Option<String>,
+    hull_capacity: f32,
+    shield_capacity: f32,
+    weapon_banks: usize,
+}
+
+struct TitleShipPreview {
+    texture: Texture2D,
+    source: Rect,
 }
 
 struct TitleSaveSlot {
@@ -417,6 +444,7 @@ enum TitleView {
 enum GameStartMode {
     NewGame {
         seed: u64,
+        ship_id: String,
         pack_options: Vec<PackOptionSelection>,
     },
     LoadGame {
@@ -533,6 +561,7 @@ struct DebugConsole {
 enum TitleAction {
     NewGame {
         seed: u64,
+        ship_id: String,
         pack_options: Vec<PackOptionSelection>,
     },
     LoadGame {
@@ -613,6 +642,7 @@ struct ShieldSystem {
 #[derive(Clone)]
 struct WeaponSystem {
     id: String,
+    resolved: bool,
     name: String,
     kind: content::WeaponKind,
     install_item: String,
@@ -620,7 +650,32 @@ struct WeaponSystem {
     cooldown_seconds: f32,
     damage: f32,
     energy_cost: f32,
+    ammo_item: Option<String>,
+    ammo_per_shot: u32,
     tracking_degrees: f32,
+    targeting: content::WeaponTargeting,
+    effect: content::WeaponEffect,
+    beam_color: [u8; 4],
+    core_color: [u8; 4],
+    impact_color: [u8; 4],
+    fire_duration_seconds: f32,
+    path_curve_strength: f32,
+    path_wobble: f32,
+    path_cycles: f32,
+    trail_length: f32,
+    burst_count: u8,
+    travel_speed: Option<f32>,
+    projectile_texture: Option<String>,
+    projectile_size: f32,
+    impact: content::WeaponImpact,
+    splash_radius: f32,
+    splash_falloff: content::DamageFalloff,
+    splash_min_multiplier: f32,
+    chain_targets: u8,
+    chain_range: f32,
+    chain_damage_multiplier: f32,
+    friendly_fire: content::FriendlyFire,
+    fire_audio: Option<String>,
     cooldown_remaining: f32,
     status: WeaponStatus,
 }
@@ -631,6 +686,7 @@ enum WeaponStatus {
     NoThreat,
     Cooldown,
     InsufficientEnergy,
+    OutOfAmmo,
     Fired,
 }
 
@@ -652,11 +708,63 @@ enum ThreatDisposition {
     Environmental,
 }
 
+#[derive(Clone)]
 struct WeaponFireEvent {
     from: Vec2,
     to: Vec2,
     timer: f32,
+    duration: f32,
+    effect: content::WeaponEffect,
+    beam_color: [u8; 4],
+    core_color: [u8; 4],
+    impact_color: [u8; 4],
+    path_curve_strength: f32,
+    path_wobble: f32,
+    path_cycles: f32,
+    trail_length: f32,
+    burst_count: u8,
+    projectile_texture: Option<String>,
+    projectile_size: f32,
     origin: WeaponFireOrigin,
+    pending_impact: Option<PendingWeaponImpact>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+enum WeaponTargetRef {
+    Player,
+    Npc(String),
+    Threat(String),
+}
+
+#[derive(Clone)]
+enum WeaponImpactOwner {
+    Player,
+    Npc { id: String, hostile: bool },
+}
+
+#[derive(Clone)]
+struct PendingWeaponImpact {
+    owner: WeaponImpactOwner,
+    primary_target: WeaponTargetRef,
+    system: String,
+    damage: f32,
+    targeting: content::WeaponTargeting,
+    impact: content::WeaponImpact,
+    splash_radius: f32,
+    splash_falloff: content::DamageFalloff,
+    splash_min_multiplier: f32,
+    chain_targets: u8,
+    chain_range: f32,
+    chain_damage_multiplier: f32,
+    friendly_fire: content::FriendlyFire,
+}
+
+struct WeaponAreaEffectEvent {
+    position: Vec2,
+    radius: f32,
+    timer: f32,
+    duration: f32,
+    color: [u8; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1015,6 +1123,8 @@ struct SaveData {
     camera_zoom: f32,
     #[serde(default = "default_credits")]
     credits: u32,
+    #[serde(default = "default_starter_ship_id")]
+    ship_id: String,
     ship: SaveShip,
     inventory: Vec<SaveStack>,
     upgrades: Vec<SaveUpgrade>,
@@ -1029,6 +1139,8 @@ struct SaveData {
     shield_recharge_delay_remaining: f32,
     #[serde(default)]
     weapon_slots: Vec<String>,
+    #[serde(default)]
+    weapon_slot_loadout: Vec<Option<String>>,
     #[serde(default)]
     market_offers: Vec<SaveMarketOffer>,
     #[serde(default)]
@@ -1279,6 +1391,10 @@ impl GameState {
             GameStartMode::NewGame { pack_options, .. } => pack_options.clone(),
             GameStartMode::LoadGame { .. } => Vec::new(),
         };
+        let requested_new_game_ship = match &start_mode {
+            GameStartMode::NewGame { ship_id, .. } => Some(ship_id.as_str()),
+            GameStartMode::LoadGame { .. } => None,
+        };
         let content_registry = load_game_content_registry_with_options(&start_pack_options);
 
         draw_startup_transition(None, "Loading save data ...", 1.0);
@@ -1343,25 +1459,39 @@ impl GameState {
                 .map(|save| save.faction_reputation.as_slice()),
         );
 
+        let active_ship_id = if let Some(save) = save_data.as_ref() {
+            if content_registry.ships.contains_key(&save.ship_id) {
+                save.ship_id.clone()
+            } else {
+                default_starter_ship_id()
+            }
+        } else {
+            resolved_new_game_ship_id(&content_registry, requested_new_game_ship)
+        };
+        let active_ship_def = content_registry.ships.get(&active_ship_id).cloned();
+        let active_ship_name = active_ship_def
+            .as_ref()
+            .map(|ship| ship.name.as_str())
+            .unwrap_or(active_ship_id.as_str());
         draw_startup_transition_assets(
             &transition_assets,
             startup_preferred_transition_id,
-            "Loading ship asset ... frontier_cargo_ship_01",
+            &format!("Loading ship asset ... {active_ship_name}"),
             1.0,
         );
         remote_audio_startup.draw_overlay();
         next_frame().await;
-        let starter_ship_def = content_registry.ships.get(STARTER_SHIP_ID).cloned();
-        let ship_texture_path = starter_ship_def
+        let ship_texture_path = active_ship_def
             .as_ref()
             .and_then(|ship| ship.texture.as_deref());
         let ship_texture = if let Some(texture_path) = ship_texture_path {
             load_asset_texture(texture_path).await
         } else {
-            eprintln!("Starter ship `{STARTER_SHIP_ID}` has no texture");
+            eprintln!("Active ship `{active_ship_id}` has no texture");
             None
         };
         let system_light_haze_texture = Some(make_system_light_haze_texture());
+        let weapon_projectile_textures = load_weapon_projectile_textures(&content_registry).await;
         let system_stars = make_system_stars(&content_registry);
         let planets = make_planets(
             &content_registry,
@@ -1386,15 +1516,15 @@ impl GameState {
         )
         .await;
         let recipe_vendor_locked_recipes = research_locked_recipes(&content_registry, &stations);
-        let installed_power_modules = starter_ship_def
+        let installed_power_modules = active_ship_def
             .as_ref()
             .map(|ship| installed_power_modules_from_ids(&content_registry, &ship.power_modules))
             .unwrap_or_default();
-        let equipped_shields = starter_ship_def
+        let equipped_shields = active_ship_def
             .as_ref()
             .map(|ship| equipped_shields_from_ids(&content_registry, &ship.shield_slots))
             .unwrap_or_default();
-        let equipped_weapons = starter_ship_def
+        let equipped_weapons = active_ship_def
             .as_ref()
             .map(|ship| equipped_weapons_from_ids(&content_registry, &ship.weapon_slots))
             .unwrap_or_default();
@@ -1412,7 +1542,8 @@ impl GameState {
             world_seed,
             world_elapsed_days: 0.0,
             credits,
-            ship: starter_ship_def
+            ship_id: active_ship_id,
+            ship: active_ship_def
                 .as_ref()
                 .map(Ship::from_content)
                 .unwrap_or_else(Ship::starter),
@@ -1424,6 +1555,8 @@ impl GameState {
             collision_impact_events: Vec::new(),
             defense_threats,
             weapon_fire_events: Vec::new(),
+            weapon_area_effect_events: Vec::new(),
+            weapon_projectile_textures,
             ship_texture,
             system_light_haze_texture,
             system_stars,
@@ -1449,6 +1582,7 @@ impl GameState {
             starmap_drag_previous_mouse: None,
             action_rail_width_override: None,
             action_rail_resize_previous_mouse: None,
+            open_turret_bank: None,
             inventory,
             smelt_recipes,
             smelt_settings,
@@ -1507,6 +1641,14 @@ impl GameState {
             read_app_settings().master_volume,
         )
         .await;
+        game.audio
+            .load_custom_paths(
+                game.content_registry
+                    .weapons
+                    .values()
+                    .filter_map(|weapon| weapon.fire_audio.as_deref()),
+            )
+            .await;
         game.audio.play(audio::AudioCue::Ready);
         run_startup_transition_out(&game.transition_assets, startup_preferred_transition_id).await;
         game
@@ -1556,6 +1698,17 @@ impl GameState {
         };
         self.camera_zoom = finite_or(save.camera_zoom, default_camera_zoom())
             .clamp(CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+        self.ship_id = if self.content_registry.ships.contains_key(&save.ship_id) {
+            save.ship_id.clone()
+        } else {
+            default_starter_ship_id()
+        };
+        self.ship = self
+            .content_registry
+            .ships
+            .get(&self.ship_id)
+            .map(Ship::from_content)
+            .unwrap_or_else(Ship::starter);
         self.ship.position = vec2(
             finite_or(save.ship.position[0], 0.0),
             finite_or(save.ship.position[1], 0.0),
@@ -1570,19 +1723,21 @@ impl GameState {
         self.ship.systems.shields = ShipResource::from_save(save.ship.shields);
         self.ship.systems.energy = ShipResource::from_save(save.ship.energy);
         self.installed_power_modules = if save.installed_power_modules.is_empty() {
-            default_installed_power_modules(&self.content_registry)
+            default_installed_power_modules(&self.content_registry, &self.ship_id)
         } else {
             installed_power_modules_from_ids(&self.content_registry, &save.installed_power_modules)
         };
         self.equipped_shields = if save.shield_slots.is_empty() {
-            default_equipped_shields(&self.content_registry)
+            default_equipped_shields(&self.content_registry, &self.ship_id)
         } else {
             equipped_shields_from_ids(&self.content_registry, &save.shield_slots)
         };
         self.shield_recharge_delay_remaining =
             finite_nonnegative_or(save.shield_recharge_delay_remaining, 0.0);
-        self.equipped_weapons = if save.weapon_slots.is_empty() {
-            default_equipped_weapons(&self.content_registry)
+        self.equipped_weapons = if !save.weapon_slot_loadout.is_empty() {
+            equipped_weapons_from_slot_ids(&self.content_registry, &save.weapon_slot_loadout)
+        } else if save.weapon_slots.is_empty() {
+            default_equipped_weapons(&self.content_registry, &self.ship_id)
         } else {
             equipped_weapons_from_ids(&self.content_registry, &save.weapon_slots)
         };
@@ -1665,6 +1820,7 @@ impl GameState {
             camera_zoom: finite_or(self.camera_zoom, default_camera_zoom())
                 .clamp(CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX),
             credits: self.credits,
+            ship_id: self.ship_id.clone(),
             ship: SaveShip {
                 position: [
                     finite_or(self.ship.position.x, 0.0),
@@ -1712,10 +1868,11 @@ impl GameState {
                 self.shield_recharge_delay_remaining,
                 0.0,
             ),
-            weapon_slots: self
+            weapon_slots: Vec::new(),
+            weapon_slot_loadout: self
                 .equipped_weapons
                 .iter()
-                .map(|weapon| weapon.id.clone())
+                .map(|weapon| (!weapon.id.is_empty()).then(|| weapon.id.clone()))
                 .collect(),
             market_offers: save_market_offers(&self.stations),
             npc_cargo: save_npc_cargo(&self.npc_ships),
@@ -1786,7 +1943,7 @@ impl GameState {
 
     fn rebuild_ship_from_upgrades(&mut self) {
         let systems = self.ship.systems;
-        if let Some(starter_ship) = self.content_registry.ships.get(STARTER_SHIP_ID) {
+        if let Some(starter_ship) = self.content_registry.ships.get(&self.ship_id) {
             self.ship.attributes = ShipAttributes::from_content(starter_ship);
             self.ship.systems = ShipSystems::from_content(starter_ship, self.ship.attributes);
         } else {
@@ -1794,7 +1951,7 @@ impl GameState {
             self.ship.systems = ShipSystems::starter(self.ship.attributes);
         }
         if self.equipped_shields.is_empty() {
-            self.equipped_shields = default_equipped_shields(&self.content_registry);
+            self.equipped_shields = default_equipped_shields(&self.content_registry, &self.ship_id);
         }
         self.ship.systems.shields.max = active_shield_capacity(self);
         for upgrade in self.ship_upgrades {
@@ -1818,7 +1975,7 @@ impl GameState {
             .min(self.ship.systems.energy.max)
             .max(0.0);
         if self.equipped_weapons.is_empty() {
-            self.equipped_weapons = default_equipped_weapons(&self.content_registry);
+            self.equipped_weapons = default_equipped_weapons(&self.content_registry, &self.ship_id);
         }
     }
 }
@@ -2389,7 +2546,6 @@ fn apply_market_save(
 fn save_npc_cargo(npc_ships: &[NpcShip]) -> Vec<SaveNpcCargo> {
     npc_ships
         .iter()
-        .filter(|npc| !npc.cargo_defaults.is_empty())
         .map(|npc| SaveNpcCargo {
             npc: npc.id.clone(),
             cargo: npc
@@ -2796,6 +2952,28 @@ async fn load_asset_texture(path: &str) -> Option<Texture2D> {
     }
 }
 
+async fn load_weapon_projectile_textures(
+    registry: &content::ContentRegistry,
+) -> HashMap<String, Texture2D> {
+    let mut paths = registry
+        .weapons
+        .values()
+        .filter_map(|weapon| weapon.projectile_texture.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+
+    let mut textures = HashMap::new();
+    for path in paths {
+        if let Some(texture) = load_asset_texture(&path).await {
+            textures.insert(path, texture);
+        } else {
+            eprintln!("Unable to load weapon projectile texture `{path}`");
+        }
+    }
+    textures
+}
+
 fn make_system_light_haze_texture() -> Texture2D {
     let size = 512_u16;
     let center = (size as f32 - 1.0) * 0.5;
@@ -3199,6 +3377,7 @@ impl WeaponSystem {
     fn from_def(weapon: &content::WeaponDef) -> Self {
         Self {
             id: weapon.id.clone(),
+            resolved: true,
             name: weapon.name.clone(),
             kind: weapon.kind,
             install_item: weapon.install_item.clone(),
@@ -3206,7 +3385,78 @@ impl WeaponSystem {
             cooldown_seconds: weapon.cooldown_seconds,
             damage: weapon.damage,
             energy_cost: weapon.energy_cost,
+            ammo_item: weapon.ammo_item.clone(),
+            ammo_per_shot: weapon.ammo_per_shot,
             tracking_degrees: weapon.tracking_degrees,
+            targeting: weapon.targeting,
+            effect: weapon.effect,
+            beam_color: weapon.beam_color,
+            core_color: weapon.core_color,
+            impact_color: weapon.impact_color,
+            fire_duration_seconds: weapon.fire_duration_seconds,
+            path_curve_strength: weapon.path_curve_strength,
+            path_wobble: weapon.path_wobble,
+            path_cycles: weapon.path_cycles,
+            trail_length: weapon.trail_length,
+            burst_count: weapon.burst_count,
+            travel_speed: weapon.travel_speed,
+            projectile_texture: weapon.projectile_texture.clone(),
+            projectile_size: weapon.projectile_size,
+            impact: weapon.impact,
+            splash_radius: weapon.splash_radius,
+            splash_falloff: weapon.splash_falloff,
+            splash_min_multiplier: weapon.splash_min_multiplier,
+            chain_targets: weapon.chain_targets,
+            chain_range: weapon.chain_range,
+            chain_damage_multiplier: weapon.chain_damage_multiplier,
+            friendly_fire: weapon.friendly_fire,
+            fire_audio: weapon.fire_audio.clone(),
+            cooldown_remaining: 0.0,
+            status: WeaponStatus::Ready,
+        }
+    }
+
+    fn empty() -> Self {
+        Self::unresolved(String::new())
+    }
+
+    fn unresolved(id: String) -> Self {
+        Self {
+            id,
+            resolved: false,
+            name: "Unavailable weapon".to_string(),
+            kind: content::WeaponKind::TurretDefense,
+            install_item: String::new(),
+            range: 0.0,
+            cooldown_seconds: 0.0,
+            damage: 0.0,
+            energy_cost: 0.0,
+            ammo_item: None,
+            ammo_per_shot: 1,
+            tracking_degrees: 0.0,
+            targeting: content::WeaponTargeting::AllHostiles,
+            effect: content::WeaponEffect::Arc,
+            beam_color: [61, 178, 255, 255],
+            core_color: [184, 245, 255, 255],
+            impact_color: [143, 235, 255, 255],
+            fire_duration_seconds: WEAPON_FIRE_EVENT_SECONDS,
+            path_curve_strength: 0.18,
+            path_wobble: 8.0,
+            path_cycles: 3.0,
+            trail_length: 0.4,
+            burst_count: 3,
+            travel_speed: None,
+            projectile_texture: None,
+            projectile_size: 28.0,
+            impact: content::WeaponImpact::Single,
+            splash_radius: 0.0,
+            splash_falloff: content::DamageFalloff::Linear,
+            splash_min_multiplier: 0.2,
+            chain_targets: 3,
+            chain_range: 240.0,
+            chain_damage_multiplier: 0.75,
+            friendly_fire: content::FriendlyFire::HostilesOnly,
+            fire_audio: None,
             cooldown_remaining: 0.0,
             status: WeaponStatus::Ready,
         }
@@ -3218,6 +3468,7 @@ impl WeaponSystem {
             WeaponStatus::NoThreat => "no threats",
             WeaponStatus::Cooldown => "cooldown",
             WeaponStatus::InsufficientEnergy => "low energy",
+            WeaponStatus::OutOfAmmo => "out of ammo",
             WeaponStatus::Fired => "fired",
         }
     }
@@ -3247,6 +3498,24 @@ fn required_item(content_registry: &content::ContentRegistry, item_id: &str) -> 
         .unwrap_or_else(|| panic!("Required item `{item_id}` is missing from the content registry"))
 }
 
+fn player_weapon_ammo_count(inventory: &Inventory, weapon: &WeaponSystem) -> Option<u32> {
+    weapon
+        .ammo_item
+        .as_deref()
+        .map(|ammo_item| inventory.count_id(ammo_item))
+}
+
+fn npc_weapon_ammo_count(npc_ship: &NpcShip, weapon: &WeaponSystem) -> Option<u32> {
+    weapon.ammo_item.as_deref().map(|ammo_item| {
+        npc_ship
+            .cargo_defaults
+            .iter()
+            .filter(|stack| stack.item.id == ammo_item)
+            .map(|stack| stack.count)
+            .sum()
+    })
+}
+
 fn installed_power_modules_from_ids(
     content_registry: &content::ContentRegistry,
     module_ids: &[String],
@@ -3264,10 +3533,11 @@ fn installed_power_modules_from_ids(
 
 fn default_installed_power_modules(
     content_registry: &content::ContentRegistry,
+    ship_id: &str,
 ) -> Vec<PowerModule> {
     content_registry
         .ships
-        .get(STARTER_SHIP_ID)
+        .get(ship_id)
         .map(|ship| installed_power_modules_from_ids(content_registry, &ship.power_modules))
         .unwrap_or_default()
 }
@@ -3287,10 +3557,13 @@ fn equipped_shields_from_ids(
         .collect()
 }
 
-fn default_equipped_shields(content_registry: &content::ContentRegistry) -> Vec<ShieldSystem> {
+fn default_equipped_shields(
+    content_registry: &content::ContentRegistry,
+    ship_id: &str,
+) -> Vec<ShieldSystem> {
     content_registry
         .ships
-        .get(STARTER_SHIP_ID)
+        .get(ship_id)
         .map(|ship| equipped_shields_from_ids(content_registry, &ship.shield_slots))
         .unwrap_or_default()
 }
@@ -3301,19 +3574,38 @@ fn equipped_weapons_from_ids(
 ) -> Vec<WeaponSystem> {
     weapon_ids
         .iter()
-        .filter_map(|weapon_id| {
-            content_registry
-                .weapons
-                .get(weapon_id)
-                .map(WeaponSystem::from_def)
+        .map(|weapon_id| {
+            content_registry.weapons.get(weapon_id).map_or_else(
+                || WeaponSystem::unresolved(weapon_id.clone()),
+                WeaponSystem::from_def,
+            )
         })
         .collect()
 }
 
-fn default_equipped_weapons(content_registry: &content::ContentRegistry) -> Vec<WeaponSystem> {
+fn equipped_weapons_from_slot_ids(
+    content_registry: &content::ContentRegistry,
+    weapon_ids: &[Option<String>],
+) -> Vec<WeaponSystem> {
+    weapon_ids
+        .iter()
+        .map(|weapon_id| match weapon_id {
+            Some(weapon_id) => content_registry.weapons.get(weapon_id).map_or_else(
+                || WeaponSystem::unresolved(weapon_id.clone()),
+                WeaponSystem::from_def,
+            ),
+            None => WeaponSystem::empty(),
+        })
+        .collect()
+}
+
+fn default_equipped_weapons(
+    content_registry: &content::ContentRegistry,
+    ship_id: &str,
+) -> Vec<WeaponSystem> {
     content_registry
         .ships
-        .get(STARTER_SHIP_ID)
+        .get(ship_id)
         .map(|ship| equipped_weapons_from_ids(content_registry, &ship.weapon_slots))
         .unwrap_or_default()
 }
@@ -3335,7 +3627,7 @@ enum ShieldInstallError {
 fn shield_slot_capacity(game: &GameState) -> usize {
     game.content_registry
         .ships
-        .get(STARTER_SHIP_ID)
+        .get(&game.ship_id)
         .map(|ship| ship.shield_slots.len())
         .unwrap_or(0)
         .max(game.equipped_shields.len())
@@ -3391,7 +3683,7 @@ fn install_shield_in_slot(
 fn weapon_slot_capacity(game: &GameState) -> usize {
     game.content_registry
         .ships
-        .get(STARTER_SHIP_ID)
+        .get(&game.ship_id)
         .map(|ship| ship.weapon_slots.len())
         .unwrap_or(0)
         .max(game.equipped_weapons.len())
@@ -3409,7 +3701,7 @@ fn install_weapon_in_slot(
     if game
         .equipped_weapons
         .get(slot_index)
-        .is_some_and(|weapon| weapon.id == weapon_id)
+        .is_some_and(|weapon| weapon.resolved && weapon.id == weapon_id)
     {
         return Ok(());
     }
@@ -3423,7 +3715,11 @@ fn install_weapon_in_slot(
     }
 
     game.inventory.remove_item(&install_item, 1);
-    if let Some(previous_weapon) = game.equipped_weapons.get(slot_index) {
+    if let Some(previous_weapon) = game
+        .equipped_weapons
+        .get(slot_index)
+        .filter(|weapon| weapon.resolved)
+    {
         let previous_item = required_item(&game.content_registry, &previous_weapon.install_item);
         game.inventory.add_item(previous_item, 1);
     }
@@ -3432,6 +3728,8 @@ fn install_weapon_in_slot(
     if slot_index < game.equipped_weapons.len() {
         game.equipped_weapons[slot_index] = installed_weapon;
     } else {
+        game.equipped_weapons
+            .resize_with(slot_index, WeaponSystem::empty);
         game.equipped_weapons.push(installed_weapon);
     }
     game.save_dirty = true;
@@ -4440,10 +4738,14 @@ impl Inventory {
     }
 
     fn count(&self, item: &ItemRef) -> u32 {
+        self.count_id(&item.id)
+    }
+
+    fn count_id(&self, item_id: &str) -> u32 {
         self.slots
             .iter()
             .filter_map(|slot| slot.as_ref())
-            .filter(|stack| stack.item.id == item.id)
+            .filter(|stack| stack.item.id == item_id)
             .map(|stack| stack.count)
             .sum()
     }
@@ -4475,14 +4777,18 @@ impl Inventory {
         true
     }
 
-    fn remove_item(&mut self, item: &ItemRef, mut count: u32) {
+    fn remove_item(&mut self, item: &ItemRef, count: u32) {
+        self.remove_item_id(&item.id, count);
+    }
+
+    fn remove_item_id(&mut self, item_id: &str, mut count: u32) {
         for slot in &mut self.slots {
             if count == 0 {
                 return;
             }
 
             if let Some(stack) = slot {
-                if stack.item.id == item.id {
+                if stack.item.id == item_id {
                     let removed = stack.count.min(count);
                     stack.count -= removed;
                     count -= removed;
@@ -5577,11 +5883,12 @@ async fn main() {
             .map(|path| GameStartMode::LoadGame { path })
             .unwrap_or_else(|| GameStartMode::NewGame {
                 seed: new_world_seed(),
+                ship_id: default_new_game_ship_id(),
                 pack_options: default_content_pack_option_selections(),
             });
         AppState::Playing(Box::new(GameState::new(start_mode, runtime_flags).await))
     } else {
-        AppState::Title(TitleMenu::default())
+        AppState::Title(loaded_title_menu().await)
     };
 
     loop {
@@ -5590,9 +5897,17 @@ async fn main() {
             AppState::Title(menu) => {
                 if let Some(action) = update_title_menu(menu) {
                     match action {
-                        TitleAction::NewGame { seed, pack_options } => {
+                        TitleAction::NewGame {
+                            seed,
+                            ship_id,
+                            pack_options,
+                        } => {
                             let mut game = GameState::new(
-                                GameStartMode::NewGame { seed, pack_options },
+                                GameStartMode::NewGame {
+                                    seed,
+                                    ship_id,
+                                    pack_options,
+                                },
                                 runtime_flags,
                             )
                             .await;
@@ -5621,7 +5936,7 @@ async fn main() {
             AppState::Playing(game) => {
                 update_game(game, dt);
                 if game.quit_to_title_requested {
-                    app = AppState::Title(TitleMenu::default());
+                    app = AppState::Title(loaded_title_menu().await);
                 } else {
                     draw_scene(
                         game,
@@ -5907,9 +6222,20 @@ fn debug_console_input_rect(console: Rect) -> Rect {
 
 impl Default for TitleMenu {
     fn default() -> Self {
+        let registry = load_game_content_registry();
+        let ships = title_ships(&registry);
+        let default_ship_id = resolved_new_game_ship_id(&registry, None);
+        let selected_ship_index = ships
+            .iter()
+            .position(|ship| ship.id == default_ship_id)
+            .unwrap_or(0);
         Self {
             view: TitleView::Main,
             new_game_seed_text: new_world_seed().to_string(),
+            ships,
+            selected_ship_index,
+            ship_grid_scroll: 0.0,
+            ship_textures: HashMap::new(),
             save_slots: title_save_slots(),
             selected_save_index: 0,
             save_slots_scroll: 0.0,
@@ -5917,12 +6243,77 @@ impl Default for TitleMenu {
             last_save_click_time: 0.0,
             pending_delete_save_index: None,
             delete_save_error: None,
-            content_packs: title_content_packs(),
+            content_packs: title_content_packs(&registry),
             selected_pack_index: 0,
             settings: read_app_settings(),
             selected_settings_category: SettingsCategory::Display,
         }
     }
+}
+
+impl TitleMenu {
+    async fn load_ship_textures(&mut self) {
+        let ship_assets = self
+            .ships
+            .iter()
+            .filter_map(|ship| {
+                ship.texture
+                    .as_ref()
+                    .map(|texture| (ship.id.clone(), texture.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (ship_id, texture_path) in ship_assets {
+            if let Ok(image) = load_image(&texture_path).await {
+                let source = image_alpha_bounds(&image);
+                let texture = Texture2D::from_image(&image);
+                texture.set_filter(FilterMode::Linear);
+                self.ship_textures
+                    .insert(ship_id, TitleShipPreview { texture, source });
+            }
+        }
+    }
+}
+
+async fn loaded_title_menu() -> Box<TitleMenu> {
+    let mut menu = TitleMenu::default();
+    menu.load_ship_textures().await;
+    Box::new(menu)
+}
+
+fn image_alpha_bounds(image: &Image) -> Rect {
+    let width = usize::from(image.width);
+    let height = usize::from(image.height);
+    let full = Rect::new(0.0, 0.0, width as f32, height as f32);
+    if width == 0 || height == 0 || image.bytes.len() < width * height * 4 {
+        return full;
+    }
+
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut found = false;
+    for (index, pixel) in image.bytes.chunks_exact(4).take(width * height).enumerate() {
+        if pixel[3] <= 4 {
+            continue;
+        }
+        let x = index % width;
+        let y = index / width;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+        found = true;
+    }
+    if !found {
+        return full;
+    }
+    Rect::new(
+        min_x as f32,
+        min_y as f32,
+        (max_x - min_x + 1) as f32,
+        (max_y - min_y + 1) as f32,
+    )
 }
 
 impl Default for AppSettings {
@@ -6063,28 +6454,44 @@ fn title_save_slot_from_path(path: PathBuf, is_legacy: bool) -> Option<TitleSave
     })
 }
 
-fn title_content_packs() -> Vec<TitleContentPack> {
-    load_game_content_registry()
+fn title_ships(registry: &content::ContentRegistry) -> Vec<TitleShip> {
+    registry
+        .ship_order
+        .iter()
+        .filter_map(|ship_id| registry.ships.get(ship_id))
+        .map(|ship| TitleShip {
+            id: ship.id.clone(),
+            name: ship.name.clone(),
+            texture: ship.texture.clone(),
+            hull_capacity: ship.hull_capacity,
+            shield_capacity: ship.shield_capacity,
+            weapon_banks: ship.weapon_slots.len(),
+        })
+        .collect()
+}
+
+fn title_content_packs(registry: &content::ContentRegistry) -> Vec<TitleContentPack> {
+    registry
         .packs
-        .into_iter()
+        .iter()
         .map(|pack| TitleContentPack {
-            id: pack.id,
-            name: pack.name,
-            version: pack.version,
-            description: pack.description,
+            id: pack.id.clone(),
+            name: pack.name.clone(),
+            version: pack.version.clone(),
+            description: pack.description.clone(),
             options: pack
                 .options
-                .into_iter()
+                .iter()
                 .map(|option| {
                     let default_value = option.default.as_save_string();
                     TitlePackOption {
-                        id: option.id,
-                        label: option.label,
-                        description: option.description,
+                        id: option.id.clone(),
+                        label: option.label.clone(),
+                        description: option.description.clone(),
                         value_type: option.value_type,
                         default_value: default_value.clone(),
                         current_value: default_value,
-                        choices: option.choices,
+                        choices: option.choices.clone(),
                     }
                 })
                 .collect(),
@@ -6190,7 +6597,7 @@ fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
                 return action;
             }
             if is_mouse_button_pressed(MouseButton::Left)
-                && title_back_button_rect().contains(mouse_vec2())
+                && title_new_game_back_button_rect().contains(mouse_vec2())
             {
                 menu.view = TitleView::Main;
             }
@@ -6544,12 +6951,36 @@ fn update_title_new_game(menu: &mut TitleMenu) -> Option<TitleAction> {
     if is_key_pressed(KeyCode::R) {
         menu.new_game_seed_text = new_world_seed().to_string();
     }
+    if is_key_pressed(KeyCode::Left) {
+        cycle_title_ship(menu, -1);
+    }
+    if is_key_pressed(KeyCode::Right) {
+        cycle_title_ship(menu, 1);
+    }
+    if is_key_pressed(KeyCode::Up) {
+        cycle_title_ship(menu, -(TITLE_SHIP_GRID_COLUMNS as i32));
+    }
+    if is_key_pressed(KeyCode::Down) {
+        cycle_title_ship(menu, TITLE_SHIP_GRID_COLUMNS as i32);
+    }
+
+    let mouse = mouse_vec2();
+    let (_, wheel) = mouse_wheel();
+    if wheel.abs() > f32::EPSILON && title_ship_grid_rect().contains(mouse) {
+        menu.ship_grid_scroll = title_ship_grid_scrolled_offset(
+            menu.ship_grid_scroll,
+            wheel,
+            menu.ships.len(),
+            title_ship_grid_rect().h,
+        );
+    }
 
     let parsed_seed = parse_title_seed(&menu.new_game_seed_text);
     if is_key_pressed(KeyCode::Enter) {
-        if let Some(seed) = parsed_seed {
+        if let (Some(seed), Some(ship)) = (parsed_seed, selected_title_ship(menu)) {
             return Some(TitleAction::NewGame {
                 seed,
+                ship_id: ship.id.clone(),
                 pack_options: selected_title_pack_options(&menu.content_packs),
             });
         }
@@ -6559,18 +6990,45 @@ fn update_title_new_game(menu: &mut TitleMenu) -> Option<TitleAction> {
         return None;
     }
 
-    let mouse = mouse_vec2();
     if title_seed_randomize_button_rect().contains(mouse) {
         menu.new_game_seed_text = new_world_seed().to_string();
         None
     } else if title_new_game_start_button_rect().contains(mouse) {
-        parsed_seed.map(|seed| TitleAction::NewGame {
-            seed,
-            pack_options: selected_title_pack_options(&menu.content_packs),
+        parsed_seed.and_then(|seed| {
+            selected_title_ship(menu).map(|ship| TitleAction::NewGame {
+                seed,
+                ship_id: ship.id.clone(),
+                pack_options: selected_title_pack_options(&menu.content_packs),
+            })
         })
+    } else if title_ship_grid_rect().contains(mouse) {
+        if let Some(index) = (0..menu.ships.len()).find(|index| {
+            let card = title_ship_card_rect(*index, menu.ship_grid_scroll);
+            title_ship_card_is_visible(card, title_ship_grid_rect()) && card.contains(mouse)
+        }) {
+            menu.selected_ship_index = index;
+        }
+        None
     } else {
         None
     }
+}
+
+fn selected_title_ship(menu: &TitleMenu) -> Option<&TitleShip> {
+    menu.ships.get(menu.selected_ship_index)
+}
+
+fn cycle_title_ship(menu: &mut TitleMenu, direction: i32) {
+    menu.selected_ship_index = cycled_index(menu.selected_ship_index, menu.ships.len(), direction);
+    scroll_title_ship_selection_into_view(menu);
+}
+
+fn cycled_index(current: usize, len: usize, direction: i32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let current = current.min(len - 1) as i64;
+    (current + i64::from(direction)).rem_euclid(len as i64) as usize
 }
 
 fn parse_title_seed(seed_text: &str) -> Option<u64> {
@@ -6684,6 +7142,21 @@ fn title_panel_rect() -> Rect {
     )
 }
 
+fn title_new_game_panel_rect() -> Rect {
+    title_new_game_panel_rect_for_screen(screen_width(), screen_height())
+}
+
+fn title_new_game_panel_rect_for_screen(screen_width: f32, screen_height: f32) -> Rect {
+    let width = (screen_width - 64.0).clamp(780.0, 1_060.0);
+    let height = (screen_height - 48.0).clamp(620.0, 740.0);
+    Rect::new(
+        (screen_width - width) * 0.5,
+        (screen_height - height) * 0.5,
+        width,
+        height,
+    )
+}
+
 fn title_load_panel_rect() -> Rect {
     title_load_panel_rect_for_screen(screen_width(), screen_height())
 }
@@ -6722,6 +7195,16 @@ fn title_menu_button_rect(index: usize) -> Rect {
 
 fn title_back_button_rect() -> Rect {
     let panel = title_panel_rect();
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + panel.h - 64.0,
+        126.0,
+        38.0,
+    )
+}
+
+fn title_new_game_back_button_rect() -> Rect {
+    let panel = title_new_game_panel_rect();
     Rect::new(
         panel.x + TITLE_PANEL_CONTENT_PAD_X,
         panel.y + panel.h - 64.0,
@@ -6886,7 +7369,7 @@ fn title_pack_option_row_rect(index: usize) -> Rect {
 }
 
 fn title_seed_input_rect() -> Rect {
-    let panel = title_panel_rect();
+    let panel = title_new_game_panel_rect();
     Rect::new(
         panel.x + TITLE_PANEL_CONTENT_PAD_X,
         panel.y + 150.0,
@@ -6896,12 +7379,83 @@ fn title_seed_input_rect() -> Rect {
 }
 
 fn title_seed_randomize_button_rect() -> Rect {
-    let panel = title_panel_rect();
+    let panel = title_new_game_panel_rect();
     Rect::new(panel.x + panel.w - 154.0, panel.y + 150.0, 126.0, 40.0)
 }
 
+fn title_ship_grid_rect() -> Rect {
+    let panel = title_new_game_panel_rect();
+    Rect::new(
+        panel.x + TITLE_PANEL_CONTENT_PAD_X,
+        panel.y + 236.0,
+        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
+        panel.h - 350.0,
+    )
+}
+
+fn title_ship_card_rect(index: usize, scroll: f32) -> Rect {
+    title_ship_card_rect_for_grid(title_ship_grid_rect(), index, scroll)
+}
+
+fn title_ship_card_rect_for_grid(grid: Rect, index: usize, scroll: f32) -> Rect {
+    let column = index % TITLE_SHIP_GRID_COLUMNS;
+    let row = index / TITLE_SHIP_GRID_COLUMNS;
+    let card_width = (grid.w
+        - TITLE_SHIP_CARD_GAP * (TITLE_SHIP_GRID_COLUMNS.saturating_sub(1) as f32))
+        / TITLE_SHIP_GRID_COLUMNS as f32;
+    Rect::new(
+        grid.x + column as f32 * (card_width + TITLE_SHIP_CARD_GAP),
+        grid.y + row as f32 * (TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP) - scroll,
+        card_width,
+        TITLE_SHIP_CARD_HEIGHT,
+    )
+}
+
+fn title_ship_card_is_visible(card: Rect, grid: Rect) -> bool {
+    card.y >= grid.y && card.y + card.h <= grid.y + grid.h
+}
+
+fn title_ship_grid_max_scroll(ship_count: usize, viewport_height: f32) -> f32 {
+    let rows = ship_count.div_ceil(TITLE_SHIP_GRID_COLUMNS);
+    let content_height = if rows == 0 {
+        0.0
+    } else {
+        rows as f32 * TITLE_SHIP_CARD_HEIGHT + rows.saturating_sub(1) as f32 * TITLE_SHIP_CARD_GAP
+    };
+    (content_height - viewport_height).max(0.0)
+}
+
+fn title_ship_grid_scrolled_offset(
+    current: f32,
+    wheel: f32,
+    ship_count: usize,
+    viewport_height: f32,
+) -> f32 {
+    let step = TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP;
+    (current - wheel * step).clamp(0.0, title_ship_grid_max_scroll(ship_count, viewport_height))
+}
+
+fn scroll_title_ship_selection_into_view(menu: &mut TitleMenu) {
+    if menu.ships.is_empty() {
+        menu.ship_grid_scroll = 0.0;
+        return;
+    }
+    let grid = title_ship_grid_rect();
+    let row = menu.selected_ship_index / TITLE_SHIP_GRID_COLUMNS;
+    let row_top = row as f32 * (TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP);
+    let row_bottom = row_top + TITLE_SHIP_CARD_HEIGHT;
+    if row_top < menu.ship_grid_scroll {
+        menu.ship_grid_scroll = row_top;
+    } else if row_bottom > menu.ship_grid_scroll + grid.h {
+        menu.ship_grid_scroll = row_bottom - grid.h;
+    }
+    menu.ship_grid_scroll = menu
+        .ship_grid_scroll
+        .clamp(0.0, title_ship_grid_max_scroll(menu.ships.len(), grid.h));
+}
+
 fn title_new_game_start_button_rect() -> Rect {
-    let panel = title_panel_rect();
+    let panel = title_new_game_panel_rect();
     Rect::new(
         panel.x + panel.w - 176.0,
         panel.y + panel.h - 64.0,
@@ -6975,7 +7529,7 @@ fn draw_title_main_menu(
 }
 
 fn draw_title_new_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
-    let panel = title_panel_rect();
+    let panel = title_new_game_panel_rect();
     draw_title_panel(panel, panel_corner);
     draw_text(
         "New Game",
@@ -6985,7 +7539,7 @@ fn draw_title_new_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
         Color::from_rgba(235, 242, 226, 255),
     );
     draw_text(
-        "Choose a world seed before launching a fresh run.",
+        "Choose a ship and world seed for your fresh run.",
         panel.x + TITLE_PANEL_CONTENT_PAD_X,
         panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
         17.0,
@@ -7033,54 +7587,168 @@ fn draw_title_new_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
     );
     draw_title_button(title_seed_randomize_button_rect(), "Randomize", true, "R");
 
-    let options_y = panel.y + 230.0;
+    let grid = title_ship_grid_rect();
     draw_text(
-        "Initial options",
+        &format!("Select ship  ·  {} loaded", menu.ships.len()),
         panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        options_y,
+        grid.y - 16.0,
         16.0,
         Color::from_rgba(168, 204, 210, 255),
     );
-    draw_title_option_row(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        options_y + 28.0,
-        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
-        "Start",
-        "Frontier cargo ship",
+    draw_rectangle(
+        grid.x,
+        grid.y,
+        grid.w,
+        grid.h,
+        Color::from_rgba(5, 12, 18, 155),
     );
-    draw_title_option_row(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        options_y + 72.0,
-        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
-        "Packs",
-        &format!(
-            "{} active, {} configured",
-            menu.content_packs.len(),
-            selected_title_pack_options(&menu.content_packs).len()
-        ),
+    draw_rectangle_lines(
+        grid.x,
+        grid.y,
+        grid.w,
+        grid.h,
+        1.0,
+        Color::from_rgba(83, 127, 139, 135),
     );
-    draw_title_option_row(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        options_y + 116.0,
-        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
-        "Difficulty",
-        "Standard",
-    );
+    for (index, ship) in menu.ships.iter().enumerate() {
+        let card = title_ship_card_rect(index, menu.ship_grid_scroll);
+        if title_ship_card_is_visible(card, grid) {
+            draw_title_ship_card(
+                ship,
+                menu.ship_textures.get(&ship.id),
+                card,
+                index == menu.selected_ship_index,
+            );
+        }
+    }
 
     draw_text(
-        "Pack selections are saved with the new run.",
+        "Click a ship or use the arrow keys. Scroll for additional hulls.",
         panel.x + TITLE_PANEL_CONTENT_PAD_X,
         panel.y + panel.h - 88.0,
         15.0,
         Color::from_rgba(178, 197, 203, 255),
     );
-    draw_title_button(title_back_button_rect(), "Back", true, "Esc");
+    draw_title_button(title_new_game_back_button_rect(), "Back", true, "Esc");
     draw_title_button(
         title_new_game_start_button_rect(),
         "Start Game",
-        seed_valid,
+        seed_valid && selected_title_ship(menu).is_some(),
         "Enter",
     );
+}
+
+fn draw_title_ship_card(
+    ship: &TitleShip,
+    preview: Option<&TitleShipPreview>,
+    rect: Rect,
+    selected: bool,
+) {
+    let hovered = rect.contains(mouse_vec2());
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        if selected {
+            Color::from_rgba(25, 61, 68, 245)
+        } else if hovered {
+            Color::from_rgba(32, 74, 80, 245)
+        } else {
+            Color::from_rgba(11, 25, 32, 235)
+        },
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if selected {
+            Color::from_rgba(150, 221, 226, 245)
+        } else {
+            Color::from_rgba(83, 127, 139, 185)
+        },
+    );
+    draw_text(
+        &fit_debug_text(&ship.name, rect.w - 24.0, 19),
+        rect.x + 12.0,
+        rect.y + 27.0,
+        19.0,
+        Color::from_rgba(235, 242, 226, 255),
+    );
+    let pack_id = ship.id.split(':').next().unwrap_or("content");
+    draw_text(
+        &fit_debug_text(pack_id, rect.w - 24.0, 13),
+        rect.x + 12.0,
+        rect.y + 47.0,
+        13.0,
+        Color::from_rgba(150, 178, 184, 255),
+    );
+    let image_rect = Rect::new(rect.x + 12.0, rect.y + 54.0, rect.w - 24.0, 108.0);
+    draw_rectangle(
+        image_rect.x,
+        image_rect.y,
+        image_rect.w,
+        image_rect.h,
+        Color::from_rgba(4, 10, 15, 185),
+    );
+    if let Some(preview) = preview {
+        draw_quarter_turned_texture_source_contain(
+            &preview.texture,
+            preview.source,
+            image_rect,
+            if selected { 1.0 } else { 0.88 },
+        );
+    } else {
+        draw_text(
+            "Ship image unavailable",
+            image_rect.x + 12.0,
+            image_rect.y + image_rect.h * 0.5 + 5.0,
+            14.0,
+            Color::from_rgba(126, 143, 148, 255),
+        );
+    }
+    draw_text(
+        &format!(
+            "Hull {:.0}   Shield {:.0}",
+            ship.hull_capacity, ship.shield_capacity
+        ),
+        rect.x + 12.0,
+        rect.y + 185.0,
+        15.0,
+        Color::from_rgba(178, 197, 203, 255),
+    );
+    draw_text(
+        &format!(
+            "{} turret {}",
+            ship.weapon_banks,
+            if ship.weapon_banks == 1 {
+                "bank"
+            } else {
+                "banks"
+            }
+        ),
+        rect.x + 12.0,
+        rect.y + 207.0,
+        15.0,
+        if selected {
+            Color::from_rgba(150, 221, 226, 255)
+        } else {
+            Color::from_rgba(178, 197, 203, 255)
+        },
+    );
+    if selected {
+        let label = "SELECTED";
+        let measure = measure_text(label, None, 12, 1.0);
+        draw_text(
+            label,
+            rect.x + rect.w - measure.width - 12.0,
+            rect.y + 207.0,
+            12.0,
+            Color::from_rgba(226, 190, 150, 255),
+        );
+    }
 }
 
 fn draw_title_load_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
@@ -7444,25 +8112,6 @@ fn title_selected_setting_text(
             "Saved as a gameplay preference. Runtime autosave currently uses the fixed one-minute cadence.",
         ),
     }
-}
-
-fn draw_title_option_row(x: f32, y: f32, width: f32, label: &str, value: &str) {
-    draw_rectangle(x, y - 22.0, width, 34.0, Color::from_rgba(10, 18, 24, 130));
-    draw_text(
-        label,
-        x + 10.0,
-        y,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    let value_width = measure_text(value, None, 17, 1.0).width;
-    draw_text(
-        value,
-        x + width - value_width - 10.0,
-        y,
-        17.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
 }
 
 fn draw_title_content_packs(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
@@ -8887,7 +9536,9 @@ fn move_toward_vec2(current: Vec2, target: Vec2, max_delta: f32) -> Vec2 {
 }
 
 fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
-    if game.context_action_menu.is_some() {
+    if game.open_turret_bank.take().is_some() {
+        true
+    } else if game.context_action_menu.is_some() {
         game.context_action_menu = None;
         true
     } else if game.content_open {
@@ -9946,62 +10597,58 @@ fn handle_ship_weapon_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
     };
     let rail = action_rail_rect(width);
 
-    (0..weapon_slot_capacity(game))
-        .find(|slot_index| ship_weapon_slot_rect_for_rail(rail, *slot_index).contains(mouse))
-        .is_some_and(|slot_index| install_first_available_weapon_for_slot(game, slot_index))
-}
-
-fn install_first_available_weapon_for_slot(game: &mut GameState, slot_index: usize) -> bool {
-    let Some(weapon_id) = next_available_weapon_id_for_slot(
-        &game.content_registry,
-        &game.inventory,
-        &game.equipped_weapons,
-        slot_index,
-    ) else {
-        return false;
-    };
-
-    install_weapon_in_slot(game, slot_index, &weapon_id).is_ok()
-}
-
-fn next_available_weapon_id_for_slot(
-    content_registry: &content::ContentRegistry,
-    inventory: &Inventory,
-    equipped_weapons: &[WeaponSystem],
-    slot_index: usize,
-) -> Option<String> {
-    let current_weapon_id = equipped_weapons
-        .get(slot_index)
-        .map(|weapon| weapon.id.as_str());
-    content_registry.weapon_order.iter().find_map(|weapon_id| {
-        if current_weapon_id == Some(weapon_id.as_str()) {
-            return None;
+    if let Some(slot_index) = game.open_turret_bank {
+        if turret_bank_button_rect(rail, slot_index).contains(mouse) {
+            game.open_turret_bank = None;
+            game.audio.play(audio::AudioCue::Back);
+            return true;
         }
-        let weapon = content_registry.weapons.get(weapon_id)?;
-        let install_item = registry_item(content_registry, &weapon.install_item)?;
-        (inventory.count(&install_item) > 0).then(|| weapon_id.clone())
-    })
+        let turret_ids = inventory_turret_ids(&game.content_registry, &game.inventory);
+        let dropdown = turret_bank_dropdown_rect(rail, slot_index, turret_ids.len());
+        for (row_index, weapon_id) in turret_ids.iter().enumerate() {
+            if turret_bank_dropdown_row_rect(dropdown, row_index).contains(mouse) {
+                let installed = install_weapon_in_slot(game, slot_index, weapon_id).is_ok();
+                game.open_turret_bank = None;
+                game.audio.play(if installed {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+                return true;
+            }
+        }
+        if dropdown.contains(mouse) {
+            return true;
+        }
+        game.open_turret_bank = None;
+    }
+
+    for slot_index in 0..weapon_slot_capacity(game).min(5) {
+        if turret_bank_button_rect(rail, slot_index).contains(mouse) {
+            game.open_turret_bank = Some(slot_index);
+            game.audio.play(audio::AudioCue::Select);
+            return true;
+        }
+    }
+    false
 }
 
-fn weapon_slot_swap_label(
+fn inventory_turret_ids(
     content_registry: &content::ContentRegistry,
     inventory: &Inventory,
-    equipped_weapons: &[WeaponSystem],
-    slot_index: usize,
-) -> String {
-    let Some(weapon_id) = next_available_weapon_id_for_slot(
-        content_registry,
-        inventory,
-        equipped_weapons,
-        slot_index,
-    ) else {
-        return "No crafted".to_string();
-    };
+) -> Vec<String> {
     content_registry
-        .weapons
-        .get(&weapon_id)
-        .map(|weapon| format!("Install {}", weapon.name))
-        .unwrap_or_else(|| "Install turret".to_string())
+        .weapon_order
+        .iter()
+        .filter_map(|weapon_id| {
+            let weapon = content_registry.weapons.get(weapon_id)?;
+            if weapon.kind != content::WeaponKind::TurretDefense {
+                return None;
+            }
+            let install_item = registry_item(content_registry, &weapon.install_item)?;
+            (inventory.count(&install_item) > 0).then(|| weapon_id.clone())
+        })
+        .collect()
 }
 
 fn handle_production_table_input(game: &mut GameState, mouse: Vec2, wheel: f32) -> bool {
@@ -12037,13 +12684,349 @@ fn clamp_vec2_length(vector: Vec2, max_length: f32) -> Vec2 {
 }
 
 fn update_weapon_systems(game: &mut GameState, dt: f32) {
-    game.weapon_fire_events.retain_mut(|event| {
+    let mut completed_impacts = Vec::new();
+    let mut active_fire_events = Vec::new();
+    for mut event in std::mem::take(&mut game.weapon_fire_events) {
+        refresh_weapon_fire_target(game, &mut event);
+        event.timer -= dt;
+        if event.timer <= 0.0 {
+            if let Some(impact) = event.pending_impact.take() {
+                completed_impacts.push((event.clone(), impact));
+            }
+        } else {
+            active_fire_events.push(event);
+        }
+    }
+    game.weapon_fire_events = active_fire_events;
+    game.weapon_area_effect_events.retain_mut(|event| {
         event.timer -= dt;
         event.timer > 0.0
     });
 
+    for (event, impact) in completed_impacts {
+        resolve_weapon_impact(game, &event, impact);
+    }
+
     update_player_weapon_systems(game, dt);
     update_npc_weapon_systems(game, dt);
+}
+
+#[derive(Clone)]
+struct ImpactCandidate {
+    target: WeaponTargetRef,
+    position: Vec2,
+    radius: f32,
+    hostile_to_owner: bool,
+}
+
+fn refresh_weapon_fire_target(game: &GameState, event: &mut WeaponFireEvent) {
+    let Some(impact) = event.pending_impact.as_ref() else {
+        return;
+    };
+    if let Some(position) = weapon_target_position(game, &impact.primary_target, &impact.system) {
+        event.to = position;
+    }
+}
+
+fn weapon_target_position(
+    game: &GameState,
+    target: &WeaponTargetRef,
+    system: &str,
+) -> Option<Vec2> {
+    match target {
+        WeaponTargetRef::Player => (game.current_system_id == system
+            && game.ship.systems.hull.current > 0.0)
+            .then_some(game.ship.position),
+        WeaponTargetRef::Npc(id) => game
+            .npc_ships
+            .iter()
+            .find(|npc| npc.id == *id && npc.system == system && npc.hull.current > 0.0)
+            .map(|npc| npc.position),
+        WeaponTargetRef::Threat(id) => game
+            .defense_threats
+            .iter()
+            .find(|threat| threat.id == *id && threat.system == system && threat.hull.current > 0.0)
+            .map(|threat| threat.position),
+    }
+}
+
+fn impact_candidates(game: &GameState, impact: &PendingWeaponImpact) -> Vec<ImpactCandidate> {
+    let mut candidates = Vec::new();
+    if impact.targeting != content::WeaponTargeting::ThreatsOnly
+        && game.current_system_id == impact.system
+        && game.ship.systems.hull.current > 0.0
+    {
+        candidates.push(ImpactCandidate {
+            target: WeaponTargetRef::Player,
+            position: game.ship.position,
+            radius: SHIP_RADIUS,
+            hostile_to_owner: matches!(&impact.owner, WeaponImpactOwner::Npc { hostile: true, .. }),
+        });
+    }
+    for npc in &game.npc_ships {
+        if impact.targeting == content::WeaponTargeting::ThreatsOnly
+            || npc.system != impact.system
+            || npc.hull.current <= 0.0
+        {
+            continue;
+        }
+        let npc_is_hostile = npc_ship_is_hostile(&game.content_registry, npc);
+        let hostile_to_owner = match &impact.owner {
+            WeaponImpactOwner::Player => npc_is_hostile,
+            WeaponImpactOwner::Npc { hostile, .. } => {
+                if *hostile {
+                    !npc_is_hostile
+                } else {
+                    npc_is_hostile
+                }
+            }
+        };
+        candidates.push(ImpactCandidate {
+            target: WeaponTargetRef::Npc(npc.id.clone()),
+            position: npc.position,
+            radius: npc.radius,
+            hostile_to_owner,
+        });
+    }
+    for threat in &game.defense_threats {
+        if impact.targeting == content::WeaponTargeting::ShipsOnly
+            || threat.system != impact.system
+            || threat.hull.current <= 0.0
+        {
+            continue;
+        }
+        candidates.push(ImpactCandidate {
+            target: WeaponTargetRef::Threat(threat.id.clone()),
+            position: threat.position,
+            radius: threat.radius,
+            hostile_to_owner: threat.disposition == ThreatDisposition::Hostile
+                && !matches!(&impact.owner, WeaponImpactOwner::Npc { hostile: true, .. }),
+        });
+    }
+    candidates
+}
+
+fn impact_target_is_owner(target: &WeaponTargetRef, owner: &WeaponImpactOwner) -> bool {
+    matches!(
+        (target, owner),
+        (WeaponTargetRef::Player, WeaponImpactOwner::Player)
+    ) || matches!(
+        (target, owner),
+        (WeaponTargetRef::Npc(target_id), WeaponImpactOwner::Npc { id, .. }) if target_id == id
+    )
+}
+
+fn impact_candidate_is_eligible(candidate: &ImpactCandidate, impact: &PendingWeaponImpact) -> bool {
+    match impact.friendly_fire {
+        content::FriendlyFire::HostilesOnly => candidate.hostile_to_owner,
+        content::FriendlyFire::AllExceptOwner => {
+            !impact_target_is_owner(&candidate.target, &impact.owner)
+        }
+        content::FriendlyFire::Everyone => true,
+    }
+}
+
+fn resolve_weapon_impact(
+    game: &mut GameState,
+    source_event: &WeaponFireEvent,
+    impact: PendingWeaponImpact,
+) {
+    let candidates = impact_candidates(game, &impact);
+    match impact.impact {
+        content::WeaponImpact::Single => {
+            if candidates.iter().any(|candidate| {
+                candidate.target == impact.primary_target
+                    && impact_candidate_is_eligible(candidate, &impact)
+            }) {
+                apply_weapon_damage_to_target(game, &impact.primary_target, impact.damage);
+            }
+        }
+        content::WeaponImpact::Chain => {
+            let chain = weapon_chain_targets(&candidates, &impact);
+            apply_weapon_chain(game, source_event, &impact, &chain, false);
+        }
+        content::WeaponImpact::Splash => {
+            apply_weapon_splash(
+                game,
+                source_event.to,
+                source_event,
+                &impact,
+                impact.damage,
+                &candidates,
+                None,
+            );
+        }
+        content::WeaponImpact::ChainSplash => {
+            let chain = weapon_chain_targets(&candidates, &impact);
+            apply_weapon_chain(game, source_event, &impact, &chain, true);
+        }
+    }
+}
+
+fn weapon_chain_targets(
+    candidates: &[ImpactCandidate],
+    impact: &PendingWeaponImpact,
+) -> Vec<ImpactCandidate> {
+    let Some(primary) = candidates
+        .iter()
+        .find(|candidate| {
+            candidate.target == impact.primary_target
+                && impact_candidate_is_eligible(candidate, impact)
+        })
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    let mut chain = vec![primary];
+    while chain.len() < impact.chain_targets as usize {
+        let from = chain.last().expect("chain has a primary target").position;
+        let next = candidates
+            .iter()
+            .filter(|candidate| {
+                impact_candidate_is_eligible(candidate, impact)
+                    && !chain
+                        .iter()
+                        .any(|selected| selected.target == candidate.target)
+                    && from.distance(candidate.position) <= impact.chain_range + candidate.radius
+            })
+            .min_by(|a, b| {
+                from.distance_squared(a.position)
+                    .total_cmp(&from.distance_squared(b.position))
+            })
+            .cloned();
+        let Some(next) = next else {
+            break;
+        };
+        chain.push(next);
+    }
+    chain
+}
+
+fn apply_weapon_chain(
+    game: &mut GameState,
+    source_event: &WeaponFireEvent,
+    impact: &PendingWeaponImpact,
+    chain: &[ImpactCandidate],
+    splash_each_target: bool,
+) {
+    let candidates = impact_candidates(game, impact);
+    let mut previous_position = source_event.from;
+    let mut damaged = HashSet::new();
+    for (index, target) in chain.iter().enumerate() {
+        let damage = impact.damage * impact.chain_damage_multiplier.powi(index as i32);
+        if splash_each_target {
+            apply_weapon_splash(
+                game,
+                target.position,
+                source_event,
+                impact,
+                damage,
+                &candidates,
+                Some(&mut damaged),
+            );
+        } else {
+            apply_weapon_damage_to_target(game, &target.target, damage);
+        }
+        if index > 0 {
+            push_chain_visual(game, source_event, previous_position, target.position);
+        }
+        previous_position = target.position;
+    }
+}
+
+fn push_chain_visual(game: &mut GameState, source: &WeaponFireEvent, from: Vec2, to: Vec2) {
+    let mut link = source.clone();
+    link.from = from;
+    link.to = to;
+    link.duration = (from.distance(to) / 1200.0).clamp(0.08, 0.35);
+    link.timer = link.duration;
+    link.pending_impact = None;
+    game.weapon_fire_events.push(link);
+}
+
+fn apply_weapon_splash(
+    game: &mut GameState,
+    center: Vec2,
+    source_event: &WeaponFireEvent,
+    impact: &PendingWeaponImpact,
+    base_damage: f32,
+    candidates: &[ImpactCandidate],
+    mut damaged: Option<&mut HashSet<WeaponTargetRef>>,
+) {
+    for candidate in candidates {
+        if !impact_candidate_is_eligible(candidate, impact) {
+            continue;
+        }
+        if damaged
+            .as_ref()
+            .is_some_and(|targets| targets.contains(&candidate.target))
+        {
+            continue;
+        }
+        let distance = (center.distance(candidate.position) - candidate.radius).max(0.0);
+        if distance > impact.splash_radius {
+            continue;
+        }
+        let normalized = (distance / impact.splash_radius.max(f32::EPSILON)).clamp(0.0, 1.0);
+        let multiplier = splash_damage_multiplier(
+            impact.splash_falloff,
+            normalized,
+            impact.splash_min_multiplier,
+        );
+        apply_weapon_damage_to_target(game, &candidate.target, base_damage * multiplier);
+        if let Some(targets) = damaged.as_deref_mut() {
+            targets.insert(candidate.target.clone());
+        }
+    }
+    game.weapon_area_effect_events.push(WeaponAreaEffectEvent {
+        position: center,
+        radius: impact.splash_radius,
+        timer: 0.65,
+        duration: 0.65,
+        color: source_event.impact_color,
+    });
+    game.audio.play(audio::AudioCue::Explosion);
+}
+
+fn splash_damage_multiplier(
+    falloff: content::DamageFalloff,
+    normalized_distance: f32,
+    minimum: f32,
+) -> f32 {
+    let remaining = 1.0 - normalized_distance.clamp(0.0, 1.0);
+    match falloff {
+        content::DamageFalloff::None => 1.0,
+        content::DamageFalloff::Linear => minimum + (1.0 - minimum) * remaining,
+        content::DamageFalloff::Quadratic => minimum + (1.0 - minimum) * remaining.powi(2),
+    }
+}
+
+fn apply_weapon_damage_to_target(
+    game: &mut GameState,
+    target: &WeaponTargetRef,
+    damage: f32,
+) -> bool {
+    match target {
+        WeaponTargetRef::Player => apply_ship_weapon_damage(game, damage),
+        WeaponTargetRef::Npc(id) => game
+            .npc_ships
+            .iter_mut()
+            .find(|npc| npc.id == *id && npc.hull.current > 0.0)
+            .is_some_and(|npc| {
+                let before = npc.shields.current + npc.hull.current;
+                apply_npc_weapon_damage(npc, damage);
+                npc.shields.current + npc.hull.current < before
+            }),
+        WeaponTargetRef::Threat(id) => game
+            .defense_threats
+            .iter_mut()
+            .find(|threat| threat.id == *id && threat.hull.current > 0.0)
+            .is_some_and(|threat| {
+                let before = threat.hull.current;
+                threat.hull.spend(damage.max(0.0));
+                threat.hull.current < before
+            }),
+    }
 }
 
 fn remove_destroyed_npc_ships(game: &mut GameState) {
@@ -12157,8 +13140,60 @@ fn push_destroyed_npc_loot_feedback(
     push_operation_feedback(game, "Loot", format!("{npc_name}: {parts}"));
 }
 
+fn weapon_fire_event(
+    from: Vec2,
+    to: Vec2,
+    weapon: &WeaponSystem,
+    origin: WeaponFireOrigin,
+    owner: WeaponImpactOwner,
+    primary_target: WeaponTargetRef,
+    system: String,
+) -> WeaponFireEvent {
+    let duration = weapon
+        .travel_speed
+        .map_or(weapon.fire_duration_seconds, |speed| {
+            (from.distance(to) / speed).clamp(0.05, 5.0)
+        });
+    WeaponFireEvent {
+        from,
+        to,
+        timer: duration,
+        duration,
+        effect: weapon.effect,
+        beam_color: weapon.beam_color,
+        core_color: weapon.core_color,
+        impact_color: weapon.impact_color,
+        path_curve_strength: weapon.path_curve_strength,
+        path_wobble: weapon.path_wobble,
+        path_cycles: weapon.path_cycles,
+        trail_length: weapon.trail_length,
+        burst_count: weapon.burst_count,
+        projectile_texture: weapon.projectile_texture.clone(),
+        projectile_size: weapon.projectile_size,
+        origin,
+        pending_impact: Some(PendingWeaponImpact {
+            owner,
+            primary_target,
+            system,
+            damage: weapon.damage,
+            targeting: weapon.targeting,
+            impact: weapon.impact,
+            splash_radius: weapon.splash_radius,
+            splash_falloff: weapon.splash_falloff,
+            splash_min_multiplier: weapon.splash_min_multiplier,
+            chain_targets: weapon.chain_targets,
+            chain_range: weapon.chain_range,
+            chain_damage_multiplier: weapon.chain_damage_multiplier,
+            friendly_fire: weapon.friendly_fire,
+        }),
+    }
+}
+
 fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
     for weapon_index in 0..game.equipped_weapons.len() {
+        if !game.equipped_weapons[weapon_index].resolved {
+            continue;
+        }
         {
             let weapon = &mut game.equipped_weapons[weapon_index];
             weapon.cooldown_remaining = (weapon.cooldown_remaining - dt).max(0.0);
@@ -12181,34 +13216,49 @@ fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
             continue;
         };
 
+        let ammo_item = game.equipped_weapons[weapon_index].ammo_item.clone();
+        let ammo_per_shot = game.equipped_weapons[weapon_index].ammo_per_shot;
+        if ammo_item
+            .as_deref()
+            .is_some_and(|item| game.inventory.count_id(item) < ammo_per_shot)
+        {
+            game.equipped_weapons[weapon_index].status = WeaponStatus::OutOfAmmo;
+            continue;
+        }
+
         let weapon = &mut game.equipped_weapons[weapon_index];
         if game.ship.systems.energy.current < weapon.energy_cost {
             weapon.status = WeaponStatus::InsufficientEnergy;
             continue;
         }
 
-        let target_position = match target {
+        let (target_position, target_ref) = match target {
             PlayerTurretTarget::DefenseThreat(target_index) => {
-                let target = &mut game.defense_threats[target_index];
-                target.hull.spend(weapon.damage);
-                target.position
+                let target = &game.defense_threats[target_index];
+                (target.position, WeaponTargetRef::Threat(target.id.clone()))
             }
             PlayerTurretTarget::NpcShip(npc_ship_index) => {
-                let target = &mut game.npc_ships[npc_ship_index];
-                apply_npc_weapon_damage(target, weapon.damage);
-                target.position
+                let target = &game.npc_ships[npc_ship_index];
+                (target.position, WeaponTargetRef::Npc(target.id.clone()))
             }
         };
+        if let Some(ammo_item) = ammo_item.as_deref() {
+            game.inventory.remove_item_id(ammo_item, ammo_per_shot);
+        }
         game.ship.systems.energy.spend(weapon.energy_cost);
         weapon.cooldown_remaining = weapon.cooldown_seconds;
         weapon.status = WeaponStatus::Fired;
-        game.weapon_fire_events.push(WeaponFireEvent {
-            from: game.ship.position,
-            to: target_position,
-            timer: WEAPON_FIRE_EVENT_SECONDS,
-            origin: WeaponFireOrigin::Player,
-        });
-        game.audio.play(audio::AudioCue::WeaponFire);
+        game.weapon_fire_events.push(weapon_fire_event(
+            game.ship.position,
+            target_position,
+            weapon,
+            WeaponFireOrigin::Player,
+            WeaponImpactOwner::Player,
+            target_ref,
+            game.current_system_id.clone(),
+        ));
+        game.audio
+            .play_custom_or(weapon.fire_audio.as_deref(), audio::AudioCue::WeaponFire);
         game.save_dirty = true;
     }
 }
@@ -12224,6 +13274,9 @@ fn update_npc_weapon_systems(game: &mut GameState, dt: f32) {
         let hostile = npc_ship_is_hostile(&game.content_registry, &game.npc_ships[npc_index]);
         let weapon_count = game.npc_ships[npc_index].equipped_weapons.len();
         for weapon_index in 0..weapon_count {
+            if !game.npc_ships[npc_index].equipped_weapons[weapon_index].resolved {
+                continue;
+            }
             {
                 let weapon = &mut game.npc_ships[npc_index].equipped_weapons[weapon_index];
                 weapon.cooldown_remaining = (weapon.cooldown_remaining - dt).max(0.0);
@@ -12246,6 +13299,32 @@ fn update_npc_weapon_systems(game: &mut GameState, dt: f32) {
     }
 }
 
+fn npc_weapon_has_ammo(npc_ship: &NpcShip, weapon: &WeaponSystem) -> bool {
+    weapon.ammo_item.as_deref().is_none_or(|ammo_item| {
+        npc_ship
+            .cargo_defaults
+            .iter()
+            .filter(|stack| stack.item.id == ammo_item)
+            .map(|stack| stack.count)
+            .sum::<u32>()
+            >= weapon.ammo_per_shot
+    })
+}
+
+fn consume_npc_weapon_ammo(npc_ship: &mut NpcShip, ammo_item: &str, mut count: u32) {
+    for stack in &mut npc_ship.cargo_defaults {
+        if count == 0 {
+            break;
+        }
+        if stack.item.id == ammo_item {
+            let removed = stack.count.min(count);
+            stack.count -= removed;
+            count -= removed;
+        }
+    }
+    npc_ship.cargo_defaults.retain(|stack| stack.count > 0);
+}
+
 fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_index: usize) -> bool {
     let Some(npc_ship) = game.npc_ships.get(npc_index) else {
         return false;
@@ -12261,22 +13340,40 @@ fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_inde
             WeaponStatus::InsufficientEnergy;
         return true;
     }
+    if !npc_weapon_has_ammo(npc_ship, weapon) {
+        game.npc_ships[npc_index].equipped_weapons[weapon_index].status = WeaponStatus::OutOfAmmo;
+        return true;
+    }
 
     let origin = npc_ship.position;
-    let damage = weapon.damage;
     let energy_cost = weapon.energy_cost;
     let cooldown_seconds = weapon.cooldown_seconds;
+    let ammo_item = weapon.ammo_item.clone();
+    let ammo_per_shot = weapon.ammo_per_shot;
+    let owner = WeaponImpactOwner::Npc {
+        id: npc_ship.id.clone(),
+        hostile: npc_ship_is_hostile(&game.content_registry, npc_ship),
+    };
+    let fire_event = weapon_fire_event(
+        origin,
+        game.ship.position,
+        weapon,
+        WeaponFireOrigin::Npc,
+        owner,
+        WeaponTargetRef::Player,
+        game.current_system_id.clone(),
+    );
+    let fire_audio = weapon.fire_audio.clone();
     game.npc_ships[npc_index].energy.spend(energy_cost);
-    apply_ship_weapon_damage(game, damage);
+    if let Some(ammo_item) = ammo_item.as_deref() {
+        consume_npc_weapon_ammo(&mut game.npc_ships[npc_index], ammo_item, ammo_per_shot);
+        game.save_dirty = true;
+    }
     game.npc_ships[npc_index].equipped_weapons[weapon_index].cooldown_remaining = cooldown_seconds;
     game.npc_ships[npc_index].equipped_weapons[weapon_index].status = WeaponStatus::Fired;
-    game.weapon_fire_events.push(WeaponFireEvent {
-        from: origin,
-        to: game.ship.position,
-        timer: WEAPON_FIRE_EVENT_SECONDS,
-        origin: WeaponFireOrigin::Npc,
-    });
-    game.audio.play(audio::AudioCue::WeaponFire);
+    game.weapon_fire_events.push(fire_event);
+    game.audio
+        .play_custom_or(fire_audio.as_deref(), audio::AudioCue::WeaponFire);
     true
 }
 
@@ -12304,23 +13401,42 @@ fn fire_npc_weapon_at_defense_threat(
             WeaponStatus::InsufficientEnergy;
         return true;
     }
+    if !npc_weapon_has_ammo(npc_ship, weapon) {
+        game.npc_ships[npc_index].equipped_weapons[weapon_index].status = WeaponStatus::OutOfAmmo;
+        return true;
+    }
 
     let origin = npc_ship.position;
     let target_position = game.defense_threats[target_index].position;
-    let damage = weapon.damage;
+    let target_ref = WeaponTargetRef::Threat(game.defense_threats[target_index].id.clone());
     let energy_cost = weapon.energy_cost;
     let cooldown_seconds = weapon.cooldown_seconds;
+    let ammo_item = weapon.ammo_item.clone();
+    let ammo_per_shot = weapon.ammo_per_shot;
+    let owner = WeaponImpactOwner::Npc {
+        id: npc_ship.id.clone(),
+        hostile: npc_ship_is_hostile(&game.content_registry, npc_ship),
+    };
+    let fire_event = weapon_fire_event(
+        origin,
+        target_position,
+        weapon,
+        WeaponFireOrigin::Npc,
+        owner,
+        target_ref,
+        game.current_system_id.clone(),
+    );
+    let fire_audio = weapon.fire_audio.clone();
     game.npc_ships[npc_index].energy.spend(energy_cost);
-    game.defense_threats[target_index].hull.spend(damage);
+    if let Some(ammo_item) = ammo_item.as_deref() {
+        consume_npc_weapon_ammo(&mut game.npc_ships[npc_index], ammo_item, ammo_per_shot);
+        game.save_dirty = true;
+    }
     game.npc_ships[npc_index].equipped_weapons[weapon_index].cooldown_remaining = cooldown_seconds;
     game.npc_ships[npc_index].equipped_weapons[weapon_index].status = WeaponStatus::Fired;
-    game.weapon_fire_events.push(WeaponFireEvent {
-        from: origin,
-        to: target_position,
-        timer: WEAPON_FIRE_EVENT_SECONDS,
-        origin: WeaponFireOrigin::Npc,
-    });
-    game.audio.play(audio::AudioCue::WeaponFire);
+    game.weapon_fire_events.push(fire_event);
+    game.audio
+        .play_custom_or(fire_audio.as_deref(), audio::AudioCue::WeaponFire);
     true
 }
 
@@ -12347,26 +13463,32 @@ fn player_turret_target(
         return None;
     }
 
-    let threat_target =
-        defense_turret_target_index(ship, weapon, threats, current_system_id).map(|index| {
+    let threat_target = (weapon.targeting != content::WeaponTargeting::ShipsOnly)
+        .then(|| defense_turret_target_index(ship, weapon, threats, current_system_id))
+        .flatten()
+        .map(|index| {
             (
                 PlayerTurretTarget::DefenseThreat(index),
                 threats[index].position.distance_squared(ship.position),
             )
         });
-    let npc_target = hostile_npc_turret_target_index(
-        content_registry,
-        ship,
-        weapon,
-        npc_ships,
-        current_system_id,
-    )
-    .map(|index| {
-        (
-            PlayerTurretTarget::NpcShip(index),
-            npc_ships[index].position.distance_squared(ship.position),
-        )
-    });
+    let npc_target = (weapon.targeting != content::WeaponTargeting::ThreatsOnly)
+        .then(|| {
+            hostile_npc_turret_target_index(
+                content_registry,
+                ship,
+                weapon,
+                npc_ships,
+                current_system_id,
+            )
+        })
+        .flatten()
+        .map(|index| {
+            (
+                PlayerTurretTarget::NpcShip(index),
+                npc_ships[index].position.distance_squared(ship.position),
+            )
+        });
 
     [threat_target, npc_target]
         .into_iter()
@@ -12381,7 +13503,9 @@ fn defense_turret_target_index(
     threats: &[DefenseThreat],
     current_system_id: &str,
 ) -> Option<usize> {
-    if weapon.kind != content::WeaponKind::TurretDefense {
+    if weapon.kind != content::WeaponKind::TurretDefense
+        || weapon.targeting == content::WeaponTargeting::ShipsOnly
+    {
         return None;
     }
 
@@ -12406,7 +13530,9 @@ fn hostile_npc_turret_target_index(
     npc_ships: &[NpcShip],
     current_system_id: &str,
 ) -> Option<usize> {
-    if weapon.kind != content::WeaponKind::TurretDefense {
+    if weapon.kind != content::WeaponKind::TurretDefense
+        || weapon.targeting == content::WeaponTargeting::ThreatsOnly
+    {
         return None;
     }
 
@@ -12436,7 +13562,9 @@ fn npc_defense_turret_target_index(
     threats: &[DefenseThreat],
     current_system_id: &str,
 ) -> Option<usize> {
-    if weapon.kind != content::WeaponKind::TurretDefense {
+    if weapon.kind != content::WeaponKind::TurretDefense
+        || weapon.targeting == content::WeaponTargeting::ShipsOnly
+    {
         return None;
     }
 
@@ -12506,6 +13634,7 @@ fn npc_weapon_can_target_player(
     current_system_id: &str,
 ) -> bool {
     weapon.kind == content::WeaponKind::TurretDefense
+        && weapon.targeting != content::WeaponTargeting::ThreatsOnly
         && npc_ship.system == current_system_id
         && npc_ship.hull.current > 0.0
         && ship.systems.hull.current > 0.0
@@ -12620,6 +13749,39 @@ fn default_credits() -> u32 {
 
 fn default_current_system_id() -> String {
     STARTER_SYSTEM_ID.to_string()
+}
+
+fn default_starter_ship_id() -> String {
+    STARTER_SHIP_ID.to_string()
+}
+
+fn resolved_new_game_ship_id(
+    registry: &content::ContentRegistry,
+    requested_ship_id: Option<&str>,
+) -> String {
+    requested_ship_id
+        .filter(|ship_id| registry.ships.contains_key(*ship_id))
+        .map(str::to_owned)
+        .or_else(|| {
+            registry
+                .starter_ship
+                .as_ref()
+                .filter(|ship_id| registry.ships.contains_key(*ship_id))
+                .cloned()
+        })
+        .or_else(|| {
+            registry
+                .ships
+                .contains_key(STARTER_SHIP_ID)
+                .then(default_starter_ship_id)
+        })
+        .or_else(|| registry.ship_order.first().cloned())
+        .unwrap_or_else(default_starter_ship_id)
+}
+
+fn default_new_game_ship_id() -> String {
+    let registry = load_game_content_registry();
+    resolved_new_game_ship_id(&registry, None)
 }
 
 fn update_ship(ship: &mut Ship, dt: f32, energy_recharge: f32) {
@@ -12759,7 +13921,10 @@ fn draw_scene(
         game.approach_target.is_some() || game.follow_target.is_some(),
     );
     for event in &game.weapon_fire_events {
-        draw_weapon_fire_event(center, ship, event, zoom);
+        draw_weapon_fire_event(center, ship, event, zoom, &game.weapon_projectile_textures);
+    }
+    for event in &game.weapon_area_effect_events {
+        draw_weapon_area_effect_event(center, ship, event, zoom);
     }
     for event in &game.collision_impact_events {
         draw_collision_impact_event(center, ship, event, zoom);
@@ -13185,8 +14350,7 @@ fn draw_texture_contain(texture: &Texture2D, rect: Rect, opacity: f32) {
 
 fn draw_texture_source_contain(texture: &Texture2D, source: Rect, rect: Rect, opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
-    let scale = (rect.w / source.w).min(rect.h / source.h);
-    let dest_size = vec2(source.w * scale, source.h * scale);
+    let dest_size = contained_texture_size(vec2(source.w, source.h), vec2(rect.w, rect.h));
     let position = vec2(
         rect.x + (rect.w - dest_size.x) * 0.5,
         rect.y + (rect.h - dest_size.y) * 0.5,
@@ -13200,6 +14364,65 @@ fn draw_texture_source_contain(texture: &Texture2D, source: Rect, rect: Rect, op
         DrawTextureParams {
             source: Some(source),
             dest_size: Some(dest_size),
+            ..Default::default()
+        },
+    );
+}
+
+fn contained_texture_size(source: Vec2, bounds: Vec2) -> Vec2 {
+    if source.x <= 0.0 || source.y <= 0.0 || bounds.x <= 0.0 || bounds.y <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let scale = (bounds.x / source.x).min(bounds.y / source.y);
+    source * scale
+}
+
+fn draw_rotated_texture_contain(texture: &Texture2D, rect: Rect, tint: Color, rotation: f32) {
+    let dest_size = contained_texture_size(
+        vec2(texture.width(), texture.height()),
+        vec2(rect.w, rect.h),
+    );
+    let center = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+    let position = center - dest_size * 0.5;
+    draw_texture_ex(
+        texture,
+        position.x,
+        position.y,
+        tint,
+        DrawTextureParams {
+            dest_size: Some(dest_size),
+            rotation,
+            pivot: Some(center),
+            ..Default::default()
+        },
+    );
+}
+
+fn quarter_turned_contained_texture_size(source: Vec2, bounds: Vec2) -> Vec2 {
+    let rotated_size = contained_texture_size(vec2(source.y, source.x), bounds);
+    vec2(rotated_size.y, rotated_size.x)
+}
+
+fn draw_quarter_turned_texture_source_contain(
+    texture: &Texture2D,
+    source: Rect,
+    rect: Rect,
+    opacity: f32,
+) {
+    let dest_size =
+        quarter_turned_contained_texture_size(vec2(source.w, source.h), vec2(rect.w, rect.h));
+    let center = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+    let position = center - dest_size * 0.5;
+    draw_texture_ex(
+        texture,
+        position.x,
+        position.y,
+        Color::new(1.0, 1.0, 1.0, opacity.clamp(0.0, 1.0)),
+        DrawTextureParams {
+            source: Some(source),
+            dest_size: Some(dest_size),
+            rotation: std::f32::consts::FRAC_PI_2,
+            pivot: Some(center),
             ..Default::default()
         },
     );
@@ -13962,17 +15185,16 @@ fn draw_npc_ship(
         Color { a: 0.42, ..color },
     );
     if let Some(texture) = &npc_ship.texture {
-        draw_texture_ex(
+        draw_rotated_texture_contain(
             texture,
-            screen_pos.x - size * 0.5,
-            screen_pos.y - size * 0.5,
+            Rect::new(
+                screen_pos.x - size * 0.5,
+                screen_pos.y - size * 0.5,
+                size,
+                size,
+            ),
             Color { a: 0.92, ..WHITE },
-            DrawTextureParams {
-                dest_size: Some(vec2(size, size)),
-                rotation: npc_ship.angle + std::f32::consts::FRAC_PI_2,
-                pivot: Some(screen_pos),
-                ..Default::default()
-            },
+            npc_ship.angle + std::f32::consts::FRAC_PI_2,
         );
     } else {
         draw_ship_model(
@@ -14090,57 +15312,228 @@ fn draw_defense_threat(center: Vec2, ship: &Ship, threat: &DefenseThreat, zoom: 
     );
 }
 
-fn draw_weapon_fire_event(center: Vec2, ship: &Ship, event: &WeaponFireEvent, zoom: f32) {
+fn draw_weapon_fire_event(
+    center: Vec2,
+    ship: &Ship,
+    event: &WeaponFireEvent,
+    zoom: f32,
+    projectile_textures: &HashMap<String, Texture2D>,
+) {
     let from = world_to_screen(event.from, center, ship, zoom);
     let to = world_to_screen(event.to, center, ship, zoom);
-    let alpha = (event.timer / WEAPON_FIRE_EVENT_SECONDS).clamp(0.0, 1.0);
+    let alpha = (event.timer / event.duration.max(f32::EPSILON)).clamp(0.0, 1.0);
     let travel = 1.0 - alpha;
-    let (beam, core, impact) = match event.origin {
-        WeaponFireOrigin::Player => (
-            Color::new(0.24, 0.70, 1.0, alpha),
-            Color::new(0.72, 0.96, 1.0, alpha),
-            Color::new(0.56, 0.92, 1.0, alpha * 0.9),
-        ),
-        WeaponFireOrigin::Npc => (
-            Color::new(0.95, 0.34, 0.28, alpha),
-            Color::new(1.0, 0.86, 0.48, alpha),
-            Color::new(1.0, 0.72, 0.35, alpha * 0.9),
-        ),
+    let beam = weapon_effect_color(event.beam_color, alpha);
+    let core = weapon_effect_color(event.core_color, alpha);
+    let impact = weapon_effect_color(event.impact_color, alpha * 0.9);
+    let path_direction = match event.origin {
+        WeaponFireOrigin::Player => 1.0,
+        WeaponFireOrigin::Npc => -1.0,
     };
-    let delta = to - from;
-    let distance = delta.length().max(1.0);
-    let direction = delta / distance;
-    let normal = vec2(-direction.y, direction.x);
-    let arc = normal * (distance * 0.18).clamp(22.0, 92.0);
-    let shimmer =
-        normal * ((get_time() as f32 * 18.0 + distance * 0.03).sin() * 8.0 * alpha.clamp(0.0, 1.0));
-
-    let head = curved_weapon_fire_point(from, to, arc + shimmer, travel);
-    let trail_steps = 9;
-    for step in 0..trail_steps {
-        let trail_end_t = (travel - step as f32 * 0.045).clamp(0.0, 1.0);
-        let trail_start_t = (trail_end_t - 0.055).clamp(0.0, 1.0);
-        if trail_end_t <= 0.0 {
-            continue;
-        }
-        let trail_start = curved_weapon_fire_point(from, to, arc + shimmer, trail_start_t);
-        let trail_end = curved_weapon_fire_point(from, to, arc + shimmer, trail_end_t);
-        let fade = alpha * (1.0 - step as f32 / trail_steps as f32).powf(1.4);
-        draw_line(
-            trail_start.x,
-            trail_start.y,
-            trail_end.x,
-            trail_end.y,
-            (6.0 - step as f32 * 0.45).max(1.2),
-            Color { a: fade, ..beam },
-        );
+    let projectile_texture = event
+        .projectile_texture
+        .as_ref()
+        .and_then(|path| projectile_textures.get(path));
+    if event.effect == content::WeaponEffect::Beam {
+        draw_line(from.x, from.y, to.x, to.y, 7.0, beam);
+        draw_line(from.x, from.y, to.x, to.y, 2.5, core);
     }
-    draw_circle(head.x, head.y, 5.0 + alpha * 5.0, beam);
-    draw_circle(head.x, head.y, 2.6 + alpha * 2.2, core);
+    let projectile_count = if event.effect == content::WeaponEffect::Burst {
+        event.burst_count.max(1)
+    } else {
+        1
+    };
+    let elapsed = event.duration - event.timer;
+    let trail_steps = 9;
+    for projectile_index in 0..projectile_count {
+        let lane = projectile_index as f32 - (projectile_count - 1) as f32 * 0.5;
+        let head = weapon_effect_path_point(from, to, event, travel, elapsed, path_direction, lane);
+        if event.effect != content::WeaponEffect::Beam {
+            for step in 0..trail_steps {
+                let trail_step = event.trail_length / trail_steps as f32;
+                let trail_end_t = (travel - step as f32 * trail_step).clamp(0.0, 1.0);
+                let trail_start_t = (trail_end_t - trail_step * 1.15).clamp(0.0, 1.0);
+                if trail_end_t <= 0.0 {
+                    continue;
+                }
+                let trail_start = weapon_effect_path_point(
+                    from,
+                    to,
+                    event,
+                    trail_start_t,
+                    elapsed,
+                    path_direction,
+                    lane,
+                );
+                let trail_end = weapon_effect_path_point(
+                    from,
+                    to,
+                    event,
+                    trail_end_t,
+                    elapsed,
+                    path_direction,
+                    lane,
+                );
+                let fade = alpha * (1.0 - step as f32 / trail_steps as f32).powf(1.4);
+                draw_line(
+                    trail_start.x,
+                    trail_start.y,
+                    trail_end.x,
+                    trail_end.y,
+                    (6.0 - step as f32 * 0.45).max(1.2),
+                    Color { a: fade, ..beam },
+                );
+            }
+        }
+        if let Some(texture) = projectile_texture {
+            draw_weapon_projectile_sprite(
+                texture,
+                head,
+                from,
+                to,
+                event,
+                travel,
+                elapsed,
+                path_direction,
+                lane,
+                event.projectile_size * zoom,
+                alpha,
+            );
+        } else if event.effect != content::WeaponEffect::Beam {
+            draw_circle(head.x, head.y, 5.0 + alpha * 5.0, beam);
+            draw_circle(head.x, head.y, 2.6 + alpha * 2.2, core);
+        }
+    }
     if travel > 0.72 {
         let flare = ((travel - 0.72) / 0.28).clamp(0.0, 1.0) * alpha;
         draw_circle(to.x, to.y, 8.0 + flare * 13.0, Color { a: flare, ..impact });
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_weapon_projectile_sprite(
+    texture: &Texture2D,
+    head: Vec2,
+    from: Vec2,
+    to: Vec2,
+    event: &WeaponFireEvent,
+    travel: f32,
+    elapsed: f32,
+    path_direction: f32,
+    lane: f32,
+    requested_length: f32,
+    alpha: f32,
+) {
+    let previous = weapon_effect_path_point(
+        from,
+        to,
+        event,
+        (travel - 0.015).max(0.0),
+        elapsed,
+        path_direction,
+        lane,
+    );
+    let direction = safe_direction(head - previous, to - from);
+    let length = requested_length.clamp(12.0, 96.0);
+    let height = length * texture.height() / texture.width().max(1.0);
+    draw_texture_ex(
+        texture,
+        head.x - length * 0.5,
+        head.y - height * 0.5,
+        Color::new(1.0, 1.0, 1.0, alpha.clamp(0.25, 1.0)),
+        DrawTextureParams {
+            dest_size: Some(vec2(length, height)),
+            rotation: direction.y.atan2(direction.x),
+            ..Default::default()
+        },
+    );
+}
+
+fn draw_weapon_area_effect_event(
+    center: Vec2,
+    ship: &Ship,
+    event: &WeaponAreaEffectEvent,
+    zoom: f32,
+) {
+    let position = world_to_screen(event.position, center, ship, zoom);
+    let life = (event.timer / event.duration.max(f32::EPSILON)).clamp(0.0, 1.0);
+    let progress = 1.0 - life;
+    let radius = (event.radius * zoom * progress.sqrt()).max(2.0);
+    let color = weapon_effect_color(event.color, life * 0.7);
+    draw_circle(
+        position.x,
+        position.y,
+        radius,
+        Color {
+            a: life * 0.08,
+            ..color
+        },
+    );
+    draw_circle_lines(position.x, position.y, radius, 3.0, color);
+    draw_circle_lines(
+        position.x,
+        position.y,
+        radius * 0.72,
+        1.5,
+        Color {
+            a: life * 0.45,
+            ..color
+        },
+    );
+}
+
+fn weapon_effect_path_point(
+    from: Vec2,
+    to: Vec2,
+    event: &WeaponFireEvent,
+    t: f32,
+    elapsed: f32,
+    path_direction: f32,
+    burst_lane: f32,
+) -> Vec2 {
+    let t = t.clamp(0.0, 1.0);
+    let delta = to - from;
+    let distance = delta.length().max(1.0);
+    let normal = vec2(-delta.y, delta.x).normalize_or_zero();
+    let envelope = (std::f32::consts::PI * t).sin();
+    let phase = std::f32::consts::TAU * event.path_cycles * t;
+    let base = from.lerp(to, t);
+    let offset = match event.effect {
+        content::WeaponEffect::Arc => {
+            let curve = distance * event.path_curve_strength * envelope * path_direction;
+            let shimmer = (elapsed * 18.0 + distance * 0.03).sin() * event.path_wobble * envelope;
+            curve + shimmer
+        }
+        content::WeaponEffect::Spiral => {
+            let radius =
+                (distance * event.path_curve_strength * 0.35).max(event.path_wobble) * envelope;
+            phase.sin() * radius * path_direction
+        }
+        content::WeaponEffect::Zigzag => {
+            let triangle = (phase.sin().asin() * (2.0 / std::f32::consts::PI)).clamp(-1.0, 1.0);
+            triangle * event.path_wobble * envelope * path_direction
+        }
+        content::WeaponEffect::Homing => {
+            let early_curve = 4.0 * t * (1.0 - t).powi(2);
+            distance * event.path_curve_strength * early_curve * path_direction
+                + phase.sin() * event.path_wobble * (1.0 - t) * envelope
+        }
+        content::WeaponEffect::Burst => {
+            burst_lane * event.path_wobble * envelope
+                + phase.sin() * event.path_wobble * 0.2 * path_direction
+        }
+        content::WeaponEffect::Straight | content::WeaponEffect::Beam => 0.0,
+    };
+    base + normal * offset
+}
+
+fn weapon_effect_color(rgba: [u8; 4], alpha: f32) -> Color {
+    Color::new(
+        rgba[0] as f32 / 255.0,
+        rgba[1] as f32 / 255.0,
+        rgba[2] as f32 / 255.0,
+        rgba[3] as f32 / 255.0 * alpha,
+    )
 }
 
 fn draw_collision_impact_event(center: Vec2, ship: &Ship, event: &CollisionImpactEvent, zoom: f32) {
@@ -14187,10 +15580,6 @@ fn draw_collision_impact_event(center: Vec2, ship: &Ship, event: &CollisionImpac
             outer,
         );
     }
-}
-
-fn curved_weapon_fire_point(from: Vec2, to: Vec2, arc: Vec2, t: f32) -> Vec2 {
-    from.lerp(to, t) + arc * (std::f32::consts::PI * t).sin()
 }
 
 fn incoming_weapon_fire_count(ship: &Ship, weapon_fire_events: &[WeaponFireEvent]) -> usize {
@@ -14438,17 +15827,11 @@ fn draw_ship_sprite(
             );
         }
 
-        draw_texture_ex(
+        draw_rotated_texture_contain(
             texture,
-            center.x - size * 0.5,
-            center.y - size * 0.5,
+            Rect::new(center.x - size * 0.5, center.y - size * 0.5, size, size),
             WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(size, size)),
-                rotation,
-                pivot: Some(center),
-                ..Default::default()
-            },
+            rotation,
         );
     } else {
         draw_ship_model(center, size / 4.0, thrusting, rotation);
@@ -15515,15 +16898,16 @@ fn inventory_panel_rect(action_rail_width: Option<f32>) -> (f32, f32, f32, f32) 
     let sidecar_space = action_rail_width
         .map(|width| width + OBJECT_ACTION_RAIL_GAP)
         .unwrap_or(0.0);
-    let available_width = (screen_width() - 32.0 - sidecar_space).max(640.0);
-    let panel_width = available_width.min(1176.0);
+    let available_width =
+        (screen_width() - INVENTORY_OVERLAY_SCREEN_MARGIN * 2.0 - sidecar_space).max(640.0);
+    let panel_width = available_width.min(1280.0);
     let panel_height = inventory_panel_height();
     let total_width = panel_width + sidecar_space;
     let panel_x = (screen_width() - total_width) * 0.5 + sidecar_space;
     let panel_y = (screen_height() - panel_height) * 0.5 + 18.0;
 
     (
-        panel_x.max(16.0 + sidecar_space),
+        panel_x.max(INVENTORY_OVERLAY_SCREEN_MARGIN + sidecar_space),
         panel_y,
         panel_width,
         panel_height,
@@ -15558,11 +16942,8 @@ fn inventory_overlay_layout(action_rail_width: Option<f32>) -> InventoryOverlayL
     let gap = GAME_PANEL_CONTENT_PAD_X;
     let inner_width = panel_width - gap * 2.0;
     let pane_width = (inner_width - gap * 2.0).max(0.0);
-    let (detail_share, production_share, inventory_share) = if action_rail_width.is_some() {
-        (0.34, 0.40, 0.26)
-    } else {
-        (0.36, 0.38, 0.26)
-    };
+    let (detail_share, production_share, inventory_share) =
+        inventory_pane_shares(action_rail_width.is_some());
     let detail_width = pane_width * detail_share;
     let production_width = pane_width * production_share;
     let inventory_width = pane_width * inventory_share;
@@ -15591,6 +16972,14 @@ fn inventory_overlay_layout(action_rail_width: Option<f32>) -> InventoryOverlayL
         inventory_x,
         inventory_width,
         action_rail,
+    }
+}
+
+fn inventory_pane_shares(has_action_rail: bool) -> (f32, f32, f32) {
+    if has_action_rail {
+        (0.28, 0.34, 0.38)
+    } else {
+        (0.28, 0.38, 0.34)
     }
 }
 
@@ -15626,9 +17015,7 @@ fn action_rail_width_with_override(auto_width: f32, game: &GameState) -> f32 {
 }
 
 fn action_rail_width_from_override(auto_width: f32, override_width: Option<f32>) -> f32 {
-    let width = override_width.map_or_else(action_rail_max_width, |override_width| {
-        action_rail_override_candidate(auto_width, Some(override_width))
-    });
+    let width = action_rail_override_candidate(auto_width, override_width);
     clamp_action_rail_width(width)
 }
 
@@ -15731,11 +17118,12 @@ fn ship_defense_action_rail_width(game: &GameState) -> f32 {
         .map(|slot_index| {
             game.equipped_weapons
                 .get(slot_index)
+                .filter(|weapon| weapon.resolved)
                 .map(|weapon| measure_text(&weapon.name, None, 17, 1.0).width)
-                .unwrap_or_else(|| measure_text("Empty turret slot", None, 17, 1.0).width)
+                .unwrap_or_else(|| measure_text("Empty weapon slot", None, 17, 1.0).width)
         })
         .fold(
-            measure_text("Point Defense Turret", None, 17, 1.0).width,
+            measure_text("Installed weapon", None, 17, 1.0).width,
             f32::max,
         );
     let candidate_width = game
@@ -15743,9 +17131,9 @@ fn ship_defense_action_rail_width(game: &GameState) -> f32 {
         .weapon_order
         .iter()
         .filter_map(|weapon_id| game.content_registry.weapons.get(weapon_id))
-        .map(|weapon| measure_text(&weapon.name, None, 16, 1.0).width)
+        .map(|weapon| measure_text(&format!("Turret List: {}", weapon.name), None, 16, 1.0).width)
         .fold(
-            measure_text("No crafted turrets", None, 16, 1.0).width,
+            measure_text("No crafted weapons", None, 16, 1.0).width,
             f32::max,
         );
 
@@ -15859,12 +17247,16 @@ fn draw_inventory_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
 fn draw_inventory_pane_separators(layout: &InventoryOverlayLayout) {
     let top = layout.panel_y + GAME_PANEL_BODY_TOP - 14.0;
     let bottom = layout.panel_y + layout.panel_height - 34.0;
-    let first_x = layout.detail_x + layout.detail_width + 12.0;
-    let second_x = layout.production_x + layout.production_width + 12.0;
+    let first_x = pane_leading_separator_x(layout.production_x);
+    let second_x = pane_leading_separator_x(layout.inventory_x);
     let color = Color::from_rgba(96, 137, 150, 115);
 
     draw_vertical_dotted_line(first_x, top, bottom, 1.0, 7.0, 7.0, color);
     draw_vertical_dotted_line(second_x, top, bottom, 1.0, 7.0, 7.0, color);
+}
+
+fn pane_leading_separator_x(table_x: f32) -> f32 {
+    table_x - 8.0
 }
 
 fn draw_vertical_dotted_line(
@@ -15972,7 +17364,7 @@ fn draw_ship_defense_action_rail(game: &GameState, rail: Rect, mouse: Vec2) {
         text,
     );
     draw_text(
-        "Click a slot to install the next crafted turret.",
+        "Choose a turret from each bank's Turret List.",
         rail.x + 12.0,
         rail.y + 76.0,
         14.0,
@@ -15981,7 +17373,7 @@ fn draw_ship_defense_action_rail(game: &GameState, rail: Rect, mouse: Vec2) {
 
     if slot_count == 0 {
         draw_text(
-            "No turret slots configured",
+            "No weapon slots configured",
             rail.x + 12.0,
             rail.y + 116.0,
             16.0,
@@ -16019,85 +17411,144 @@ fn draw_ship_defense_action_rail(game: &GameState, rail: Rect, mouse: Vec2) {
             },
         );
         draw_text(
-            &format!("Slot {}", slot_index + 1),
+            &format!("Turret Bank #{}", slot_index + 1),
             rect.x + 8.0,
-            rect.y + 20.0,
+            rect.y + 18.0,
             15.0,
             label,
         );
-        if let Some(weapon) = game.equipped_weapons.get(slot_index) {
-            draw_text(
-                &fit_debug_text(&weapon.name, rect.w - 112.0, 17),
-                rect.x + 70.0,
-                rect.y + 20.0,
-                17.0,
-                accent,
-            );
-            let status = format!(
+        let resolved_weapon = game
+            .equipped_weapons
+            .get(slot_index)
+            .filter(|weapon| weapon.resolved);
+        let selection_label = if let Some(weapon) = resolved_weapon {
+            weapon.name.clone()
+        } else if let Some(missing) = game
+            .equipped_weapons
+            .get(slot_index)
+            .filter(|weapon| !weapon.id.is_empty())
+        {
+            format!("Missing: {}", missing.id)
+        } else {
+            "Select turret".to_string()
+        };
+        let status = if let Some(weapon) = resolved_weapon {
+            let mut status = format!(
                 "{}  rng {:.0}  dmg {:.0}  e {:.0}",
                 weapon.readiness_label(),
                 weapon.range,
                 weapon.damage,
                 weapon.energy_cost
             );
-            draw_text(
-                &fit_debug_text(&status, rect.w - 78.0, 14),
-                rect.x + 70.0,
-                rect.y + 41.0,
-                14.0,
-                if weapon.status == WeaponStatus::InsufficientEnergy {
+            if let Some(ammo) = player_weapon_ammo_count(&game.inventory, weapon) {
+                status.push_str(&format!("  ammo {ammo}"));
+            }
+            status
+        } else {
+            "Ready for install".to_string()
+        };
+        let button = turret_bank_button_rect(rail, slot_index);
+        let button_hovered = button.contains(mouse);
+        draw_rectangle(
+            button.x,
+            button.y,
+            button.w,
+            button.h,
+            if button_hovered {
+                Color::from_rgba(18, 48, 58, 245)
+            } else {
+                Color::from_rgba(10, 27, 35, 235)
+            },
+        );
+        draw_rectangle_lines(button.x, button.y, button.w, button.h, 1.0, accent);
+        draw_text(
+            &fit_debug_text(
+                &format!("Turret List: {}  ▾", selection_label),
+                button.w - 12.0,
+                15,
+            ),
+            button.x + 6.0,
+            button.y + 18.0,
+            15.0,
+            if resolved_weapon.is_some() {
+                accent
+            } else {
+                text
+            },
+        );
+        draw_text(
+            &fit_debug_text(&status, rect.w - 16.0, 12),
+            rect.x + 8.0,
+            rect.y + 64.0,
+            12.0,
+            resolved_weapon.map_or(unavailable, |weapon| {
+                if matches!(
+                    weapon.status,
+                    WeaponStatus::InsufficientEnergy | WeaponStatus::OutOfAmmo
+                ) {
                     Color::from_rgba(226, 190, 150, 245)
                 } else {
                     text
-                },
-            );
-        } else {
-            draw_text(
-                "Empty turret slot",
-                rect.x + 70.0,
-                rect.y + 20.0,
-                17.0,
-                text,
-            );
-            draw_text(
-                "Ready for install",
-                rect.x + 70.0,
-                rect.y + 41.0,
-                14.0,
-                unavailable,
-            );
-        }
-
-        let swap_label = weapon_slot_swap_label(
-            &game.content_registry,
-            &game.inventory,
-            &game.equipped_weapons,
-            slot_index,
-        );
-        let swap_enabled = next_available_weapon_id_for_slot(
-            &game.content_registry,
-            &game.inventory,
-            &game.equipped_weapons,
-            slot_index,
-        )
-        .is_some();
-        draw_text(
-            &fit_debug_text(&swap_label, rect.w - 16.0, 14),
-            rect.x + 8.0,
-            rect.y + 63.0,
-            14.0,
-            if swap_enabled { accent } else { unavailable },
+                }
+            }),
         );
     }
 
     if slot_count > 5 {
         draw_text(
-            &format!("{} more turret slot(s)", slot_count - 5),
+            &format!("{} more weapon slot(s)", slot_count - 5),
             rail.x + 12.0,
             rail.y + 112.0 + 5.0 * 76.0,
             15.0,
             accent,
         );
+    }
+
+    if let Some(slot_index) = game.open_turret_bank.filter(|slot| *slot < slot_count) {
+        let turret_ids = inventory_turret_ids(&game.content_registry, &game.inventory);
+        let dropdown = turret_bank_dropdown_rect(rail, slot_index, turret_ids.len());
+        draw_rectangle(
+            dropdown.x,
+            dropdown.y,
+            dropdown.w,
+            dropdown.h,
+            Color::from_rgba(5, 16, 22, 252),
+        );
+        draw_rectangle_lines(dropdown.x, dropdown.y, dropdown.w, dropdown.h, 1.0, accent);
+        if turret_ids.is_empty() {
+            draw_text(
+                "No turrets in inventory",
+                dropdown.x + 8.0,
+                dropdown.y + 20.0,
+                14.0,
+                unavailable,
+            );
+        }
+        for (row_index, weapon_id) in turret_ids.iter().enumerate() {
+            let row = turret_bank_dropdown_row_rect(dropdown, row_index);
+            if row.contains(mouse) {
+                draw_rectangle(
+                    row.x + 1.0,
+                    row.y + 1.0,
+                    row.w - 2.0,
+                    row.h - 2.0,
+                    Color::from_rgba(20, 55, 65, 245),
+                );
+            }
+            let Some(weapon) = game.content_registry.weapons.get(weapon_id) else {
+                continue;
+            };
+            let count = registry_item(&game.content_registry, &weapon.install_item)
+                .map(|item| game.inventory.count(&item))
+                .unwrap_or(0);
+            draw_text(
+                &fit_debug_text(&format!("{}  x{}", weapon.name, count), row.w - 16.0, 15),
+                row.x + 8.0,
+                row.y + 20.0,
+                15.0,
+                accent,
+            );
+        }
     }
 }
 
@@ -16199,6 +17650,32 @@ fn ship_weapon_slot_rect_for_rail(rail: Rect, slot_index: usize) -> Rect {
         rail.y + 100.0 + slot_index as f32 * 76.0,
         rail.w - 24.0,
         68.0,
+    )
+}
+
+fn turret_bank_button_rect(rail: Rect, slot_index: usize) -> Rect {
+    let slot = ship_weapon_slot_rect_for_rail(rail, slot_index);
+    Rect::new(slot.x + 8.0, slot.y + 25.0, slot.w - 16.0, 25.0)
+}
+
+fn turret_bank_dropdown_rect(rail: Rect, slot_index: usize, item_count: usize) -> Rect {
+    let button = turret_bank_button_rect(rail, slot_index);
+    let height = item_count.max(1) as f32 * 30.0;
+    let below_y = button.y + button.h + 3.0;
+    let y = if below_y + height <= rail.y + rail.h - 8.0 {
+        below_y
+    } else {
+        button.y - height - 3.0
+    };
+    Rect::new(button.x, y, button.w, height)
+}
+
+fn turret_bank_dropdown_row_rect(dropdown: Rect, row_index: usize) -> Rect {
+    Rect::new(
+        dropdown.x,
+        dropdown.y + row_index as f32 * 30.0,
+        dropdown.w,
+        30.0,
     )
 }
 
@@ -18634,35 +20111,49 @@ fn work_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
 }
 
 fn work_table_layout_with_height(x: f32, y: f32, width: f32, height: f32) -> UiTableLayout {
+    let compact = width < 382.0;
+    let column_gap = if compact { 6.0 } else { 12.0 };
+    let keep_width = 42.0;
+    let status_width = if compact { 58.0 } else { 76.0 };
+    let percent_width = if compact { 32.0 } else { 42.0 };
+    let active_width = 50.0;
+    let item_width =
+        (width - keep_width - status_width - percent_width - active_width - column_gap * 4.0)
+            .max(60.0);
     ui_table_layout(
         Rect::new(x, y, width, height),
         y + 13.0,
         height,
         WORK_ROW_HEIGHT,
-        12.0,
+        column_gap,
         &[
-            ui_column_spec_flex(132.0, 1.0),
-            ui_column_spec_content(48.0, 42.0, 58.0),
-            ui_column_spec_content(76.0, 68.0, 92.0),
-            ui_column_spec_content(46.0, 42.0, 58.0),
-            ui_column_spec_content(measure_text("Active", None, 16, 1.0).width, 50.0, 64.0),
+            ui_column_spec_fixed(item_width),
+            ui_column_spec_fixed(keep_width),
+            ui_column_spec_fixed(status_width),
+            ui_column_spec_fixed(percent_width),
+            ui_column_spec_fixed(active_width),
         ],
     )
 }
 
 fn inventory_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
+    let columns = inventory_column_specs();
     ui_table_layout(
         Rect::new(x, y, width, work_table_height()),
         y + 13.0,
         work_table_height(),
         INVENTORY_ROW_HEIGHT,
-        12.0,
-        &[
-            ui_column_spec_flex(130.0, 1.0),
-            ui_column_spec_content(42.0, 38.0, 58.0),
-            ui_column_spec_content(64.0, 58.0, 84.0),
-        ],
+        10.0,
+        &columns,
     )
+}
+
+fn inventory_column_specs() -> [UiColumnSpec; 3] {
+    [
+        ui_column_spec_flex(130.0, 1.0),
+        ui_column_spec_fixed(44.0),
+        ui_column_spec_fixed(78.0),
+    ]
 }
 
 fn npc_interaction_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
@@ -21048,20 +22539,15 @@ fn draw_npc_ship_detail(
     let identified = npc_ship.identified;
 
     if let Some(texture) = &npc_ship.texture {
-        draw_texture_ex(
+        draw_rotated_texture_contain(
             texture,
-            x,
-            y,
+            Rect::new(x, y, preview_size, preview_size),
             if identified {
                 WHITE
             } else {
                 Color::from_rgba(150, 170, 176, 190)
             },
-            DrawTextureParams {
-                dest_size: Some(vec2(preview_size, preview_size)),
-                rotation: npc_ship.angle + std::f32::consts::FRAC_PI_2,
-                ..Default::default()
-            },
+            npc_ship.angle + std::f32::consts::FRAC_PI_2,
         );
     } else {
         draw_ship_model(
@@ -21193,20 +22679,26 @@ fn draw_npc_ship_detail(
 
     if identified && !npc_ship.equipped_weapons.is_empty() {
         let weapon = &npc_ship.equipped_weapons[0];
-        let defense = format!(
+        let mut defense = format!(
             "{} / {} / rng {:.0} / dmg {:.0}",
             weapon.name,
             weapon.readiness_label(),
             weapon.range,
             weapon.damage
         );
+        if let Some(ammo) = npc_weapon_ammo_count(npc_ship, weapon) {
+            defense.push_str(&format!(" / ammo {ammo}"));
+        }
         draw_text("Defense", x, detail_y, 16.0, label);
         draw_text(
             &fit_debug_text(&defense, width, 16),
             x,
             detail_y + 26.0,
             16.0,
-            if weapon.status == WeaponStatus::InsufficientEnergy {
+            if matches!(
+                weapon.status,
+                WeaponStatus::InsufficientEnergy | WeaponStatus::OutOfAmmo
+            ) {
                 warning
             } else {
                 active
@@ -21541,9 +23033,9 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
         1.0,
         Color::from_rgba(82, 114, 124, 95),
     );
-    draw_text("Turret defense", x, weapons_y, 15.0, label);
+    draw_text("Automatic weapons", x, weapons_y, 15.0, label);
     draw_text(
-        "Use the Defense rail to assign crafted turrets.",
+        &fit_debug_text("Use the Defense rail to assign crafted weapons.", width, 15),
         x,
         weapons_y + 28.0,
         15.0,
@@ -21557,7 +23049,11 @@ fn draw_ship_detail(view: ShipDetailView<'_>) {
                 && threat.hull.current > 0.0
         })
         .count();
-    let active_turrets = weapons.len().min(weapon_slot_capacity);
+    let active_turrets = weapons
+        .iter()
+        .filter(|weapon| weapon.resolved)
+        .count()
+        .min(weapon_slot_capacity);
     let threat_label = format!(
         "{} active / {} slot(s) / {} hostile",
         active_turrets, weapon_slot_capacity, hostile_count
@@ -22068,7 +23564,7 @@ fn draw_hud(view: HudView<'_>) {
 
     if incoming_weapon_fire > 0 {
         draw_text(
-            &format!("Incoming turret fire x{incoming_weapon_fire}"),
+            &format!("Incoming weapon fire x{incoming_weapon_fire}"),
             34.0,
             184.0,
             20.0,
@@ -22292,6 +23788,124 @@ mod tests {
     }
 
     #[test]
+    fn new_game_ship_choices_include_pack_hulls_and_highlight_the_pack_default() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let ships = title_ships(&registry);
+        let default_ship = resolved_new_game_ship_id(&registry, None);
+
+        assert!(ships.iter().any(|ship| ship.id == STARTER_SHIP_ID));
+        assert!(ships.iter().any(|ship| {
+            ship.id == "turrets-galore:twinspire_gunship"
+                && ship.weapon_banks == 2
+                && ship
+                    .texture
+                    .as_deref()
+                    .is_some_and(|path| path.ends_with("assets/ships/twinspire-gunship.png"))
+        }));
+        assert_eq!(default_ship, "turrets-galore:twinspire_gunship");
+    }
+
+    #[test]
+    fn explicit_new_game_ship_selection_overrides_the_pack_default() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+
+        assert_eq!(
+            resolved_new_game_ship_id(&registry, Some(STARTER_SHIP_ID)),
+            STARTER_SHIP_ID
+        );
+        assert_eq!(
+            resolved_new_game_ship_id(&registry, Some("missing-pack:missing-ship")),
+            "turrets-galore:twinspire_gunship"
+        );
+    }
+
+    #[test]
+    fn ship_picker_cycles_in_both_directions() {
+        assert_eq!(cycled_index(0, 2, 1), 1);
+        assert_eq!(cycled_index(1, 2, 1), 0);
+        assert_eq!(cycled_index(0, 2, -1), 1);
+        assert_eq!(cycled_index(1, 2, -1), 0);
+        assert_eq!(cycled_index(1, 8, 3), 4);
+        assert_eq!(cycled_index(1, 8, -3), 6);
+        assert_eq!(cycled_index(7, 0, 1), 0);
+    }
+
+    #[test]
+    fn new_game_panel_is_wider_and_taller_for_the_ship_grid() {
+        let panel = title_new_game_panel_rect_for_screen(1280.0, 720.0);
+
+        assert_eq!(panel.w, 1_060.0);
+        assert_eq!(panel.h, 672.0);
+        assert_eq!(panel.x, 110.0);
+        assert_eq!(panel.y, 24.0);
+    }
+
+    #[test]
+    fn ship_cards_form_three_columns_and_scroll_by_rows() {
+        let grid = Rect::new(20.0, 30.0, 900.0, 240.0);
+        let first = title_ship_card_rect_for_grid(grid, 0, 0.0);
+        let third = title_ship_card_rect_for_grid(grid, 2, 0.0);
+        let fourth = title_ship_card_rect_for_grid(grid, 3, 0.0);
+
+        assert_eq!(first.y, third.y);
+        assert!(third.x > first.x);
+        assert_eq!(fourth.x, first.x);
+        assert_eq!(
+            fourth.y,
+            first.y + TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP
+        );
+        assert!(title_ship_grid_max_scroll(9, grid.h) > 0.0);
+        assert_eq!(title_ship_grid_max_scroll(3, grid.h), 0.0);
+    }
+
+    #[test]
+    fn rectangular_ship_textures_preserve_their_aspect_ratio() {
+        let fitted = contained_texture_size(vec2(353.0, 512.0), vec2(64.0, 64.0));
+        let quarter_turned =
+            quarter_turned_contained_texture_size(vec2(353.0, 512.0), vec2(300.0, 108.0));
+
+        assert!((fitted.x - 44.125).abs() < 0.001);
+        assert_eq!(fitted.y, 64.0);
+        assert!((fitted.x / fitted.y - 353.0 / 512.0).abs() < 0.001);
+        assert_eq!(quarter_turned.x, 108.0);
+        assert!(quarter_turned.y > quarter_turned.x);
+        assert!(quarter_turned.y <= 300.0);
+        assert!((quarter_turned.x / quarter_turned.y - 353.0 / 512.0).abs() < 0.001);
+        assert_eq!(
+            contained_texture_size(Vec2::ZERO, vec2(64.0, 64.0)),
+            Vec2::ZERO
+        );
+    }
+
+    #[test]
+    fn ship_preview_ignores_transparent_canvas_padding() {
+        let mut image = Image {
+            bytes: vec![0; 8 * 6 * 4],
+            width: 8,
+            height: 6,
+        };
+        for y in 1..=4 {
+            for x in 2..=5 {
+                image.bytes[(y * 8 + x) * 4 + 3] = 255;
+            }
+        }
+
+        assert_eq!(image_alpha_bounds(&image), Rect::new(2.0, 1.0, 4.0, 4.0));
+
+        let transparent = Image {
+            bytes: vec![0; 3 * 2 * 4],
+            width: 3,
+            height: 2,
+        };
+        assert_eq!(
+            image_alpha_bounds(&transparent),
+            Rect::new(0.0, 0.0, 3.0, 2.0)
+        );
+    }
+
+    #[test]
     fn runtime_flags_parse_debug_cli_flag() {
         assert!(RuntimeFlags::from_args(["--debug".to_string()]).debug);
         assert!(RuntimeFlags::from_args(["--fast".to_string(), "--debug".to_string()]).debug);
@@ -22420,6 +24034,7 @@ mod tests {
 
         assert!(!serialized.contains("purchased_recipe_unlocks"));
         assert_eq!(restored.content_pack_options, game.content_pack_options);
+        assert_eq!(restored.ship_id, game.ship_id);
         assert_eq!(restored.completed_research, game.completed_research);
         assert_eq!(restored.active_research.len(), 1);
         assert_eq!(
@@ -22437,8 +24052,8 @@ mod tests {
         );
         assert_eq!(restored.shield_recharge_delay_remaining, 2.5);
         assert_eq!(
-            restored.weapon_slots,
-            vec!["core:point_defense_turret".to_string()]
+            restored.weapon_slot_loadout,
+            vec![Some("core:point_defense_turret".to_string())]
         );
     }
 
@@ -22555,7 +24170,24 @@ mod tests {
 
         let starter_inventory = Inventory::starter(&registry);
         let reactor_pellet = required_item(&registry, "core:reactor_pellet");
+        let ember_lance = required_item(&registry, "turrets-galore:ember_lance_turret");
+        let sentinel_flak = required_item(&registry, "turrets-galore:sentinel_flak_turret");
+        let storm_chain = required_item(&registry, "turrets-galore:storm_chain_turret");
+        let super_nuke = required_item(&registry, "turrets-galore:super_nuke_turret");
         assert_eq!(starter_inventory.count(&reactor_pellet), 3);
+        assert_eq!(starter_inventory.count(&ember_lance), 1);
+        assert_eq!(starter_inventory.count(&sentinel_flak), 1);
+        assert_eq!(starter_inventory.count(&storm_chain), 1);
+        assert_eq!(starter_inventory.count(&super_nuke), 1);
+        assert_eq!(
+            inventory_turret_ids(&registry, &starter_inventory),
+            vec![
+                "turrets-galore:ember_lance_turret".to_string(),
+                "turrets-galore:sentinel_flak_turret".to_string(),
+                "turrets-galore:storm_chain_turret".to_string(),
+                "turrets-galore:super_nuke_turret".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -22587,7 +24219,32 @@ mod tests {
                 cooldown_seconds: 2.0,
                 damage: 6.0,
                 energy_cost: 3.0,
+                ammo_item: None,
+                ammo_per_shot: 1,
                 tracking_degrees: 360.0,
+                targeting: content::WeaponTargeting::AllHostiles,
+                effect: content::WeaponEffect::Arc,
+                beam_color: [61, 178, 255, 255],
+                core_color: [184, 245, 255, 255],
+                impact_color: [143, 235, 255, 255],
+                fire_duration_seconds: WEAPON_FIRE_EVENT_SECONDS,
+                path_curve_strength: 0.18,
+                path_wobble: 8.0,
+                path_cycles: 3.0,
+                trail_length: 0.4,
+                burst_count: 3,
+                travel_speed: None,
+                projectile_texture: None,
+                projectile_size: 28.0,
+                impact: content::WeaponImpact::Single,
+                splash_radius: 0.0,
+                splash_falloff: content::DamageFalloff::Linear,
+                splash_min_multiplier: 0.2,
+                chain_targets: 3,
+                chain_range: 240.0,
+                chain_damage_multiplier: 0.75,
+                friendly_fire: content::FriendlyFire::HostilesOnly,
+                fire_audio: None,
                 summary: None,
             },
         );
@@ -22616,69 +24273,325 @@ mod tests {
         assert_eq!(game.inventory.count(&install_item), 0);
         assert_eq!(game.inventory.count(&previous_item), 1);
         assert!(game.save_dirty);
-        assert_eq!(game.to_save().weapon_slots, vec!["core:test_turret"]);
+        assert_eq!(
+            game.to_save().weapon_slot_loadout,
+            vec![Some("core:test_turret".to_string())]
+        );
+    }
+
+    #[test]
+    fn loading_a_save_does_not_reapply_pack_starter_inventory() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let ember_lance = required_item(&registry, "turrets-galore:ember_lance_turret");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.inventory = Inventory::starter(&game.content_registry);
+        assert_eq!(game.inventory.count(&ember_lance), 1);
+
+        let mut save = game.to_save();
+        save.inventory.clear();
+        game.apply_save(save);
+
+        assert_eq!(game.inventory.count(&ember_lance), 0);
     }
 
     #[test]
     fn configured_weapon_slots_can_install_multiple_crafted_turrets() {
-        let mut registry = content::load_content_packs(Path::new("content/packs"))
+        let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
-        registry
+        let twinspire_id = "turrets-galore:twinspire_gunship";
+        let twinspire = registry
             .ships
-            .get_mut(STARTER_SHIP_ID)
-            .expect("starter ship should exist")
-            .weapon_slots
-            .push("core:point_defense_turret".to_string());
-        let turret_item = required_item(&registry, "core:point_defense_turret");
+            .get(twinspire_id)
+            .expect("Turrets Galore two-bank ship should exist")
+            .clone();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship_id = twinspire_id.to_string();
+        game.ship = Ship::from_content(&twinspire);
+        game.equipped_weapons =
+            equipped_weapons_from_ids(&game.content_registry, &twinspire.weapon_slots);
+
+        assert_eq!(weapon_slot_capacity(&game), 2);
+        let storm_item = required_item(&game.content_registry, "turrets-galore:storm_chain_turret");
+        let nuke_item = required_item(&game.content_registry, "turrets-galore:super_nuke_turret");
+        game.inventory.add_item(storm_item, 1);
+        game.inventory.add_item(nuke_item, 1);
+
+        install_weapon_in_slot(&mut game, 0, "turrets-galore:storm_chain_turret")
+            .expect("first bank should accept a configured turret");
+        install_weapon_in_slot(&mut game, 1, "turrets-galore:super_nuke_turret")
+            .expect("second bank should accept an independent configured turret");
+
+        assert_eq!(game.equipped_weapons.len(), 2);
+        assert_eq!(
+            game.to_save().weapon_slot_loadout,
+            vec![
+                Some("turrets-galore:storm_chain_turret".to_string()),
+                Some("turrets-galore:super_nuke_turret".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn saved_ship_identity_restores_two_bank_capacity() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship_id = "turrets-galore:twinspire_gunship".to_string();
+        let save = game.to_save();
+
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert_eq!(restored.ship_id, "turrets-galore:twinspire_gunship");
+        assert_eq!(weapon_slot_capacity(&restored), 2);
+        assert_eq!(restored.equipped_weapons.len(), 2);
+    }
+
+    #[test]
+    fn legacy_save_without_ship_identity_keeps_the_core_hull() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let game = test_game_with_systems(registry, Vec::new());
+        let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
+        let legacy_serialized = serialized
+            .lines()
+            .filter(|line| !line.starts_with("ship_id = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let save =
+            toml::from_str::<SaveData>(&legacy_serialized).expect("legacy save should deserialize");
+
+        assert_eq!(save.ship_id, STARTER_SHIP_ID);
+    }
+
+    #[test]
+    fn weapon_slot_save_preserves_empty_and_missing_pack_entries() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut save = game.to_save();
+        save.weapon_slots.clear();
+        save.weapon_slot_loadout = vec![
+            None,
+            Some("turrets-galore:ember_lance_turret".to_string()),
+            Some("missing-pack:lost_turret".to_string()),
+        ];
+
+        game.apply_save(save);
+
+        assert_eq!(game.equipped_weapons.len(), 3);
+        assert!(!game.equipped_weapons[0].resolved);
+        assert!(game.equipped_weapons[0].id.is_empty());
+        assert!(game.equipped_weapons[1].resolved);
+        assert_eq!(
+            game.equipped_weapons[1].id,
+            "turrets-galore:ember_lance_turret"
+        );
+        assert!(!game.equipped_weapons[2].resolved);
+        assert_eq!(game.equipped_weapons[2].id, "missing-pack:lost_turret");
+        assert_eq!(
+            game.to_save().weapon_slot_loadout,
+            vec![
+                None,
+                Some("turrets-galore:ember_lance_turret".to_string()),
+                Some("missing-pack:lost_turret".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pack_targeting_policy_limits_candidate_classes() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let game = test_game_with_systems(registry, Vec::new());
+        let ship_only = WeaponSystem::from_def(
+            game.content_registry
+                .weapons
+                .get("turrets-galore:ember_lance_turret")
+                .expect("ship-only proof turret should load"),
+        );
+        let all_hostiles = WeaponSystem::from_def(
+            game.content_registry
+                .weapons
+                .get("turrets-galore:sentinel_flak_turret")
+                .expect("all-hostiles proof turret should load"),
+        );
+
+        let threats = vec![test_defense_threat(
+            "test:hostile",
+            ThreatDisposition::Hostile,
+            game.ship.position + vec2(20.0, 0.0),
+            10.0,
+        )];
+        assert!(defense_turret_target_index(
+            &game.ship,
+            &ship_only,
+            &threats,
+            &game.current_system_id,
+        )
+        .is_none());
+        assert!(defense_turret_target_index(
+            &game.ship,
+            &all_hostiles,
+            &threats,
+            &game.current_system_id,
+        )
+        .is_some());
+        let mut npc = test_npc_ship(
+            NpcBehaviorMode::HostileIntercept,
+            game.ship.position + vec2(20.0, 0.0),
+        );
+        npc.angle = std::f32::consts::PI;
+        assert!(npc_weapon_can_target_player(
+            &npc,
+            &ship_only,
+            &game.ship,
+            &game.current_system_id,
+        ));
+        assert!(npc_weapon_can_target_player(
+            &npc,
+            &all_hostiles,
+            &game.ship,
+            &game.current_system_id,
+        ));
+    }
+
+    #[test]
+    fn turrets_galore_weapons_fire_at_the_starter_hostile_npc_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(420.0, 0.0));
+        probe.id = "core:redwake_probe".to_string();
+        probe.role = "hostile".to_string();
+        probe.faction = Some("core:redwake_raiders".to_string());
+        probe.behavior_tags = vec!["hostile".to_string()];
+        game.npc_ships = vec![probe];
+        game.ship.angle = std::f32::consts::PI;
+
+        for weapon_id in [
+            "turrets-galore:ember_lance_turret",
+            "turrets-galore:sentinel_flak_turret",
+            "turrets-galore:storm_chain_turret",
+            "turrets-galore:super_nuke_turret",
+        ] {
+            game.equipped_weapons =
+                equipped_weapons_from_ids(&game.content_registry, &[weapon_id.to_string()]);
+            game.ship.systems.energy.current = game.ship.systems.energy.max;
+            game.npc_ships[0].shields = ShipResource::full(20.0);
+            game.npc_ships[0].hull = ShipResource::full(36.0);
+            game.weapon_fire_events.clear();
+
+            update_player_weapon_systems(&mut game, 0.1);
+
+            assert_eq!(
+                game.equipped_weapons[0].status,
+                WeaponStatus::Fired,
+                "{weapon_id} should fire at the starter hostile NPC"
+            );
+            assert_eq!(game.weapon_fire_events.len(), 1);
+            finish_weapon_fire_events(&mut game);
+            assert!(game.npc_ships[0].shields.current < 20.0);
+        }
+    }
+
+    #[test]
+    fn twinspire_fires_both_turret_banks_in_the_same_update() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let twinspire = registry
+            .ships
+            .get("turrets-galore:twinspire_gunship")
+            .expect("two-bank ship should load")
+            .clone();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship_id = twinspire.id.clone();
+        game.ship = Ship::from_content(&twinspire);
+        game.equipped_weapons =
+            equipped_weapons_from_ids(&game.content_registry, &twinspire.weapon_slots);
+        game.npc_ships = vec![test_npc_ship(
+            NpcBehaviorMode::HostileIntercept,
+            vec2(420.0, 0.0),
+        )];
+
+        update_player_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons.len(), 2);
+        assert!(game
+            .equipped_weapons
+            .iter()
+            .all(|weapon| weapon.status == WeaponStatus::Fired));
+        assert_eq!(game.weapon_fire_events.len(), 2);
+    }
+
+    #[test]
+    fn chain_impact_jumps_between_hostile_ships_and_decays_damage() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
         game.equipped_weapons = equipped_weapons_from_ids(
             &game.content_registry,
-            &["core:point_defense_turret".to_string()],
+            &["turrets-galore:storm_chain_turret".to_string()],
         );
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.energy.current = 100.0;
+        game.npc_ships = [120.0, 300.0, 480.0]
+            .into_iter()
+            .enumerate()
+            .map(|(index, x)| {
+                let mut npc = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(x, 0.0));
+                npc.id = format!("core:chain-target-{index}");
+                npc.shields = ShipResource::full(100.0);
+                npc
+            })
+            .collect();
 
-        assert_eq!(weapon_slot_capacity(&game), 2);
-        assert_eq!(
-            weapon_slot_swap_label(
-                &game.content_registry,
-                &game.inventory,
-                &game.equipped_weapons,
-                1
-            ),
-            "No crafted"
-        );
+        update_weapon_systems(&mut game, 0.1);
+        assert!(game
+            .npc_ships
+            .iter()
+            .all(|npc| npc.shields.current == 100.0));
+        finish_weapon_fire_events(&mut game);
 
-        game.inventory.add_item(turret_item.clone(), 1);
-        assert_eq!(
-            next_available_weapon_id_for_slot(
-                &game.content_registry,
-                &game.inventory,
-                &game.equipped_weapons,
-                1
-            ),
-            Some("core:point_defense_turret".to_string())
-        );
-        assert_eq!(
-            weapon_slot_swap_label(
-                &game.content_registry,
-                &game.inventory,
-                &game.equipped_weapons,
-                1
-            ),
-            "Install Point Defense Turret"
-        );
+        assert!((game.npc_ships[0].shields.current - 78.0).abs() < 0.01);
+        assert!((game.npc_ships[1].shields.current - 84.16).abs() < 0.01);
+        assert!((game.npc_ships[2].shields.current - 88.5952).abs() < 0.01);
+        assert_eq!(game.weapon_fire_events.len(), 2);
+    }
 
-        install_weapon_in_slot(&mut game, 1, "core:point_defense_turret")
-            .expect("second configured slot should accept crafted turret");
-
-        assert_eq!(game.equipped_weapons.len(), 2);
-        assert_eq!(game.inventory.count(&turret_item), 0);
-        assert_eq!(
-            game.to_save().weapon_slots,
-            vec![
-                "core:point_defense_turret".to_string(),
-                "core:point_defense_turret".to_string()
-            ]
+    #[test]
+    fn splash_impact_uses_falloff_and_default_friendly_fire_safety() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["turrets-galore:super_nuke_turret".to_string()],
         );
+        game.ship.position = Vec2::ZERO;
+        game.ship.systems.energy.current = 100.0;
+        let mut primary = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(200.0, 0.0));
+        primary.id = "core:nuke-primary".to_string();
+        primary.shields = ShipResource::full(200.0);
+        let mut nearby = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(500.0, 0.0));
+        nearby.id = "core:nuke-nearby".to_string();
+        nearby.shields = ShipResource::full(200.0);
+        let mut friendly = test_npc_ship(NpcBehaviorMode::Patrol, vec2(250.0, 0.0));
+        friendly.id = "core:nuke-friendly".to_string();
+        friendly.shields = ShipResource::full(200.0);
+        game.npc_ships = vec![primary, nearby, friendly];
+
+        update_weapon_systems(&mut game, 0.1);
+        finish_weapon_fire_events(&mut game);
+
+        assert!((game.npc_ships[0].shields.current - 60.0).abs() < 0.01);
+        assert!(game.npc_ships[1].shields.current > 60.0);
+        assert!(game.npc_ships[1].shields.current < 200.0);
+        assert_eq!(game.npc_ships[2].shields.current, 200.0);
+        assert_eq!(game.weapon_area_effect_events.len(), 1);
     }
 
     #[test]
@@ -22788,9 +24701,89 @@ mod tests {
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
         assert_eq!(game.ship.systems.energy.current, 93.0);
         assert_eq!(game.defense_threats[0].hull.current, 24.0);
-        assert_eq!(game.defense_threats[1].hull.current, 18.0);
+        assert_eq!(game.defense_threats[1].hull.current, 36.0);
         assert_eq!(game.weapon_fire_events.len(), 1);
+        finish_weapon_fire_events(&mut game);
+        assert_eq!(game.defense_threats[1].hull.current, 18.0);
         assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn ammunition_turrets_consume_inventory_only_when_they_fire() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.defense_threats = vec![test_defense_threat(
+            "core:hostile",
+            ThreatDisposition::Hostile,
+            vec2(120.0, 0.0),
+            36.0,
+        )];
+        let ammo = required_item(&game.content_registry, "core:interceptor_round");
+        let before = game.inventory.count(&ammo);
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+        assert_eq!(game.inventory.count(&ammo), before - 1);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+    }
+
+    #[test]
+    fn ammunition_turrets_report_out_of_ammo_without_spending_energy() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.defense_threats = vec![test_defense_threat(
+            "core:hostile",
+            ThreatDisposition::Hostile,
+            vec2(120.0, 0.0),
+            36.0,
+        )];
+        let ammo = required_item(&game.content_registry, "core:interceptor_round");
+        let ammo_count = game.inventory.count(&ammo);
+        game.inventory.remove_item(&ammo, ammo_count);
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::OutOfAmmo);
+        assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert!(game.weapon_fire_events.is_empty());
+    }
+
+    #[test]
+    fn energy_turrets_fire_without_ammunition() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["turrets-galore:ember_lance_turret".to_string()],
+        );
+        game.ship.systems.energy.current = 100.0;
+        game.npc_ships = vec![test_npc_ship(
+            NpcBehaviorMode::HostileIntercept,
+            vec2(120.0, 0.0),
+        )];
+        game.inventory = Inventory {
+            slots: std::array::from_fn(|_| None),
+        };
+
+        update_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+        assert_eq!(game.ship.systems.energy.current, 85.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
     }
 
     #[test]
@@ -22904,9 +24897,11 @@ mod tests {
 
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
         assert_eq!(game.ship.systems.energy.current, 93.0);
+        assert_eq!(game.npc_ships[0].shields.current, 25.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        finish_weapon_fire_events(&mut game);
         assert_eq!(game.npc_ships[0].shields.current, 7.0);
         assert_eq!(game.npc_ships[0].hull.current, 50.0);
-        assert_eq!(game.weapon_fire_events.len(), 1);
         assert!(game.save_dirty);
     }
 
@@ -22929,11 +24924,12 @@ mod tests {
         game.selected_npc_ship = Some(0);
 
         update_weapon_systems(&mut game, 0.1);
+        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
+        finish_weapon_fire_events(&mut game);
         remove_destroyed_npc_ships(&mut game);
 
         assert!(game.npc_ships.is_empty());
         assert_eq!(game.selected_npc_ship, None);
-        assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
     }
 
     #[test]
@@ -23069,6 +25065,12 @@ mod tests {
             &game.content_registry,
             &["core:point_defense_turret".to_string()],
         );
+        stock_test_npc_ammo(
+            &mut patrol,
+            &game.content_registry,
+            "core:interceptor_round",
+            2,
+        );
         patrol.energy.current = 40.0;
         game.npc_ships = vec![patrol];
         game.defense_threats = vec![test_defense_threat(
@@ -23085,8 +25087,14 @@ mod tests {
             WeaponStatus::Fired
         );
         assert_eq!(game.npc_ships[0].energy.current, 33.0);
-        assert_eq!(game.defense_threats[0].hull.current, 18.0);
+        assert_eq!(
+            npc_weapon_ammo_count(&game.npc_ships[0], &game.npc_ships[0].equipped_weapons[0]),
+            Some(1)
+        );
+        assert_eq!(game.defense_threats[0].hull.current, 36.0);
         assert_eq!(game.weapon_fire_events.len(), 1);
+        finish_weapon_fire_events(&mut game);
+        assert_eq!(game.defense_threats[0].hull.current, 18.0);
     }
 
     #[test]
@@ -23102,6 +25110,12 @@ mod tests {
             &game.content_registry,
             &["core:point_defense_turret".to_string()],
         );
+        stock_test_npc_ammo(
+            &mut probe,
+            &game.content_registry,
+            "core:interceptor_round",
+            2,
+        );
         probe.energy.current = 40.0;
         game.npc_ships = vec![probe];
         game.ship.position = Vec2::ZERO;
@@ -23115,9 +25129,11 @@ mod tests {
             WeaponStatus::Fired
         );
         assert_eq!(game.npc_ships[0].energy.current, 33.0);
+        assert_eq!(game.ship.systems.shields.current, 100.0);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        finish_weapon_fire_events(&mut game);
         assert_eq!(game.ship.systems.shields.current, 82.0);
         assert_eq!(game.ship.systems.hull.current, 100.0);
-        assert_eq!(game.weapon_fire_events.len(), 1);
         assert!(game.save_dirty);
     }
 
@@ -23145,6 +25161,12 @@ mod tests {
             &game.content_registry,
             &["core:point_defense_turret".to_string()],
         );
+        stock_test_npc_ammo(
+            &mut probe,
+            &game.content_registry,
+            "core:interceptor_round",
+            2,
+        );
         probe.energy.current = 40.0;
         game.npc_ships = vec![probe];
         game.ship.position = Vec2::ZERO;
@@ -23156,6 +25178,7 @@ mod tests {
             game.npc_ships[0].equipped_weapons[0].status,
             WeaponStatus::Fired
         );
+        finish_weapon_fire_events(&mut game);
         assert!(game.ship.systems.shields.current < 100.0);
     }
 
@@ -23168,13 +25191,39 @@ mod tests {
                 from: vec2(120.0, 0.0),
                 to: ship.position,
                 timer: WEAPON_FIRE_EVENT_SECONDS,
+                duration: WEAPON_FIRE_EVENT_SECONDS,
+                effect: content::WeaponEffect::Arc,
+                beam_color: [61, 178, 255, 255],
+                core_color: [184, 245, 255, 255],
+                impact_color: [143, 235, 255, 255],
+                path_curve_strength: 0.18,
+                path_wobble: 8.0,
+                path_cycles: 3.0,
+                trail_length: 0.4,
+                burst_count: 3,
+                projectile_texture: None,
+                projectile_size: 28.0,
                 origin: WeaponFireOrigin::Npc,
+                pending_impact: None,
             },
             WeaponFireEvent {
                 from: Vec2::ZERO,
                 to: vec2(400.0, 0.0),
                 timer: WEAPON_FIRE_EVENT_SECONDS,
+                duration: WEAPON_FIRE_EVENT_SECONDS,
+                effect: content::WeaponEffect::Arc,
+                beam_color: [61, 178, 255, 255],
+                core_color: [184, 245, 255, 255],
+                impact_color: [143, 235, 255, 255],
+                path_curve_strength: 0.18,
+                path_wobble: 8.0,
+                path_cycles: 3.0,
+                trail_length: 0.4,
+                burst_count: 3,
+                projectile_texture: None,
+                projectile_size: 28.0,
                 origin: WeaponFireOrigin::Player,
+                pending_impact: None,
             },
         ];
 
@@ -23182,17 +25231,85 @@ mod tests {
     }
 
     #[test]
-    fn curved_weapon_fire_point_arcs_between_endpoints() {
+    fn curated_weapon_paths_preserve_shot_endpoints() {
         let from = vec2(0.0, 0.0);
-        let to = vec2(100.0, 0.0);
-        let arc = vec2(0.0, 30.0);
+        let to = vec2(200.0, 0.0);
+        let mut event = WeaponFireEvent {
+            from,
+            to,
+            timer: 0.5,
+            duration: 1.0,
+            effect: content::WeaponEffect::Straight,
+            beam_color: [255; 4],
+            core_color: [255; 4],
+            impact_color: [255; 4],
+            path_curve_strength: 0.18,
+            path_wobble: 18.0,
+            path_cycles: 3.0,
+            trail_length: 0.4,
+            burst_count: 5,
+            projectile_texture: None,
+            projectile_size: 28.0,
+            origin: WeaponFireOrigin::Player,
+            pending_impact: None,
+        };
 
-        assert_vec2_near(curved_weapon_fire_point(from, to, arc, 0.0), from);
-        assert_vec2_near(curved_weapon_fire_point(from, to, arc, 1.0), to);
-        assert_vec2_near(
-            curved_weapon_fire_point(from, to, arc, 0.5),
-            vec2(50.0, 30.0),
+        for effect in [
+            content::WeaponEffect::Straight,
+            content::WeaponEffect::Arc,
+            content::WeaponEffect::Spiral,
+            content::WeaponEffect::Zigzag,
+            content::WeaponEffect::Homing,
+            content::WeaponEffect::Burst,
+        ] {
+            event.effect = effect;
+            assert_vec2_near(
+                weapon_effect_path_point(from, to, &event, 0.0, 0.0, 1.0, 1.0),
+                from,
+            );
+            assert_vec2_near(
+                weapon_effect_path_point(from, to, &event, 1.0, 0.0, 1.0, 1.0),
+                to,
+            );
+        }
+
+        event.effect = content::WeaponEffect::Straight;
+        let straight_mid = weapon_effect_path_point(from, to, &event, 0.5, 0.0, 1.0, 0.0);
+        event.effect = content::WeaponEffect::Arc;
+        let arc_mid = weapon_effect_path_point(from, to, &event, 0.5, 0.0, 1.0, 0.0);
+        assert_eq!(straight_mid.y, 0.0);
+        assert!(arc_mid.y.abs() > 1.0);
+    }
+
+    #[test]
+    fn pack_travel_speed_controls_visual_shot_duration() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let flak = WeaponSystem::from_def(
+            registry
+                .weapons
+                .get("turrets-galore:sentinel_flak_turret")
+                .expect("proof flak turret should load"),
         );
+
+        let event = weapon_fire_event(
+            Vec2::ZERO,
+            vec2(450.0, 0.0),
+            &flak,
+            WeaponFireOrigin::Player,
+            WeaponImpactOwner::Player,
+            WeaponTargetRef::Npc("test-target".to_string()),
+            "core:sol".to_string(),
+        );
+
+        assert!((event.duration - 0.5).abs() < 0.001);
+        assert_eq!(event.effect, content::WeaponEffect::Burst);
+        assert_eq!(event.burst_count, 5);
+        assert_eq!(event.projectile_size, 25.0);
+        assert!(event
+            .projectile_texture
+            .as_deref()
+            .is_some_and(|path| path.ends_with("assets/projectiles/sentinel-flak.png")));
     }
 
     #[test]
@@ -23210,6 +25327,7 @@ mod tests {
         let probe_faction = probe_def.faction.clone();
         let probe_behavior_tags = probe_def.behavior_tags.clone();
         let probe_weapon_slots = probe_def.weapon_slots.clone();
+        let probe_cargo = probe_def.cargo_defaults.clone();
         let probe_energy_capacity = probe_def.energy_capacity;
         let mut game = test_game_with_systems(registry, Vec::new());
         let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, probe_position);
@@ -23221,6 +25339,13 @@ mod tests {
         probe.weapon_slots = probe_weapon_slots.clone();
         probe.equipped_weapons =
             equipped_weapons_from_ids(&game.content_registry, &probe_weapon_slots);
+        probe.cargo_defaults = probe_cargo
+            .into_iter()
+            .map(|stack| ItemStack {
+                item: required_item(&game.content_registry, &stack.item),
+                count: stack.count,
+            })
+            .collect();
         probe.energy.current = probe_energy_capacity;
         game.npc_ships = vec![probe];
         game.equipped_weapons = equipped_weapons_from_ids(
@@ -23239,12 +25364,14 @@ mod tests {
             game.npc_ships[0].equipped_weapons[0].status,
             WeaponStatus::Fired
         );
-        assert!(game.npc_ships[0].shields.current < game.npc_ships[0].shields.max);
         assert_eq!(game.weapon_fire_events.len(), 2);
         assert_eq!(
             incoming_weapon_fire_count(&game.ship, &game.weapon_fire_events),
             1
         );
+        assert_eq!(game.ship.systems.shields.current, 100.0);
+        finish_weapon_fire_events(&mut game);
+        assert!(game.npc_ships[0].shields.current < game.npc_ships[0].shields.max);
         assert!(game.ship.systems.shields.current < 100.0);
     }
 
@@ -23583,6 +25710,52 @@ mod tests {
         assert!((columns[2].w - 150.0).abs() < 0.01);
         assert!((columns[1].x - 70.0).abs() < 0.01);
         assert!((columns[2].x - 160.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn inventory_pane_expands_left_when_action_rail_is_present() {
+        let (detail, production, inventory) = inventory_pane_shares(true);
+
+        assert!((detail + production + inventory - 1.0).abs() < 0.001);
+        assert!(inventory > production);
+        assert!(inventory > detail);
+        assert_eq!(detail, 0.28);
+        assert_eq!(production, 0.34);
+        assert_eq!(inventory, 0.38);
+    }
+
+    #[test]
+    fn inventory_separator_tracks_the_inventory_table_leading_edge() {
+        let inventory_x = 816.0;
+        let separator = pane_leading_separator_x(inventory_x);
+
+        assert_eq!(separator, 808.0);
+        assert!(separator < inventory_x);
+        assert_eq!(inventory_x - separator, 8.0);
+    }
+
+    #[test]
+    fn compressed_production_columns_stay_inside_the_table() {
+        let layout = work_table_layout_with_height(100.0, 80.0, 300.0, 180.0);
+        let last = layout.columns.last().expect("active column should exist");
+
+        assert_eq!(layout.columns.len(), 5);
+        assert!((last.x + last.w - 400.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn expanded_inventory_prioritizes_item_names_over_numeric_columns() {
+        let columns = ui_resolve_columns(
+            Rect::new(0.0, 0.0, 400.0, 40.0),
+            10.0,
+            &inventory_column_specs(),
+        );
+
+        assert!(columns[0].w >= 250.0);
+        assert_eq!(columns[1].w, 44.0);
+        assert_eq!(columns[2].w, 78.0);
+        let last = columns[2];
+        assert!((last.x + last.w - 400.0).abs() < 0.01);
     }
 
     #[test]
@@ -24324,6 +26497,22 @@ mod tests {
 
         assert_eq!(restored.cargo_defaults[0].item.id, "core:iron_ore");
         assert_eq!(restored.cargo_defaults[0].count, 4);
+
+        let mut depleted = test_npc_ship(NpcBehaviorMode::HostileIntercept, Vec2::ZERO);
+        depleted.id = "core:depleted_ammo".to_string();
+        let depleted_save = save_npc_cargo(&[depleted]);
+        let mut restored_depleted = test_npc_ship(NpcBehaviorMode::HostileIntercept, Vec2::ZERO);
+        restored_depleted.id = "core:depleted_ammo".to_string();
+        restored_depleted.cargo_defaults = vec![ItemStack {
+            item: required_item(&registry, "core:interceptor_round"),
+            count: 60,
+        }];
+        apply_npc_cargo_save(
+            std::slice::from_mut(&mut restored_depleted),
+            &depleted_save,
+            &registry,
+        );
+        assert!(restored_depleted.cargo_defaults.is_empty());
     }
 
     #[test]
@@ -25802,6 +27991,11 @@ mod tests {
         game.upgrades_open = true;
         game.content_open = true;
         game.contracts_open = true;
+        game.open_turret_bank = Some(0);
+
+        handle_escape_pressed(&mut game);
+        assert_eq!(game.open_turret_bank, None);
+        assert!(game.content_open);
 
         handle_escape_pressed(&mut game);
         assert!(!game.content_open);
@@ -26294,6 +28488,13 @@ mod tests {
         }
     }
 
+    fn finish_weapon_fire_events(game: &mut GameState) {
+        for event in &mut game.weapon_fire_events {
+            event.timer = 0.0;
+        }
+        update_weapon_systems(game, 0.0);
+    }
+
     fn test_npc_ship(behavior: NpcBehaviorMode, position: Vec2) -> NpcShip {
         NpcShip {
             id: "core:test_npc".to_string(),
@@ -26330,6 +28531,18 @@ mod tests {
         }
     }
 
+    fn stock_test_npc_ammo(
+        npc_ship: &mut NpcShip,
+        registry: &content::ContentRegistry,
+        item_id: &str,
+        count: u32,
+    ) {
+        npc_ship.cargo_defaults.push(ItemStack {
+            item: required_item(registry, item_id),
+            count,
+        });
+    }
+
     fn assert_vec2_near(actual: Vec2, expected: Vec2) {
         assert!(
             actual.distance(expected) < 0.01,
@@ -26341,6 +28554,18 @@ mod tests {
         content_registry: content::ContentRegistry,
         planets: Vec<Planet>,
     ) -> GameState {
+        let mut inventory = Inventory {
+            slots: std::array::from_fn(|_| None),
+        };
+        for stack in &content_registry.starter_inventory {
+            if content_registry
+                .items
+                .get(&stack.item)
+                .is_some_and(|item| item.tier == "ammunition")
+            {
+                inventory.add_item(required_item(&content_registry, &stack.item), stack.count);
+            }
+        }
         GameState {
             runtime_flags: RuntimeFlags::default(),
             audio: audio::AudioManager::empty(1.0),
@@ -26353,6 +28578,7 @@ mod tests {
             world_seed: 1,
             world_elapsed_days: 0.0,
             credits: default_credits(),
+            ship_id: default_starter_ship_id(),
             ship: Ship::starter(),
             installed_power_modules: Vec::new(),
             equipped_shields: Vec::new(),
@@ -26362,6 +28588,8 @@ mod tests {
             collision_impact_events: Vec::new(),
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
+            weapon_area_effect_events: Vec::new(),
+            weapon_projectile_textures: HashMap::new(),
             ship_texture: None,
             system_light_haze_texture: None,
             system_stars: Vec::new(),
@@ -26387,9 +28615,8 @@ mod tests {
             starmap_drag_previous_mouse: None,
             action_rail_width_override: None,
             action_rail_resize_previous_mouse: None,
-            inventory: Inventory {
-                slots: std::array::from_fn(|_| None),
-            },
+            open_turret_bank: None,
+            inventory,
             smelt_recipes: Vec::new(),
             smelt_settings: Vec::new(),
             craft_recipes: Vec::new(),

@@ -7,6 +7,17 @@ future plans unless a feature is already visible in-game.
 
 ## Getting Started
 
+Choose both a ship and world seed from the New Game screen. Click a card in the
+scrollable ship grid, or use the arrow keys, to browse every player ship supplied
+by loaded content packs. Each card summarizes hull strength, shield strength,
+and turret-bank count beneath the ship's content-pack image before launch. A
+pack may nominate the initially highlighted ship, but your selection is what the
+new save records. The chosen hull supplies the ship's flight and durability
+stats, art, power and shield modules, turret-bank count, and initially fitted
+turrets. Starter inventory is contributed separately by all loaded packs; picking
+a hull does not limit starting cargo to that hull's pack. If an optional image
+cannot be loaded, its card remains usable and displays a placeholder.
+
 Run the game from the project root:
 
 ```sh
@@ -201,16 +212,43 @@ type is automatic turret defense. Turrets scan for valid hostile threats in
 range, including hostile NPC ships, fire when ready, and spend ship energy.
 They ignore neutral, owned, and environmental threats. There is no manual
 targeting or fire button in the current build. The Defense rail beside the ship
-pane lists configured turret slots, installed turrets, range, damage, energy
-cost, cooldown state, and available crafted turrets that can be swapped into a
-slot. Ships can support multiple turret slots when their ship content
-configuration declares them.
+pane lists each `Turret Bank`, its installed turret, range, damage, energy cost,
+and cooldown state. Open a bank's `Turret List` dropdown to see the turret types
+currently in inventory and their owned counts, then select the exact turret to
+install. The outgoing turret returns to inventory. Ships support one
+independently configurable bank for every weapon slot in their content
+definition. With the Turrets Galore pack loaded, new games start aboard its
+Twinspire Gunship by default. You can still choose another hull. If selected,
+the Twinspire has two banks initially fitted with an Ember Lance and Sentinel
+Flak turret.
 NPC ships can also mount active turrets from their content configuration:
 non-hostile patrol ships engage hostile threats, while hostile ships can fire on
 the player when in range. The starter Frontier system includes a Redwake probe
 that begins PvE pressure with automatic turret fire. Destroyed NPC ships are
 removed from local space, and their cargo is automatically moved into your
 inventory when the full cargo stack fits within your cargo rating.
+
+Turret projectiles apply damage when they visually reach their target. Weapons
+may strike one target, chain through nearby targets, damage a blast radius, or
+combine chaining and splash damage. The Turrets Galore reference pack includes
+a Storm Chain turret and a slow, wide-radius SUPER NUKE turret. Both default to
+hostile-only damage, so nearby friendly and neutral ships are protected. Each
+Turrets Galore weapon has its own visible projectile sprite that turns along
+the weapon's flight path before impact.
+
+Physical turrets consume ammunition from ship inventory when they successfully
+fire. Their turret-bank status shows the remaining ammo count and changes to
+`out of ammo` without spending energy when none remains. Energy weapons such as
+the Ember Lance and Storm Chain need no ammunition. Ammunition can be replenished
+at the crafting station:
+
+- 20 interceptor rounds use an iron plate, two copper wires, and electronics.
+- 30 Sentinel flak canisters use an iron plate, a gear, and sulfur.
+- Two SUPER NUKE warheads use structural alloy, a guidance circuit, uranium,
+  and sulfur.
+
+New ships begin with 120 interceptor rounds, 150 flak canisters, and four nuke
+warheads. NPC ships draw ammunition from their own persistent cargo manifests.
 
 Hostile probes in remote space can create light pressure when they get close,
 draining shields and causing limited hull spillover if shields are down. The HUD
