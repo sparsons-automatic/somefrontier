@@ -85,6 +85,9 @@ const STARMAP_PAN_PIXELS_TO_WORLD: f32 = 1.35;
 const ARC_SEGMENTS: usize = 72;
 const INVENTORY_SLOTS: usize = 200;
 const SHIP_UPGRADE_COUNT: usize = 8;
+const OWNED_SHIP_TRANSFER_RANGE: f32 = 180.0;
+const FLEET_ROW_HEIGHT: f32 = 86.0;
+const FLEET_TRANSFER_ROWS: usize = 5;
 const OBJECT_ACTION_RAIL_MIN_WIDTH: f32 = 280.0;
 const OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION: f32 = 0.55;
 const OBJECT_ACTION_RAIL_GAP: f32 = 8.0;
@@ -100,7 +103,7 @@ const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
 const TITLE_SAVE_ROW_HEIGHT: f32 = 56.0;
 const TITLE_SAVE_ROW_STEP: f32 = 62.0;
-const SAVE_VERSION: u32 = 1;
+const SAVE_VERSION: u32 = 2;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const GAME_DAY_SECONDS: f32 = 120.0;
 const PLANET_SEED_JITTER: f32 = 180.0;
@@ -196,6 +199,9 @@ struct GameState {
     world_seed: u64,
     world_elapsed_days: f32,
     credits: u32,
+    owned_ships: Vec<OwnedShip>,
+    active_owned_ship_id: String,
+    next_owned_ship_sequence: u64,
     ship_id: String,
     ship: Ship,
     installed_power_modules: Vec<PowerModule>,
@@ -208,7 +214,7 @@ struct GameState {
     weapon_fire_events: Vec<WeaponFireEvent>,
     weapon_area_effect_events: Vec<WeaponAreaEffectEvent>,
     weapon_projectile_textures: HashMap<String, Texture2D>,
-    ship_texture: Option<Texture2D>,
+    ship_textures: HashMap<String, Texture2D>,
     system_light_haze_texture: Option<Texture2D>,
     system_stars: Vec<SystemStar>,
     planets: Vec<Planet>,
@@ -249,6 +255,9 @@ struct GameState {
     upgrades_open: bool,
     content_open: bool,
     contracts_open: bool,
+    fleet_open: bool,
+    selected_owned_ship_index: usize,
+    fleet_transfer_quantity: u32,
     content_browser: ContentBrowserState,
     escape_dialog_open: bool,
     quit_to_title_requested: bool,
@@ -732,6 +741,7 @@ struct WeaponFireEvent {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum WeaponTargetRef {
     Player,
+    OwnedShip(String),
     Npc(String),
     Threat(String),
 }
@@ -739,6 +749,7 @@ enum WeaponTargetRef {
 #[derive(Clone)]
 enum WeaponImpactOwner {
     Player,
+    OwnedShip(String),
     Npc { id: String, hostile: bool },
 }
 
@@ -1107,8 +1118,24 @@ struct ItemStack {
     count: u32,
 }
 
+#[derive(Clone)]
 struct Inventory {
     slots: [Option<ItemStack>; INVENTORY_SLOTS],
+}
+
+#[derive(Clone)]
+struct OwnedShip {
+    instance_id: String,
+    callsign: String,
+    ship_id: String,
+    system_id: String,
+    ship: Ship,
+    installed_power_modules: Vec<PowerModule>,
+    equipped_shields: Vec<ShieldSystem>,
+    equipped_weapons: Vec<WeaponSystem>,
+    inventory: Inventory,
+    upgrades: [ShipUpgrade; SHIP_UPGRADE_COUNT],
+    shield_recharge_delay_remaining: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1123,6 +1150,12 @@ struct SaveData {
     camera_zoom: f32,
     #[serde(default = "default_credits")]
     credits: u32,
+    #[serde(default)]
+    owned_ships: Vec<SaveOwnedShip>,
+    #[serde(default)]
+    active_owned_ship_id: String,
+    #[serde(default = "default_next_owned_ship_sequence")]
+    next_owned_ship_sequence: u64,
     #[serde(default = "default_starter_ship_id")]
     ship_id: String,
     ship: SaveShip,
@@ -1166,6 +1199,22 @@ struct SaveData {
     planets: Vec<SavePlanet>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct SaveOwnedShip {
+    instance_id: String,
+    callsign: String,
+    #[serde(default = "default_starter_ship_id")]
+    ship_id: String,
+    system_id: String,
+    ship: SaveShip,
+    inventory: Vec<SaveStack>,
+    upgrades: Vec<SaveUpgrade>,
+    installed_power_modules: Vec<String>,
+    shield_slots: Vec<String>,
+    shield_recharge_delay_remaining: f32,
+    weapon_slot_loadout: Vec<Option<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PackOptionSelection {
     pack_id: String,
@@ -1173,7 +1222,7 @@ struct PackOptionSelection {
     value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SaveShip {
     position: [f32; 2],
     velocity: [f32; 2],
@@ -1184,13 +1233,13 @@ struct SaveShip {
     energy: SaveResource,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SaveResource {
     current: f32,
     max: f32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SaveStack {
     item: String,
     count: u32,
@@ -1236,7 +1285,7 @@ struct SaveFactionReputation {
     value: i32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SaveUpgrade {
     kind: String,
     level: u32,
@@ -1481,15 +1530,7 @@ impl GameState {
         );
         remote_audio_startup.draw_overlay();
         next_frame().await;
-        let ship_texture_path = active_ship_def
-            .as_ref()
-            .and_then(|ship| ship.texture.as_deref());
-        let ship_texture = if let Some(texture_path) = ship_texture_path {
-            load_asset_texture(texture_path).await
-        } else {
-            eprintln!("Active ship `{active_ship_id}` has no texture");
-            None
-        };
+        let ship_textures = load_player_ship_textures(&content_registry).await;
         let system_light_haze_texture = Some(make_system_light_haze_texture());
         let weapon_projectile_textures = load_weapon_projectile_textures(&content_registry).await;
         let system_stars = make_system_stars(&content_registry);
@@ -1542,6 +1583,9 @@ impl GameState {
             world_seed,
             world_elapsed_days: 0.0,
             credits,
+            owned_ships: Vec::new(),
+            active_owned_ship_id: "ship-1".to_string(),
+            next_owned_ship_sequence: 2,
             ship_id: active_ship_id,
             ship: active_ship_def
                 .as_ref()
@@ -1557,7 +1601,7 @@ impl GameState {
             weapon_fire_events: Vec::new(),
             weapon_area_effect_events: Vec::new(),
             weapon_projectile_textures,
-            ship_texture,
+            ship_textures,
             system_light_haze_texture,
             system_stars,
             planets,
@@ -1598,6 +1642,9 @@ impl GameState {
             upgrades_open: false,
             content_open: false,
             contracts_open: false,
+            fleet_open: false,
+            selected_owned_ship_index: 0,
+            fleet_transfer_quantity: 1,
             content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
@@ -1633,6 +1680,8 @@ impl GameState {
             next_frame().await;
             game.apply_save(save_data);
             game.save_dirty = false;
+        } else {
+            game.owned_ships.push(game.capture_active_owned_ship());
         }
         let remote_audio_report = remote_audio_startup.finish().await;
         game.audio = audio::AudioManager::load_from_report(
@@ -1655,6 +1704,9 @@ impl GameState {
     }
 
     fn apply_save(&mut self, save: SaveData) {
+        let saved_owned_ships = save.owned_ships.clone();
+        let saved_active_owned_ship_id = save.active_owned_ship_id.clone();
+        let saved_next_owned_ship_sequence = save.next_owned_ship_sequence;
         self.world_seed = save.world_seed;
         self.world_elapsed_days = finite_nonnegative_or(save.world_elapsed_days, 0.0);
         self.credits = save.credits;
@@ -1809,6 +1861,46 @@ impl GameState {
             |recipe| recipe.output.item.id.as_str(),
         );
         apply_planet_save(&mut self.planets, &save.planets);
+
+        if saved_owned_ships.is_empty() {
+            self.active_owned_ship_id = "ship-1".to_string();
+            self.next_owned_ship_sequence = 2;
+            self.owned_ships = vec![self.capture_active_owned_ship()];
+        } else {
+            self.owned_ships = saved_owned_ships
+                .into_iter()
+                .map(|ship| OwnedShip::from_save(&self.content_registry, ship))
+                .collect();
+            self.next_owned_ship_sequence = saved_next_owned_ship_sequence.max(
+                self.owned_ships
+                    .iter()
+                    .filter_map(|ship| owned_ship_sequence(&ship.instance_id))
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+            );
+            let active_index = self
+                .owned_ships
+                .iter()
+                .position(|ship| {
+                    ship.instance_id == saved_active_owned_ship_id
+                        && self.content_registry.ships.contains_key(&ship.ship_id)
+                })
+                .or_else(|| {
+                    self.owned_ships
+                        .iter()
+                        .position(|ship| self.content_registry.ships.contains_key(&ship.ship_id))
+                });
+            if let Some(active_index) = active_index {
+                self.restore_owned_ship_at(active_index);
+            } else {
+                let sequence = self.next_owned_ship_sequence;
+                self.active_owned_ship_id = format!("ship-{sequence}");
+                self.next_owned_ship_sequence = sequence.saturating_add(1);
+                self.owned_ships.push(self.capture_active_owned_ship());
+                self.selected_owned_ship_index = self.owned_ships.len() - 1;
+            }
+        }
     }
 
     fn to_save(&self) -> SaveData {
@@ -1820,6 +1912,19 @@ impl GameState {
             camera_zoom: finite_or(self.camera_zoom, default_camera_zoom())
                 .clamp(CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX),
             credits: self.credits,
+            owned_ships: self
+                .owned_ships
+                .iter()
+                .map(|owned| {
+                    if owned.instance_id == self.active_owned_ship_id {
+                        self.capture_active_owned_ship().to_save()
+                    } else {
+                        owned.to_save()
+                    }
+                })
+                .collect(),
+            active_owned_ship_id: self.active_owned_ship_id.clone(),
+            next_owned_ship_sequence: self.next_owned_ship_sequence,
             ship_id: self.ship_id.clone(),
             ship: SaveShip {
                 position: [
@@ -1978,6 +2083,195 @@ impl GameState {
             self.equipped_weapons = default_equipped_weapons(&self.content_registry, &self.ship_id);
         }
     }
+
+    fn capture_active_owned_ship(&self) -> OwnedShip {
+        let callsign = self
+            .owned_ships
+            .iter()
+            .find(|ship| ship.instance_id == self.active_owned_ship_id)
+            .map(|ship| ship.callsign.clone())
+            .or_else(|| {
+                self.content_registry
+                    .ships
+                    .get(&self.ship_id)
+                    .map(|ship| ship.name.clone())
+            })
+            .unwrap_or_else(|| "Frontier vessel".to_string());
+        OwnedShip {
+            instance_id: self.active_owned_ship_id.clone(),
+            callsign,
+            ship_id: self.ship_id.clone(),
+            system_id: self.current_system_id.clone(),
+            ship: self.ship,
+            installed_power_modules: self.installed_power_modules.clone(),
+            equipped_shields: self.equipped_shields.clone(),
+            equipped_weapons: self.equipped_weapons.clone(),
+            inventory: self.inventory.clone(),
+            upgrades: self.ship_upgrades,
+            shield_recharge_delay_remaining: self.shield_recharge_delay_remaining,
+        }
+    }
+
+    fn sync_active_owned_ship(&mut self) {
+        let snapshot = self.capture_active_owned_ship();
+        if let Some(existing) = self
+            .owned_ships
+            .iter_mut()
+            .find(|ship| ship.instance_id == self.active_owned_ship_id)
+        {
+            *existing = snapshot;
+        } else {
+            self.owned_ships.push(snapshot);
+        }
+    }
+
+    fn restore_owned_ship_at(&mut self, index: usize) -> bool {
+        let Some(owned) = self.owned_ships.get(index).cloned() else {
+            return false;
+        };
+        if !self.content_registry.ships.contains_key(&owned.ship_id) {
+            return false;
+        }
+        self.active_owned_ship_id = owned.instance_id;
+        self.ship_id = owned.ship_id;
+        self.current_system_id = owned.system_id;
+        self.ship = owned.ship;
+        self.installed_power_modules = owned.installed_power_modules;
+        self.equipped_shields = owned.equipped_shields;
+        self.equipped_weapons = owned.equipped_weapons;
+        self.inventory = owned.inventory;
+        self.ship_upgrades = owned.upgrades;
+        self.shield_recharge_delay_remaining = owned.shield_recharge_delay_remaining;
+        self.selected_owned_ship_index = index;
+        self.destination_planet = destination_planet_for_system(
+            &self.planets,
+            &self.system_destinations,
+            &self.current_system_id,
+        );
+        true
+    }
+}
+
+impl OwnedShip {
+    fn to_save(&self) -> SaveOwnedShip {
+        SaveOwnedShip {
+            instance_id: self.instance_id.clone(),
+            callsign: self.callsign.clone(),
+            ship_id: self.ship_id.clone(),
+            system_id: self.system_id.clone(),
+            ship: save_ship_state(&self.ship),
+            inventory: self.inventory.to_save(),
+            upgrades: self
+                .upgrades
+                .iter()
+                .map(|upgrade| SaveUpgrade {
+                    kind: upgrade.kind.id().to_string(),
+                    level: upgrade.level,
+                })
+                .collect(),
+            installed_power_modules: self
+                .installed_power_modules
+                .iter()
+                .map(|module| module.id.clone())
+                .collect(),
+            shield_slots: self
+                .equipped_shields
+                .iter()
+                .map(|shield| shield.id.clone())
+                .collect(),
+            shield_recharge_delay_remaining: finite_nonnegative_or(
+                self.shield_recharge_delay_remaining,
+                0.0,
+            ),
+            weapon_slot_loadout: self
+                .equipped_weapons
+                .iter()
+                .map(|weapon| (!weapon.id.is_empty()).then(|| weapon.id.clone()))
+                .collect(),
+        }
+    }
+
+    fn from_save(registry: &content::ContentRegistry, saved: SaveOwnedShip) -> Self {
+        let mut ship = registry
+            .ships
+            .get(&saved.ship_id)
+            .map(Ship::from_content)
+            .unwrap_or_else(Ship::starter);
+        let mut upgrades = make_ship_upgrades();
+        apply_upgrade_save(&mut upgrades, &saved.upgrades);
+        for upgrade in upgrades {
+            for _ in 0..upgrade.level {
+                apply_ship_upgrade(&mut ship, upgrade.kind);
+            }
+        }
+        apply_saved_ship_state(&mut ship, &saved.ship);
+        Self {
+            instance_id: saved.instance_id,
+            callsign: saved.callsign,
+            ship_id: saved.ship_id.clone(),
+            system_id: saved.system_id,
+            ship,
+            installed_power_modules: if saved.installed_power_modules.is_empty() {
+                default_installed_power_modules(registry, &saved.ship_id)
+            } else {
+                installed_power_modules_from_ids(registry, &saved.installed_power_modules)
+            },
+            equipped_shields: if saved.shield_slots.is_empty() {
+                default_equipped_shields(registry, &saved.ship_id)
+            } else {
+                equipped_shields_from_ids(registry, &saved.shield_slots)
+            },
+            equipped_weapons: if saved.weapon_slot_loadout.is_empty() {
+                default_equipped_weapons(registry, &saved.ship_id)
+            } else {
+                equipped_weapons_from_slot_ids(registry, &saved.weapon_slot_loadout)
+            },
+            inventory: Inventory::from_save(registry, &saved.inventory),
+            upgrades,
+            shield_recharge_delay_remaining: finite_nonnegative_or(
+                saved.shield_recharge_delay_remaining,
+                0.0,
+            ),
+        }
+    }
+}
+
+fn save_ship_state(ship: &Ship) -> SaveShip {
+    SaveShip {
+        position: [
+            finite_or(ship.position.x, 0.0),
+            finite_or(ship.position.y, 0.0),
+        ],
+        velocity: [
+            finite_or(ship.velocity.x, 0.0),
+            finite_or(ship.velocity.y, 0.0),
+        ],
+        angle: finite_or(ship.angle, 0.0),
+        angular_velocity: finite_or(ship.angular_velocity, 0.0),
+        hull: ship.systems.hull.to_save(),
+        shields: ship.systems.shields.to_save(),
+        energy: ship.systems.energy.to_save(),
+    }
+}
+
+fn apply_saved_ship_state(ship: &mut Ship, saved: &SaveShip) {
+    ship.position = vec2(
+        finite_or(saved.position[0], 0.0),
+        finite_or(saved.position[1], 0.0),
+    );
+    ship.velocity = vec2(
+        finite_or(saved.velocity[0], 0.0),
+        finite_or(saved.velocity[1], 0.0),
+    );
+    ship.angle = finite_or(saved.angle, 0.0);
+    ship.angular_velocity = finite_or(saved.angular_velocity, 0.0);
+    ship.systems.hull = ShipResource::from_save(saved.hull.clone());
+    ship.systems.shields = ShipResource::from_save(saved.shields.clone());
+    ship.systems.energy = ShipResource::from_save(saved.energy.clone());
+}
+
+fn owned_ship_sequence(instance_id: &str) -> Option<u64> {
+    instance_id.strip_prefix("ship-")?.parse().ok()
 }
 
 fn load_game_content_registry() -> content::ContentRegistry {
@@ -2952,6 +3246,24 @@ async fn load_asset_texture(path: &str) -> Option<Texture2D> {
     }
 }
 
+async fn load_player_ship_textures(
+    content_registry: &content::ContentRegistry,
+) -> HashMap<String, Texture2D> {
+    let mut textures = HashMap::new();
+    for ship_id in &content_registry.ship_order {
+        let Some(ship) = content_registry.ships.get(ship_id) else {
+            continue;
+        };
+        let Some(path) = ship.texture.as_deref() else {
+            continue;
+        };
+        if let Some(texture) = load_asset_texture(path).await {
+            textures.insert(ship_id.clone(), texture);
+        }
+    }
+    textures
+}
+
 async fn load_weapon_projectile_textures(
     registry: &content::ContentRegistry,
 ) -> HashMap<String, Texture2D> {
@@ -3773,6 +4085,47 @@ fn active_shield_damage_resistance(game: &GameState) -> f32 {
     active_shield(game)
         .map(|shield| shield.damage_resistance)
         .unwrap_or(0.0)
+}
+
+fn owned_ship_shield_recharge_delay(owned: &OwnedShip) -> f32 {
+    owned
+        .equipped_shields
+        .first()
+        .map(|shield| shield.recharge_delay)
+        .unwrap_or(4.0)
+        .max(0.0)
+}
+
+fn owned_ship_shield_recharge_rate(owned: &OwnedShip) -> f32 {
+    owned
+        .equipped_shields
+        .first()
+        .map(|shield| shield.recharge_rate)
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn owned_ship_shield_damage_resistance(owned: &OwnedShip) -> f32 {
+    owned
+        .equipped_shields
+        .first()
+        .map(|shield| shield.damage_resistance)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
+fn apply_owned_ship_weapon_damage(owned: &mut OwnedShip, amount: f32) -> bool {
+    let damage = amount.max(0.0) * (1.0 - owned_ship_shield_damage_resistance(owned));
+    let application = apply_damage_to_resources(
+        &mut owned.ship.systems.shields,
+        &mut owned.ship.systems.hull,
+        damage,
+        1.0,
+    );
+    if application.changed() {
+        owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
+    }
+    application.changed()
 }
 
 fn shield_hazard_drain_after_resistance(game: &GameState, drain: f32) -> f32 {
@@ -4701,6 +5054,12 @@ fn stable_unit_noise(id: &str, salt: u64) -> f32 {
 }
 
 impl Inventory {
+    fn empty() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| None),
+        }
+    }
+
     fn starter(content_registry: &content::ContentRegistry) -> Self {
         let mut inventory = Self {
             slots: std::array::from_fn(|_| None),
@@ -4828,6 +5187,194 @@ impl Inventory {
             })
             .collect()
     }
+}
+
+fn inventory_receivable_count(
+    inventory: &Inventory,
+    upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+    item: &ItemRef,
+    requested: u32,
+) -> u32 {
+    let has_slot = inventory.count(item) > 0 || inventory.slots.iter().any(Option::is_none);
+    if !has_slot {
+        return 0;
+    }
+    let by_mass = if item.unit_mass > 0.0 {
+        ((cargo_rating_kg(upgrades) - inventory.total_mass()).max(0.0) / item.unit_mass) as u32
+    } else {
+        requested
+    };
+    requested.min(by_mass)
+}
+
+fn owned_ship_in_transfer_range(game: &GameState, index: usize) -> bool {
+    game.owned_ships.get(index).is_some_and(|owned| {
+        owned.instance_id != game.active_owned_ship_id
+            && owned.system_id == game.current_system_id
+            && owned.ship.position.distance(game.ship.position) <= OWNED_SHIP_TRANSFER_RANGE
+    })
+}
+
+fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
+    if game
+        .owned_ships
+        .get(index)
+        .is_some_and(|ship| ship.instance_id == game.active_owned_ship_id)
+    {
+        return true;
+    }
+    let Some(target) = game.owned_ships.get(index) else {
+        return false;
+    };
+    if target.ship.systems.hull.current <= 0.0
+        || !game.content_registry.ships.contains_key(&target.ship_id)
+    {
+        return false;
+    }
+    game.sync_active_owned_ship();
+    game.pending_warp = None;
+    game.scene_transition = None;
+    game.approach_target = None;
+    game.follow_target = None;
+    game.orbiting_planet = None;
+    game.selected_planet = None;
+    game.selected_station = None;
+    game.selected_npc_ship = None;
+    game.selected_station_service = None;
+    if !game.restore_owned_ship_at(index) {
+        return false;
+    }
+    game.weapon_fire_events.clear();
+    game.weapon_area_effect_events.clear();
+    game.collision_impact_events.clear();
+    game.save_dirty = true;
+    let callsign = game.owned_ships[index].callsign.clone();
+    push_operation_feedback(game, "Fleet", format!("Control transferred to {callsign}"));
+    true
+}
+
+fn acquire_owned_ship(game: &mut GameState, station_index: usize, ship_id: &str) -> bool {
+    let Some(station) = game.stations.get(station_index) else {
+        return false;
+    };
+    if station.system != game.current_system_id
+        || !station_in_interaction_range(&game.ship, station)
+        || !station.services.iter().any(|service| {
+            service.kind == "garage" && station_service_is_available(game, station, service)
+        })
+    {
+        return false;
+    }
+    let Some(definition) = game.content_registry.ships.get(ship_id).cloned() else {
+        return false;
+    };
+    let Some(price) = definition.purchase_price else {
+        return false;
+    };
+    if game.credits < price {
+        push_operation_feedback(
+            game,
+            "Shipyard",
+            format!(
+                "Need {} more credits for {}",
+                price - game.credits,
+                definition.name
+            ),
+        );
+        return true;
+    }
+    let sequence = game.next_owned_ship_sequence;
+    game.next_owned_ship_sequence = game.next_owned_ship_sequence.saturating_add(1);
+    let instance_id = format!("ship-{sequence}");
+    let mut ship = Ship::from_content(&definition);
+    let berth_offset = vec2(80.0 + sequence as f32 * 18.0, 48.0);
+    ship.position = station.position + berth_offset;
+    let owned = OwnedShip {
+        instance_id,
+        callsign: format!("{} {sequence}", definition.name),
+        ship_id: definition.id.clone(),
+        system_id: station.system.clone(),
+        ship,
+        installed_power_modules: installed_power_modules_from_ids(
+            &game.content_registry,
+            &definition.power_modules,
+        ),
+        equipped_shields: equipped_shields_from_ids(
+            &game.content_registry,
+            &definition.shield_slots,
+        ),
+        equipped_weapons: equipped_weapons_from_ids(
+            &game.content_registry,
+            &definition.weapon_slots,
+        ),
+        inventory: Inventory::empty(),
+        upgrades: make_ship_upgrades(),
+        shield_recharge_delay_remaining: 0.0,
+    };
+    game.credits -= price;
+    game.owned_ships.push(owned);
+    game.selected_owned_ship_index = game.owned_ships.len() - 1;
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Shipyard",
+        format!("Purchased {} for {price} cr", definition.name),
+    );
+    true
+}
+
+fn transfer_owned_ship_item(
+    game: &mut GameState,
+    target_index: usize,
+    item_id: &str,
+    to_target: bool,
+    requested: u32,
+) -> u32 {
+    if requested == 0 || !owned_ship_in_transfer_range(game, target_index) {
+        return 0;
+    }
+    let Some(item) = registry_item(&game.content_registry, item_id) else {
+        return 0;
+    };
+    let Some(target) = game.owned_ships.get_mut(target_index) else {
+        return 0;
+    };
+    let amount = if to_target {
+        game.inventory.count(&item).min(inventory_receivable_count(
+            &target.inventory,
+            &target.upgrades,
+            &item,
+            requested,
+        ))
+    } else {
+        target
+            .inventory
+            .count(&item)
+            .min(inventory_receivable_count(
+                &game.inventory,
+                &game.ship_upgrades,
+                &item,
+                requested,
+            ))
+    };
+    if amount == 0 {
+        return 0;
+    }
+    if to_target {
+        game.inventory.remove_item(&item, amount);
+        target.inventory.add_item(item.clone(), amount);
+    } else {
+        target.inventory.remove_item(&item, amount);
+        game.inventory.add_item(item.clone(), amount);
+    }
+    game.sync_active_owned_ship();
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Fleet",
+        format!("Transferred {} x{amount}", item.name),
+    );
+    amount
 }
 
 fn apply_upgrade_save(
@@ -5480,7 +6027,7 @@ fn read_saved_window_size() -> Option<(i32, i32)> {
 fn read_save_data_at(path: &Path) -> Option<SaveData> {
     let source = fs::read_to_string(path).ok()?;
     match toml::from_str::<SaveData>(&source) {
-        Ok(save) if save.version == SAVE_VERSION => Some(save),
+        Ok(save) if (1..=SAVE_VERSION).contains(&save.version) => Some(save),
         Ok(save) => {
             eprintln!(
                 "Ignoring save file {} with unsupported version {}",
@@ -8520,6 +9067,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.upgrades_open = false;
             game.content_open = false;
             game.contracts_open = false;
+            game.fleet_open = false;
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -8529,6 +9077,27 @@ fn update_game(game: &mut GameState, dt: f32) {
     if game.map_open && is_key_pressed(KeyCode::F) {
         game.starmap_filter = game.starmap_filter.next();
         game.starmap_resource_filter_index = 0;
+    }
+    if !game.map_open && is_key_pressed(KeyCode::F) {
+        game.fleet_open = !game.fleet_open;
+        if game.fleet_open {
+            game.sync_active_owned_ship();
+            game.inventory_open = false;
+            game.research_open = false;
+            game.upgrades_open = false;
+            game.content_open = false;
+            game.contracts_open = false;
+            game.selected_owned_ship_index = game
+                .owned_ships
+                .iter()
+                .position(|ship| ship.instance_id == game.active_owned_ship_id)
+                .unwrap_or(0);
+        }
+        game.audio.play(if game.fleet_open {
+            audio::AudioCue::Select
+        } else {
+            audio::AudioCue::Back
+        });
     }
     if game.map_open && is_key_pressed(KeyCode::R) {
         let resource_count = starmap_resource_filters(game).len();
@@ -8554,6 +9123,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.upgrades_open = false;
             game.content_open = false;
             game.contracts_open = false;
+            game.fleet_open = false;
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -8573,6 +9143,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.research_open = false;
             game.upgrades_open = false;
             game.contracts_open = false;
+            game.fleet_open = false;
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -8592,6 +9163,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.research_open = false;
             game.upgrades_open = false;
             game.content_open = false;
+            game.fleet_open = false;
             game.selected_contract_index = None;
             game.contract_menu_scroll = 0.0;
             game.selected_planet = None;
@@ -8615,6 +9187,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.upgrades_open
         && !game.content_open
         && !game.contracts_open
+        && !game.fleet_open
     {
         select_nearby_destination(game);
         identify_selected_npc_ship(game);
@@ -8630,6 +9203,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_mining(game, dt);
     update_orbital_hazards(game, dt);
     update_shield_recharge(game, dt);
+    update_inactive_owned_ship_systems(game, dt);
     update_npc_ships(game, dt);
     update_hostile_npc_pressure(game, dt);
     update_weapon_systems(game, dt);
@@ -8680,11 +9254,27 @@ fn update_game(game: &mut GameState, dt: f32) {
         click_handled = handle_contracts_overlay_input(game, mouse);
     }
 
+    if game.fleet_open {
+        if is_key_pressed(KeyCode::Up) {
+            game.selected_owned_ship_index = game.selected_owned_ship_index.saturating_sub(1);
+        }
+        if is_key_pressed(KeyCode::Down) && !game.owned_ships.is_empty() {
+            game.selected_owned_ship_index =
+                (game.selected_owned_ship_index + 1).min(game.owned_ships.len() - 1);
+        }
+        if is_key_pressed(KeyCode::Enter) {
+            switch_active_owned_ship(game, game.selected_owned_ship_index);
+        }
+        let mouse = mouse_vec2();
+        click_handled = handle_fleet_overlay_input(game, mouse);
+    }
+
     if !game.map_open
         && !game.research_open
         && !game.upgrades_open
         && !game.content_open
         && !game.contracts_open
+        && !game.fleet_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if handle_context_action_input(game, mouse) {
@@ -8698,6 +9288,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.upgrades_open
         && !game.content_open
         && !game.contracts_open
+        && !game.fleet_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if wheel != 0.0 {
@@ -8762,6 +9353,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.upgrades_open
         && !game.content_open
         && !game.contracts_open
+        && !game.fleet_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if clicked_player_ship(mouse) {
@@ -8783,7 +9375,12 @@ fn update_game(game: &mut GameState, dt: f32) {
         }
     }
 
-    if game.orbiting_planet.is_some() {
+    if game.fleet_open {
+        game.ship
+            .systems
+            .energy
+            .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
+    } else if game.orbiting_planet.is_some() {
         update_ship_orbit(game);
     } else if game.follow_target.is_some() {
         if movement_input_pressed() {
@@ -8836,6 +9433,7 @@ fn handle_inventory_shortcut(game: &mut GameState) {
     game.upgrades_open = false;
     game.content_open = false;
     game.contracts_open = false;
+    game.fleet_open = false;
     game.selected_planet = None;
     game.selected_station = None;
     game.selected_npc_ship = None;
@@ -9546,6 +10144,9 @@ fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
         true
     } else if game.contracts_open {
         game.contracts_open = false;
+        true
+    } else if game.fleet_open {
+        game.fleet_open = false;
         true
     } else if game.upgrades_open {
         game.upgrades_open = false;
@@ -12404,6 +13005,32 @@ fn update_shield_recharge(game: &mut GameState, dt: f32) {
     }
 }
 
+fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
+    for owned in &mut game.owned_ships {
+        if owned.instance_id == game.active_owned_ship_id
+            || owned.system_id != game.current_system_id
+            || owned.ship.systems.hull.current <= 0.0
+        {
+            continue;
+        }
+
+        let energy_recharge = ship_energy_recharge(&owned.ship, &owned.installed_power_modules);
+        owned.ship.systems.energy.restore(energy_recharge * dt);
+
+        if owned.ship.systems.shields.current >= owned.ship.systems.shields.max {
+            owned.shield_recharge_delay_remaining = 0.0;
+            continue;
+        }
+        if owned.shield_recharge_delay_remaining > 0.0 {
+            owned.shield_recharge_delay_remaining =
+                (owned.shield_recharge_delay_remaining - dt).max(0.0);
+            continue;
+        }
+        let shield_recharge = owned_ship_shield_recharge_rate(owned);
+        owned.ship.systems.shields.restore(shield_recharge * dt);
+    }
+}
+
 #[derive(Clone, Copy)]
 struct NpcAvoidanceBody {
     position: Vec2,
@@ -12708,6 +13335,7 @@ fn update_weapon_systems(game: &mut GameState, dt: f32) {
     }
 
     update_player_weapon_systems(game, dt);
+    update_inactive_owned_ship_weapon_systems(game, dt);
     update_npc_weapon_systems(game, dt);
 }
 
@@ -12737,6 +13365,16 @@ fn weapon_target_position(
         WeaponTargetRef::Player => (game.current_system_id == system
             && game.ship.systems.hull.current > 0.0)
             .then_some(game.ship.position),
+        WeaponTargetRef::OwnedShip(instance_id) => game
+            .owned_ships
+            .iter()
+            .find(|owned| {
+                owned.instance_id == *instance_id
+                    && owned.instance_id != game.active_owned_ship_id
+                    && owned.system_id == system
+                    && owned.ship.systems.hull.current > 0.0
+            })
+            .map(|owned| owned.ship.position),
         WeaponTargetRef::Npc(id) => game
             .npc_ships
             .iter()
@@ -12763,6 +13401,26 @@ fn impact_candidates(game: &GameState, impact: &PendingWeaponImpact) -> Vec<Impa
             hostile_to_owner: matches!(&impact.owner, WeaponImpactOwner::Npc { hostile: true, .. }),
         });
     }
+    if impact.targeting != content::WeaponTargeting::ThreatsOnly {
+        candidates.extend(
+            game.owned_ships
+                .iter()
+                .filter(|owned| {
+                    owned.instance_id != game.active_owned_ship_id
+                        && owned.system_id == impact.system
+                        && owned.ship.systems.hull.current > 0.0
+                })
+                .map(|owned| ImpactCandidate {
+                    target: WeaponTargetRef::OwnedShip(owned.instance_id.clone()),
+                    position: owned.ship.position,
+                    radius: SHIP_RADIUS,
+                    hostile_to_owner: matches!(
+                        &impact.owner,
+                        WeaponImpactOwner::Npc { hostile: true, .. }
+                    ),
+                }),
+        );
+    }
     for npc in &game.npc_ships {
         if impact.targeting == content::WeaponTargeting::ThreatsOnly
             || npc.system != impact.system
@@ -12772,7 +13430,7 @@ fn impact_candidates(game: &GameState, impact: &PendingWeaponImpact) -> Vec<Impa
         }
         let npc_is_hostile = npc_ship_is_hostile(&game.content_registry, npc);
         let hostile_to_owner = match &impact.owner {
-            WeaponImpactOwner::Player => npc_is_hostile,
+            WeaponImpactOwner::Player | WeaponImpactOwner::OwnedShip(_) => npc_is_hostile,
             WeaponImpactOwner::Npc { hostile, .. } => {
                 if *hostile {
                     !npc_is_hostile
@@ -12810,6 +13468,10 @@ fn impact_target_is_owner(target: &WeaponTargetRef, owner: &WeaponImpactOwner) -
     matches!(
         (target, owner),
         (WeaponTargetRef::Player, WeaponImpactOwner::Player)
+    ) || matches!(
+        (target, owner),
+        (WeaponTargetRef::OwnedShip(target_id), WeaponImpactOwner::OwnedShip(owner_id))
+            if target_id == owner_id
     ) || matches!(
         (target, owner),
         (WeaponTargetRef::Npc(target_id), WeaponImpactOwner::Npc { id, .. }) if target_id == id
@@ -13008,6 +13670,13 @@ fn apply_weapon_damage_to_target(
 ) -> bool {
     match target {
         WeaponTargetRef::Player => apply_ship_weapon_damage(game, damage),
+        WeaponTargetRef::OwnedShip(instance_id) => game
+            .owned_ships
+            .iter_mut()
+            .find(|owned| {
+                owned.instance_id == *instance_id && owned.ship.systems.hull.current > 0.0
+            })
+            .is_some_and(|owned| apply_owned_ship_weapon_damage(owned, damage)),
         WeaponTargetRef::Npc(id) => game
             .npc_ships
             .iter_mut()
@@ -13263,6 +13932,115 @@ fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
     }
 }
 
+fn update_inactive_owned_ship_weapon_systems(game: &mut GameState, dt: f32) {
+    for owned_index in 0..game.owned_ships.len() {
+        if game.owned_ships[owned_index].instance_id == game.active_owned_ship_id
+            || game.owned_ships[owned_index].system_id != game.current_system_id
+            || game.owned_ships[owned_index].ship.systems.hull.current <= 0.0
+        {
+            continue;
+        }
+
+        let weapon_count = game.owned_ships[owned_index].equipped_weapons.len();
+        for weapon_index in 0..weapon_count {
+            if !game.owned_ships[owned_index].equipped_weapons[weapon_index].resolved {
+                continue;
+            }
+            {
+                let weapon = &mut game.owned_ships[owned_index].equipped_weapons[weapon_index];
+                weapon.cooldown_remaining = (weapon.cooldown_remaining - dt).max(0.0);
+                if weapon.cooldown_remaining > 0.0 {
+                    weapon.status = WeaponStatus::Cooldown;
+                    continue;
+                }
+            }
+
+            if !fire_inactive_owned_ship_weapon(game, owned_index, weapon_index) {
+                game.owned_ships[owned_index].equipped_weapons[weapon_index].status =
+                    WeaponStatus::NoThreat;
+            }
+        }
+    }
+}
+
+fn fire_inactive_owned_ship_weapon(
+    game: &mut GameState,
+    owned_index: usize,
+    weapon_index: usize,
+) -> bool {
+    let Some(owned) = game.owned_ships.get(owned_index) else {
+        return false;
+    };
+    let Some(weapon) = owned.equipped_weapons.get(weapon_index) else {
+        return false;
+    };
+    let Some(target) = player_turret_target(
+        &game.content_registry,
+        &owned.ship,
+        weapon,
+        &game.defense_threats,
+        &game.npc_ships,
+        &owned.system_id,
+    ) else {
+        return false;
+    };
+    if owned.ship.systems.energy.current < weapon.energy_cost {
+        game.owned_ships[owned_index].equipped_weapons[weapon_index].status =
+            WeaponStatus::InsufficientEnergy;
+        return true;
+    }
+    if weapon
+        .ammo_item
+        .as_deref()
+        .is_some_and(|item| owned.inventory.count_id(item) < weapon.ammo_per_shot)
+    {
+        game.owned_ships[owned_index].equipped_weapons[weapon_index].status =
+            WeaponStatus::OutOfAmmo;
+        return true;
+    }
+
+    let (target_position, target_ref) = match target {
+        PlayerTurretTarget::DefenseThreat(target_index) => {
+            let target = &game.defense_threats[target_index];
+            (target.position, WeaponTargetRef::Threat(target.id.clone()))
+        }
+        PlayerTurretTarget::NpcShip(npc_ship_index) => {
+            let target = &game.npc_ships[npc_ship_index];
+            (target.position, WeaponTargetRef::Npc(target.id.clone()))
+        }
+    };
+    let origin = owned.ship.position;
+    let owner_id = owned.instance_id.clone();
+    let system_id = owned.system_id.clone();
+    let energy_cost = weapon.energy_cost;
+    let cooldown_seconds = weapon.cooldown_seconds;
+    let ammo_item = weapon.ammo_item.clone();
+    let ammo_per_shot = weapon.ammo_per_shot;
+    let fire_audio = weapon.fire_audio.clone();
+    let fire_event = weapon_fire_event(
+        origin,
+        target_position,
+        weapon,
+        WeaponFireOrigin::Player,
+        WeaponImpactOwner::OwnedShip(owner_id),
+        target_ref,
+        system_id,
+    );
+
+    let owned = &mut game.owned_ships[owned_index];
+    owned.ship.systems.energy.spend(energy_cost);
+    if let Some(ammo_item) = ammo_item.as_deref() {
+        owned.inventory.remove_item_id(ammo_item, ammo_per_shot);
+    }
+    owned.equipped_weapons[weapon_index].cooldown_remaining = cooldown_seconds;
+    owned.equipped_weapons[weapon_index].status = WeaponStatus::Fired;
+    game.weapon_fire_events.push(fire_event);
+    game.audio
+        .play_custom_or(fire_audio.as_deref(), audio::AudioCue::WeaponFire);
+    game.save_dirty = true;
+    true
+}
+
 fn update_npc_weapon_systems(game: &mut GameState, dt: f32) {
     for npc_index in 0..game.npc_ships.len() {
         if game.npc_ships[npc_index].system != game.current_system_id
@@ -13286,7 +14064,7 @@ fn update_npc_weapon_systems(game: &mut GameState, dt: f32) {
                 }
             }
 
-            if hostile && fire_npc_weapon_at_player(game, npc_index, weapon_index) {
+            if hostile && fire_npc_weapon_at_owned_ship(game, npc_index, weapon_index) {
                 continue;
             }
             if !hostile && fire_npc_weapon_at_defense_threat(game, npc_index, weapon_index) {
@@ -13325,16 +14103,21 @@ fn consume_npc_weapon_ammo(npc_ship: &mut NpcShip, ammo_item: &str, mut count: u
     npc_ship.cargo_defaults.retain(|stack| stack.count > 0);
 }
 
-fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_index: usize) -> bool {
+fn fire_npc_weapon_at_owned_ship(
+    game: &mut GameState,
+    npc_index: usize,
+    weapon_index: usize,
+) -> bool {
     let Some(npc_ship) = game.npc_ships.get(npc_index) else {
         return false;
     };
     let Some(weapon) = npc_ship.equipped_weapons.get(weapon_index) else {
         return false;
     };
-    if !npc_weapon_can_target_player(npc_ship, weapon, &game.ship, &game.current_system_id) {
+    let Some((target_ref, target_position)) = hostile_npc_owned_ship_target(game, npc_ship, weapon)
+    else {
         return false;
-    }
+    };
     if npc_ship.energy.current < weapon.energy_cost {
         game.npc_ships[npc_index].equipped_weapons[weapon_index].status =
             WeaponStatus::InsufficientEnergy;
@@ -13356,11 +14139,11 @@ fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_inde
     };
     let fire_event = weapon_fire_event(
         origin,
-        game.ship.position,
+        target_position,
         weapon,
         WeaponFireOrigin::Npc,
         owner,
-        WeaponTargetRef::Player,
+        target_ref,
         game.current_system_id.clone(),
     );
     let fire_audio = weapon.fire_audio.clone();
@@ -13375,6 +14158,43 @@ fn fire_npc_weapon_at_player(game: &mut GameState, npc_index: usize, weapon_inde
     game.audio
         .play_custom_or(fire_audio.as_deref(), audio::AudioCue::WeaponFire);
     true
+}
+
+fn hostile_npc_owned_ship_target(
+    game: &GameState,
+    npc_ship: &NpcShip,
+    weapon: &WeaponSystem,
+) -> Option<(WeaponTargetRef, Vec2)> {
+    let active = npc_weapon_can_target_ship(npc_ship, weapon, &game.ship, &game.current_system_id)
+        .then(|| {
+            (
+                WeaponTargetRef::Player,
+                game.ship.position,
+                npc_ship.position.distance_squared(game.ship.position),
+            )
+        });
+    let inactive = game
+        .owned_ships
+        .iter()
+        .filter(|owned| {
+            owned.instance_id != game.active_owned_ship_id
+                && owned.system_id == game.current_system_id
+                && npc_weapon_can_target_ship(npc_ship, weapon, &owned.ship, &owned.system_id)
+        })
+        .map(|owned| {
+            (
+                WeaponTargetRef::OwnedShip(owned.instance_id.clone()),
+                owned.ship.position,
+                npc_ship.position.distance_squared(owned.ship.position),
+            )
+        })
+        .min_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
+
+    [active, inactive]
+        .into_iter()
+        .flatten()
+        .min_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
+        .map(|(target, position, _)| (target, position))
 }
 
 fn fire_npc_weapon_at_defense_threat(
@@ -13627,7 +14447,7 @@ fn npc_defense_threat_is_valid_target(
         )
 }
 
-fn npc_weapon_can_target_player(
+fn npc_weapon_can_target_ship(
     npc_ship: &NpcShip,
     weapon: &WeaponSystem,
     ship: &Ship,
@@ -13745,6 +14565,10 @@ fn default_camera_zoom() -> f32 {
 
 fn default_credits() -> u32 {
     500
+}
+
+fn default_next_owned_ship_sequence() -> u64 {
+    2
 }
 
 fn default_current_system_id() -> String {
@@ -13904,6 +14728,17 @@ fn draw_scene(
     {
         draw_defense_threat(center, ship, threat, zoom);
     }
+    for owned in game.owned_ships.iter().filter(|owned| {
+        owned.instance_id != game.active_owned_ship_id && owned.system_id == game.current_system_id
+    }) {
+        draw_inactive_owned_ship(
+            center,
+            ship,
+            owned,
+            game.ship_textures.get(&owned.ship_id),
+            zoom,
+        );
+    }
     draw_poi_indicator(
         center,
         ship,
@@ -13916,7 +14751,7 @@ fn draw_scene(
     draw_ship(
         center,
         ship,
-        game.ship_texture.as_ref(),
+        game.ship_textures.get(&game.ship_id),
         zoom,
         game.approach_target.is_some() || game.follow_target.is_some(),
     );
@@ -13955,15 +14790,7 @@ fn draw_scene(
         speed,
         turn,
     });
-    draw_inventory_hint(
-        game.inventory_open,
-        game.map_open,
-        game.research_open,
-        game.upgrades_open,
-        game.content_open,
-        game.contracts_open,
-        game.save_status_timer > 0.0,
-    );
+    draw_inventory_hint(game);
     draw_interaction_prompt(game);
 
     if game.inventory_open {
@@ -13984,6 +14811,9 @@ fn draw_scene(
     if game.contracts_open {
         draw_contracts_overlay(game, panel_corner);
     }
+    if game.fleet_open {
+        draw_fleet_overlay(game, panel_corner);
+    }
     if let Some(menu) = &game.context_action_menu {
         draw_context_action_menu(game, menu);
     }
@@ -13999,6 +14829,444 @@ fn draw_scene(
     if let Some(transition) = &game.scene_transition {
         draw_scene_transition_overlay(transition);
     }
+}
+
+fn fleet_overlay_rect() -> Rect {
+    let width = (screen_width() * 0.86).clamp(760.0, 1120.0);
+    let height = (screen_height() * 0.84).clamp(560.0, 820.0);
+    Rect::new(
+        (screen_width() - width) * 0.5,
+        (screen_height() - height) * 0.5,
+        width,
+        height,
+    )
+}
+
+fn fleet_row_rect(panel: Rect, index: usize) -> Rect {
+    Rect::new(
+        panel.x + 42.0,
+        panel.y + 92.0 + index as f32 * (FLEET_ROW_HEIGHT + 8.0),
+        300.0,
+        FLEET_ROW_HEIGHT,
+    )
+}
+
+fn fleet_visible_row_count(panel: Rect) -> usize {
+    ((panel.h - 192.0) / (FLEET_ROW_HEIGHT + 8.0))
+        .floor()
+        .max(1.0) as usize
+}
+
+fn fleet_visible_start(game: &GameState, panel: Rect) -> usize {
+    game.selected_owned_ship_index
+        .saturating_sub(fleet_visible_row_count(panel).saturating_sub(1))
+}
+
+fn fleet_switch_button_rect(panel: Rect) -> Rect {
+    Rect::new(panel.x + 370.0, panel.y + 174.0, 190.0, 40.0)
+}
+
+fn fleet_quantity_button_rect(panel: Rect, increase: bool) -> Rect {
+    Rect::new(
+        panel.x + if increase { 650.0 } else { 570.0 },
+        panel.y + 238.0,
+        34.0,
+        30.0,
+    )
+}
+
+fn fleet_transfer_row_rect(panel: Rect, row: usize, to_target: bool) -> Rect {
+    Rect::new(
+        panel.x + if to_target { 370.0 } else { 650.0 },
+        panel.y + 304.0 + row as f32 * 30.0,
+        250.0,
+        26.0,
+    )
+}
+
+fn fleet_shipyard_button_rect(panel: Rect, index: usize) -> Rect {
+    Rect::new(
+        panel.x + 370.0 + index as f32 * 250.0,
+        panel.y + panel.h - 74.0,
+        230.0,
+        38.0,
+    )
+}
+
+fn nearby_garage_index(game: &GameState) -> Option<usize> {
+    game.stations.iter().position(|station| {
+        station.system == game.current_system_id
+            && station_in_interaction_range(&game.ship, station)
+            && station.services.iter().any(|service| {
+                service.kind == "garage" && station_service_is_available(game, station, service)
+            })
+    })
+}
+
+fn draw_fleet_button(rect: Rect, label: &str, enabled: bool) {
+    let hovered = enabled && rect.contains(mouse_vec2());
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        if hovered {
+            Color::from_rgba(34, 78, 82, 245)
+        } else {
+            Color::from_rgba(12, 30, 38, 235)
+        },
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if enabled {
+            Color::from_rgba(150, 221, 226, 210)
+        } else {
+            Color::from_rgba(82, 114, 124, 120)
+        },
+    );
+    draw_text(
+        &fit_debug_text(label, rect.w - 20.0, 16),
+        rect.x + 10.0,
+        rect.y + rect.h * 0.5 + 6.0,
+        16.0,
+        if enabled {
+            Color::from_rgba(235, 242, 226, 255)
+        } else {
+            Color::from_rgba(126, 143, 148, 210)
+        },
+    );
+}
+
+fn draw_fleet_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
+    let panel = fleet_overlay_rect();
+    draw_rectangle(
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        Color::from_rgba(5, 12, 18, 246),
+    );
+    draw_rectangle_lines(
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        1.0,
+        Color::from_rgba(112, 151, 163, 210),
+    );
+    draw_panel_corner_art(panel, panel_corner);
+    draw_text(
+        "Fleet",
+        panel.x + 42.0,
+        panel.y + 52.0,
+        30.0,
+        Color::from_rgba(235, 242, 226, 255),
+    );
+    draw_text(
+        "F close  ·  arrows select  ·  Enter switches  ·  independent cargo and condition",
+        panel.x + 140.0,
+        panel.y + 50.0,
+        15.0,
+        Color::from_rgba(150, 178, 184, 230),
+    );
+
+    let visible_start = fleet_visible_start(game, panel);
+    for (visible_row, (index, owned)) in game
+        .owned_ships
+        .iter()
+        .enumerate()
+        .skip(visible_start)
+        .take(fleet_visible_row_count(panel))
+        .enumerate()
+    {
+        let row = fleet_row_rect(panel, visible_row);
+        let selected = index == game.selected_owned_ship_index;
+        let active = owned.instance_id == game.active_owned_ship_id;
+        draw_rectangle(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            if selected {
+                Color::from_rgba(24, 58, 66, 235)
+            } else {
+                Color::from_rgba(8, 20, 27, 225)
+            },
+        );
+        draw_rectangle_lines(
+            row.x,
+            row.y,
+            row.w,
+            row.h,
+            1.0,
+            if active {
+                Color::from_rgba(150, 221, 226, 230)
+            } else {
+                Color::from_rgba(83, 127, 139, 150)
+            },
+        );
+        let hull_name = game
+            .content_registry
+            .ships
+            .get(&owned.ship_id)
+            .map(|ship| ship.name.as_str())
+            .unwrap_or("Unavailable hull");
+        draw_text(&owned.callsign, row.x + 12.0, row.y + 24.0, 18.0, WHITE);
+        draw_text(
+            &format!("{hull_name}  ·  {}", local_content_id(&owned.system_id)),
+            row.x + 12.0,
+            row.y + 47.0,
+            14.0,
+            Color::from_rgba(150, 178, 184, 235),
+        );
+        draw_text(
+            &format!(
+                "Hull {:.0}/{:.0}  Cargo {:.1} t{}",
+                owned.ship.systems.hull.current,
+                owned.ship.systems.hull.max,
+                owned.inventory.total_mass() / 1000.0,
+                if active { "  ACTIVE" } else { "" }
+            ),
+            row.x + 12.0,
+            row.y + 70.0,
+            14.0,
+            if active {
+                Color::from_rgba(150, 221, 226, 255)
+            } else {
+                Color::from_rgba(178, 197, 203, 230)
+            },
+        );
+    }
+
+    let Some(selected) = game.owned_ships.get(game.selected_owned_ship_index) else {
+        return;
+    };
+    let active = selected.instance_id == game.active_owned_ship_id;
+    let resolved = game.content_registry.ships.contains_key(&selected.ship_id);
+    draw_text(
+        &selected.callsign,
+        panel.x + 370.0,
+        panel.y + 112.0,
+        24.0,
+        Color::from_rgba(235, 242, 226, 255),
+    );
+    draw_text(
+        &format!(
+            "{}  ·  {:.0} units from active ship",
+            local_content_id(&selected.system_id),
+            selected.ship.position.distance(game.ship.position)
+        ),
+        panel.x + 370.0,
+        panel.y + 142.0,
+        15.0,
+        Color::from_rgba(150, 178, 184, 230),
+    );
+    draw_fleet_button(
+        fleet_switch_button_rect(panel),
+        if active {
+            "Currently controlled"
+        } else {
+            "Switch control"
+        },
+        !active && resolved && selected.ship.systems.hull.current > 0.0,
+    );
+
+    let in_range = owned_ship_in_transfer_range(game, game.selected_owned_ship_index);
+    draw_text(
+        if active {
+            "Select another ship to transfer cargo."
+        } else if in_range {
+            "Cargo transfer available"
+        } else {
+            "Cargo transfer requires the ship within 180 units in this system."
+        },
+        panel.x + 370.0,
+        panel.y + 246.0,
+        15.0,
+        if in_range {
+            Color::from_rgba(150, 221, 226, 240)
+        } else {
+            Color::from_rgba(178, 197, 203, 220)
+        },
+    );
+    draw_fleet_button(fleet_quantity_button_rect(panel, false), "-", in_range);
+    draw_text(
+        &game.fleet_transfer_quantity.to_string(),
+        panel.x + 620.0,
+        panel.y + 260.0,
+        17.0,
+        WHITE,
+    );
+    draw_fleet_button(fleet_quantity_button_rect(panel, true), "+", in_range);
+    draw_text(
+        "Active cargo  →",
+        panel.x + 370.0,
+        panel.y + 294.0,
+        16.0,
+        WHITE,
+    );
+    draw_text(
+        "←  Selected cargo",
+        panel.x + 650.0,
+        panel.y + 294.0,
+        16.0,
+        WHITE,
+    );
+    if in_range {
+        for (row, stack) in game
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .take(FLEET_TRANSFER_ROWS)
+            .enumerate()
+        {
+            draw_fleet_button(
+                fleet_transfer_row_rect(panel, row, true),
+                &format!("{} x{}  →", stack.item.name, stack.count),
+                true,
+            );
+        }
+        for (row, stack) in selected
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .take(FLEET_TRANSFER_ROWS)
+            .enumerate()
+        {
+            draw_fleet_button(
+                fleet_transfer_row_rect(panel, row, false),
+                &format!("←  {} x{}", stack.item.name, stack.count),
+                true,
+            );
+        }
+    }
+
+    if let Some(station_index) = nearby_garage_index(game) {
+        let station = &game.stations[station_index];
+        draw_text(
+            &format!("Shipyard · {}", station.name),
+            panel.x + 370.0,
+            panel.y + panel.h - 92.0,
+            17.0,
+            Color::from_rgba(226, 190, 150, 245),
+        );
+        for (index, ship) in game
+            .content_registry
+            .ship_order
+            .iter()
+            .filter_map(|id| game.content_registry.ships.get(id))
+            .filter(|ship| ship.purchase_price.is_some())
+            .take(3)
+            .enumerate()
+        {
+            let price = ship.purchase_price.unwrap_or(0);
+            draw_fleet_button(
+                fleet_shipyard_button_rect(panel, index),
+                &format!("Buy {} · {price} cr", ship.name),
+                game.credits >= price,
+            );
+        }
+    }
+}
+
+fn handle_fleet_overlay_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+    let panel = fleet_overlay_rect();
+    let visible_start = fleet_visible_start(game, panel);
+    for (visible_row, index) in (visible_start..game.owned_ships.len())
+        .take(fleet_visible_row_count(panel))
+        .enumerate()
+    {
+        if fleet_row_rect(panel, visible_row).contains(mouse) {
+            game.selected_owned_ship_index = index;
+            return true;
+        }
+    }
+    let selected_index = game
+        .selected_owned_ship_index
+        .min(game.owned_ships.len().saturating_sub(1));
+    if fleet_switch_button_rect(panel).contains(mouse) {
+        return switch_active_owned_ship(game, selected_index);
+    }
+    if fleet_quantity_button_rect(panel, false).contains(mouse) {
+        game.fleet_transfer_quantity = game.fleet_transfer_quantity.saturating_sub(1).max(1);
+        return true;
+    }
+    if fleet_quantity_button_rect(panel, true).contains(mouse) {
+        game.fleet_transfer_quantity = game.fleet_transfer_quantity.saturating_add(1).min(999);
+        return true;
+    }
+    let active_items = game
+        .inventory
+        .slots
+        .iter()
+        .flatten()
+        .take(FLEET_TRANSFER_ROWS)
+        .map(|stack| stack.item.id.clone())
+        .collect::<Vec<_>>();
+    for (row, item_id) in active_items.iter().enumerate() {
+        if fleet_transfer_row_rect(panel, row, true).contains(mouse) {
+            transfer_owned_ship_item(
+                game,
+                selected_index,
+                item_id,
+                true,
+                game.fleet_transfer_quantity,
+            );
+            return true;
+        }
+    }
+    let target_items = game
+        .owned_ships
+        .get(selected_index)
+        .map(|owned| {
+            owned
+                .inventory
+                .slots
+                .iter()
+                .flatten()
+                .take(FLEET_TRANSFER_ROWS)
+                .map(|stack| stack.item.id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (row, item_id) in target_items.iter().enumerate() {
+        if fleet_transfer_row_rect(panel, row, false).contains(mouse) {
+            transfer_owned_ship_item(
+                game,
+                selected_index,
+                item_id,
+                false,
+                game.fleet_transfer_quantity,
+            );
+            return true;
+        }
+    }
+    if let Some(station_index) = nearby_garage_index(game) {
+        let offers = game
+            .content_registry
+            .ship_order
+            .iter()
+            .filter_map(|id| game.content_registry.ships.get(id))
+            .filter(|ship| ship.purchase_price.is_some())
+            .take(3)
+            .map(|ship| ship.id.clone())
+            .collect::<Vec<_>>();
+        for (index, ship_id) in offers.iter().enumerate() {
+            if fleet_shipyard_button_rect(panel, index).contains(mouse) {
+                return acquire_owned_ship(game, station_index, ship_id);
+            }
+        }
+    }
+    panel.contains(mouse)
 }
 
 fn draw_context_action_menu(game: &GameState, menu: &ContextActionMenu) {
@@ -15797,6 +17065,51 @@ fn draw_ship(
     );
 }
 
+fn draw_inactive_owned_ship(
+    center: Vec2,
+    active_ship: &Ship,
+    owned: &OwnedShip,
+    texture: Option<&Texture2D>,
+    zoom: f32,
+) {
+    let screen_pos = world_to_screen(owned.ship.position, center, active_ship, zoom);
+    let size = ship_screen_size(zoom);
+    let cull_padding = size + 120.0;
+    if screen_pos.x < -cull_padding
+        || screen_pos.x > screen_width() + cull_padding
+        || screen_pos.y < -cull_padding
+        || screen_pos.y > screen_height() + cull_padding
+    {
+        return;
+    }
+
+    let destroyed = owned.ship.systems.hull.current <= 0.0;
+    let fleet_color = if destroyed {
+        Color::from_rgba(220, 126, 116, 185)
+    } else {
+        Color::from_rgba(150, 221, 226, 185)
+    };
+    draw_circle_lines(screen_pos.x, screen_pos.y, size * 0.58, 1.5, fleet_color);
+    draw_ship_sprite(
+        screen_pos,
+        texture,
+        size,
+        false,
+        ship_screen_rotation(&owned.ship),
+    );
+    draw_ship_status_arcs(screen_pos, &owned.ship, zoom);
+
+    let label = fit_debug_text(&owned.callsign, 180.0, 15);
+    let label_size = measure_text(&label, None, 15, 1.0);
+    draw_text(
+        &label,
+        screen_pos.x - label_size.width * 0.5,
+        screen_pos.y + size * 0.66 + 16.0,
+        15.0,
+        fleet_color,
+    );
+}
+
 fn ship_screen_size(zoom: f32) -> f32 {
     SHIP_SPRITE_SIZE * zoom
 }
@@ -16001,32 +17314,26 @@ fn draw_dashed_ring(
     }
 }
 
-fn draw_inventory_hint(
-    inventory_open: bool,
-    map_open: bool,
-    research_open: bool,
-    upgrades_open: bool,
-    content_open: bool,
-    contracts_open: bool,
-    save_visible: bool,
-) {
-    let mut text = if map_open {
+fn draw_inventory_hint(game: &GameState) {
+    let mut text = if game.fleet_open {
+        "F close fleet"
+    } else if game.map_open {
         "M close map"
-    } else if contracts_open {
+    } else if game.contracts_open {
         "J close contracts"
-    } else if content_open {
+    } else if game.content_open {
         "C close content"
-    } else if upgrades_open {
+    } else if game.upgrades_open {
         "Esc close upgrades"
-    } else if research_open {
+    } else if game.research_open {
         "K close research"
-    } else if inventory_open {
-        "E/Tab close inventory   M map   K research   C content   J contracts   Esc close"
+    } else if game.inventory_open {
+        "E/Tab close inventory   F fleet   M map   K research   C content   J contracts   Esc close"
     } else {
-        "E/Tab inventory   M map   K research   C content   J contracts   Esc menu"
+        "E/Tab inventory   F fleet   M map   K research   C content   J contracts   Esc menu"
     }
     .to_string();
-    if save_visible {
+    if game.save_status_timer > 0.0 {
         text.push_str("   saved");
     }
     let measure = measure_text(&text, None, 18, 1.0);
@@ -20702,7 +22009,7 @@ fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
         current_system_id: &game.current_system_id,
         shield_recharge_delay_remaining: game.shield_recharge_delay_remaining,
         operation_feedback: &game.operation_feedback,
-        texture: game.ship_texture.as_ref(),
+        texture: game.ship_textures.get(&game.ship_id),
         x,
         y,
         width,
@@ -24290,6 +25597,7 @@ mod tests {
 
         let mut save = game.to_save();
         save.inventory.clear();
+        save.owned_ships[0].inventory.clear();
         game.apply_save(save);
 
         assert_eq!(game.inventory.count(&ember_lance), 0);
@@ -24351,6 +25659,290 @@ mod tests {
     }
 
     #[test]
+    fn garage_purchase_creates_an_independent_owned_ship_without_starter_cargo() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 20_000;
+        let price = game.content_registry.ships["turrets-galore:twinspire_gunship"]
+            .purchase_price
+            .expect("Twinspire should be purchasable");
+
+        assert!(acquire_owned_ship(
+            &mut game,
+            0,
+            "turrets-galore:twinspire_gunship"
+        ));
+
+        assert_eq!(game.owned_ships.len(), 2);
+        assert_eq!(game.credits, 20_000 - price);
+        assert_eq!(
+            game.owned_ships[1].ship_id,
+            "turrets-galore:twinspire_gunship"
+        );
+        assert_eq!(game.owned_ships[1].inventory.total_mass(), 0.0);
+        assert_eq!(game.owned_ships[1].equipped_weapons.len(), 2);
+    }
+
+    #[test]
+    fn switching_owned_ships_preserves_cargo_upgrades_damage_and_position() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let copper = required_item(&registry, "core:copper_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 20_000;
+        acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
+        game.inventory.add_item(iron.clone(), 3);
+        game.ship_upgrades[0].level = 2;
+        game.ship.systems.hull.current = 71.0;
+        game.ship.position = vec2(222.0, 44.0);
+
+        assert!(switch_active_owned_ship(&mut game, 1));
+        assert_eq!(game.inventory.count(&iron), 0);
+        game.inventory.add_item(copper.clone(), 5);
+        game.ship_upgrades[1].level = 1;
+
+        assert!(switch_active_owned_ship(&mut game, 0));
+        assert_eq!(game.inventory.count(&iron), 3);
+        assert_eq!(game.inventory.count(&copper), 0);
+        assert_eq!(game.ship_upgrades[0].level, 2);
+        assert_eq!(game.ship.systems.hull.current, 71.0);
+        assert_eq!(game.ship.position, vec2(222.0, 44.0));
+
+        assert!(switch_active_owned_ship(&mut game, 1));
+        assert_eq!(game.inventory.count(&copper), 5);
+        assert_eq!(game.ship_upgrades[1].level, 1);
+    }
+
+    #[test]
+    fn owned_ship_cargo_transfer_requires_range_and_preserves_stack_totals() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 20_000;
+        acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
+        game.inventory.add_item(iron.clone(), 10);
+        game.owned_ships[1].ship.position = vec2(1_000.0, 0.0);
+
+        assert_eq!(transfer_owned_ship_item(&mut game, 1, &iron.id, true, 4), 0);
+        game.owned_ships[1].ship.position = vec2(180.0, 0.0);
+        assert_eq!(transfer_owned_ship_item(&mut game, 1, &iron.id, true, 4), 4);
+        assert_eq!(game.inventory.count(&iron), 6);
+        assert_eq!(game.owned_ships[1].inventory.count(&iron), 4);
+        assert_eq!(
+            transfer_owned_ship_item(&mut game, 1, &iron.id, false, 2),
+            2
+        );
+        assert_eq!(game.inventory.count(&iron), 8);
+        assert_eq!(game.owned_ships[1].inventory.count(&iron), 2);
+    }
+
+    #[test]
+    fn inactive_owned_ship_recharges_energy_and_shields() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 20_000;
+        acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
+        game.owned_ships[1].ship.systems.energy.current = 0.0;
+        game.owned_ships[1].ship.systems.shields.current = 20.0;
+        game.owned_ships[1].shield_recharge_delay_remaining = 0.0;
+
+        update_inactive_owned_ship_systems(&mut game, 1.0);
+
+        assert!(game.owned_ships[1].ship.systems.energy.current > 0.0);
+        assert!(game.owned_ships[1].ship.systems.shields.current > 20.0);
+    }
+
+    #[test]
+    fn inactive_owned_ship_fires_using_its_own_energy_and_ammunition() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 20_000;
+        acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
+        let fleet_position = game.owned_ships[1].ship.position;
+        game.owned_ships[1].ship.systems.energy.current = 100.0;
+        game.npc_ships = vec![test_npc_ship(
+            NpcBehaviorMode::HostileIntercept,
+            fleet_position + vec2(100.0, 0.0),
+        )];
+        let starting_energy = game.owned_ships[1].ship.systems.energy.current;
+
+        update_inactive_owned_ship_weapon_systems(&mut game, 0.1);
+
+        assert_eq!(
+            game.owned_ships[1].equipped_weapons[0].status,
+            WeaponStatus::Fired
+        );
+        assert_eq!(
+            game.owned_ships[1].equipped_weapons[1].status,
+            WeaponStatus::OutOfAmmo
+        );
+        assert!(game.owned_ships[1].ship.systems.energy.current < starting_energy);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        finish_weapon_fire_events(&mut game);
+        assert!(game.npc_ships[0].shields.current < game.npc_ships[0].shields.max);
+    }
+
+    #[test]
+    fn hostile_npc_can_target_and_damage_an_inactive_owned_ship() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(2_000.0, 0.0);
+        game.credits = 20_000;
+        game.stations[0].position = game.ship.position;
+        acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
+        game.owned_ships[1].ship.position = Vec2::ZERO;
+        game.owned_ships[1].ship.systems.shields.current =
+            game.owned_ships[1].ship.systems.shields.max;
+        let starting_shields = game.owned_ships[1].ship.systems.shields.current;
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(100.0, 0.0));
+        hostile.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        stock_test_npc_ammo(
+            &mut hostile,
+            &game.content_registry,
+            "core:interceptor_round",
+            1,
+        );
+        hostile.energy.current = hostile.energy.max;
+        game.npc_ships = vec![hostile];
+
+        update_npc_weapon_systems(&mut game, 0.1);
+        assert_eq!(game.weapon_fire_events.len(), 1);
+        finish_weapon_fire_events(&mut game);
+
+        assert!(game.owned_ships[1].ship.systems.shields.current < starting_shields);
+        assert!(game.owned_ships[1].shield_recharge_delay_remaining > 0.0);
+        assert_eq!(
+            game.ship.systems.shields.current,
+            game.ship.systems.shields.max
+        );
+    }
+
+    #[test]
+    fn fleet_save_round_trip_restores_all_owned_ships_and_active_identity() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 20_000;
+        acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
+        switch_active_owned_ship(&mut game, 1);
+        game.ship.systems.hull.current = 64.0;
+        let save = game.to_save();
+
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert_eq!(restored.owned_ships.len(), 2);
+        assert_eq!(restored.active_owned_ship_id, "ship-2");
+        assert_eq!(restored.ship_id, "turrets-galore:twinspire_gunship");
+        assert_eq!(restored.ship.systems.hull.current, 64.0);
+    }
+
+    #[test]
+    fn version_one_save_migrates_into_a_single_owned_ship() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = vec2(345.0, -90.0);
+        let mut save = game.to_save();
+        save.version = 1;
+        save.owned_ships.clear();
+        save.active_owned_ship_id.clear();
+
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert_eq!(restored.owned_ships.len(), 1);
+        assert_eq!(restored.active_owned_ship_id, "ship-1");
+        assert_eq!(restored.ship.position, vec2(345.0, -90.0));
+    }
+
+    #[test]
+    fn unavailable_pack_hull_record_survives_with_a_resolvable_fallback_active() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let twinspire = registry.ships["turrets-galore:twinspire_gunship"].clone();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship_id = twinspire.id.clone();
+        game.ship = Ship::from_content(&twinspire);
+        game.equipped_weapons =
+            equipped_weapons_from_ids(&game.content_registry, &twinspire.weapon_slots);
+        let save = game.to_save();
+
+        let mut registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        registry.ships.remove("turrets-galore:twinspire_gunship");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert_eq!(restored.ship_id, STARTER_SHIP_ID);
+        assert_eq!(restored.owned_ships.len(), 2);
+        assert!(restored
+            .owned_ships
+            .iter()
+            .any(|owned| owned.ship_id == "turrets-galore:twinspire_gunship"));
+        let unavailable_index = restored
+            .owned_ships
+            .iter()
+            .position(|owned| owned.ship_id == "turrets-galore:twinspire_gunship")
+            .unwrap();
+        assert!(!switch_active_owned_ship(&mut restored, unavailable_index));
+    }
+
+    #[test]
     fn legacy_save_without_ship_identity_keeps_the_core_hull() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -24379,6 +25971,7 @@ mod tests {
             Some("turrets-galore:ember_lance_turret".to_string()),
             Some("missing-pack:lost_turret".to_string()),
         ];
+        save.owned_ships[0].weapon_slot_loadout = save.weapon_slot_loadout.clone();
 
         game.apply_save(save);
 
@@ -24445,13 +26038,13 @@ mod tests {
             game.ship.position + vec2(20.0, 0.0),
         );
         npc.angle = std::f32::consts::PI;
-        assert!(npc_weapon_can_target_player(
+        assert!(npc_weapon_can_target_ship(
             &npc,
             &ship_only,
             &game.ship,
             &game.current_system_id,
         ));
-        assert!(npc_weapon_can_target_player(
+        assert!(npc_weapon_can_target_ship(
             &npc,
             &all_hostiles,
             &game.ship,
@@ -28566,7 +30159,7 @@ mod tests {
                 inventory.add_item(required_item(&content_registry, &stack.item), stack.count);
             }
         }
-        GameState {
+        let mut game = GameState {
             runtime_flags: RuntimeFlags::default(),
             audio: audio::AudioManager::empty(1.0),
             content_registry,
@@ -28578,6 +30171,9 @@ mod tests {
             world_seed: 1,
             world_elapsed_days: 0.0,
             credits: default_credits(),
+            owned_ships: Vec::new(),
+            active_owned_ship_id: "ship-1".to_string(),
+            next_owned_ship_sequence: 2,
             ship_id: default_starter_ship_id(),
             ship: Ship::starter(),
             installed_power_modules: Vec::new(),
@@ -28590,7 +30186,7 @@ mod tests {
             weapon_fire_events: Vec::new(),
             weapon_area_effect_events: Vec::new(),
             weapon_projectile_textures: HashMap::new(),
-            ship_texture: None,
+            ship_textures: HashMap::new(),
             system_light_haze_texture: None,
             system_stars: Vec::new(),
             planets,
@@ -28631,6 +30227,9 @@ mod tests {
             upgrades_open: false,
             content_open: false,
             contracts_open: false,
+            fleet_open: false,
+            selected_owned_ship_index: 0,
+            fleet_transfer_quantity: 1,
             content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
@@ -28654,6 +30253,8 @@ mod tests {
             follow_target: None,
             approach_target: None,
             npc_trade_quantity: 1,
-        }
+        };
+        game.owned_ships.push(game.capture_active_owned_ship());
+        game
     }
 }

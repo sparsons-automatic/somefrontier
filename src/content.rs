@@ -169,6 +169,7 @@ pub struct ShipDef {
     pub linear_drag: f32,
     pub hull_capacity: f32,
     pub shield_capacity: f32,
+    pub purchase_price: Option<u32>,
     pub power_modules: Vec<String>,
     pub shield_slots: Vec<String>,
     pub weapon_slots: Vec<String>,
@@ -792,6 +793,7 @@ struct ShipFileDef {
     linear_drag: f32,
     hull_capacity: f32,
     shield_capacity: f32,
+    purchase_price: Option<u32>,
     #[serde(default)]
     power_modules: Vec<String>,
     #[serde(default)]
@@ -1957,6 +1959,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         validate_positive(ship.linear_drag, "Ship", &id, "linear drag", errors);
         validate_positive(ship.hull_capacity, "Ship", &id, "hull capacity", errors);
         validate_positive(ship.shield_capacity, "Ship", &id, "shield capacity", errors);
+        if ship.purchase_price == Some(0) {
+            errors.push(format!("Ship `{id}` has a zero purchase price"));
+        }
         let texture = ship
             .texture
             .map(|texture| resolve_texture_path(&raw_pack.path, &texture, &id, errors));
@@ -1977,6 +1982,7 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     linear_drag: ship.linear_drag,
                     hull_capacity: ship.hull_capacity,
                     shield_capacity: ship.shield_capacity,
+                    purchase_price: ship.purchase_price,
                     power_modules: ship
                         .power_modules
                         .into_iter()
@@ -4643,6 +4649,7 @@ mod tests {
             .get("turrets-galore:twinspire_gunship")
             .expect("pack-owned two-bank starter ship should load");
         assert_eq!(twinspire.name, "Twinspire Gunship");
+        assert_eq!(twinspire.purchase_price, Some(14_000));
         assert_eq!(
             twinspire.weapon_slots,
             [

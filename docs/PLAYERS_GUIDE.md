@@ -64,6 +64,7 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Open research | `K` |
 | Open content browser | `C` |
 | Open contracts | `J` |
+| Open fleet management | `F` (`F` cycles filters while the map is open) |
 | Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
 | Inspect nearby planet or station | `Space` |
 | Select a visible planet | Left click the planet; press `Space` to inspect |
@@ -162,6 +163,30 @@ currently informational and does not change flight handling.
 
 Some crafted items are installable modules. Shield and weapon install items can
 be swapped through ship detail surfaces when a matching slot exists.
+
+## Fleet And Owned Ships
+
+Press `F` during local flight to open Fleet management. Each owned ship keeps
+its own hull and shield condition, energy, position, cargo, upgrades, power
+modules, shields, and turret-bank loadout. Select a fleet row and choose `Switch
+control` to make that vessel active; switching to a vessel in another system
+moves the local-space view to its saved location. Destroyed ships and hulls from
+currently unavailable content packs cannot be activated.
+
+Station garages act as shipyards for hulls whose content definition includes a
+purchase price. A purchased ship begins at the garage berth with full default
+systems, its configured equipment, no upgrades, and an empty cargo hold. Starter
+inventory is granted only to the first new-game ship and is never duplicated by
+ship purchases.
+
+Select a different owned ship in Fleet management to transfer cargo. Both ships
+must be in the same system and within 180 units. Transfer amounts respect the
+receiving ship's cargo mass and inventory-slot capacity. Inactive owned ships
+remain at their saved positions, but their reactors and shields continue to
+recharge and their installed turrets automatically engage hostile targets in the
+same system. They consume energy and ammunition from that ship's own stores,
+and hostile ships can target and damage them. Simultaneous fleet movement and
+formation following are separate future behaviors.
 
 The ship detail panel includes an `Operations` readout for recent meaningful
 changes. It records compact feedback for survey results, mined resources,
