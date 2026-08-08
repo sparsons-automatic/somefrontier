@@ -53,6 +53,7 @@ For the full current gameplay reference, see
 - `M`: toggle map view
 - `K`: toggle research
 - `C`: toggle content browser
+- `F`: toggle fleet management (`F` cycles filters while the map is open)
 - Mouse wheel in flight view: zoom camera in/out
 - `PageUp` / `PageDown`: zoom camera in/out
 - `Space`: inspect/select a planet when the ship is over it
@@ -69,8 +70,9 @@ The game remembers the last window size after resizing. Window size is saved to
 
 Game progress autosaves to `$XDG_CONFIG_HOME/some-frontier/save.toml`, or
 `~/.config/some-frontier/save.toml` when `XDG_CONFIG_HOME` is not set. The save
-stores the world seed, ship state, inventory, completed and active research,
-upgrades, active destination, equipped shield and weapon slots, production
+stores the world seed, every owned ship's state, cargo, upgrades, position, and
+equipped systems, the active ship identity, completed and active research,
+active destination, production
 settings, scanned planets, mining quotas, elapsed world time, and finite station
 market stock and restock schedules. The active content-defined ship ID is also
 saved, so its hull stats, art, and turret-bank capacity return with the loadout.
@@ -81,6 +83,13 @@ back every time. The expanded New Game screen presents every loaded
 content-defined player ship in a scrollable three-column grid. Each card loads
 the ship's pack-owned image and includes hull, shield, and turret-bank capacity,
 so the ship and world seed are selected together.
+
+Approach a station garage and open the Fleet menu with `F` to purchase another
+content-defined hull. Owned ships keep independent cargo, upgrades, equipment,
+damage, and position. The Fleet menu can switch control between ships and move
+cargo in either direction when both ships are within transfer range. Inactive
+local ships hold position while their shields, reactors, and automatic weapons
+continue operating from their independent energy and ammunition stores.
 
 ## Production and Mining
 

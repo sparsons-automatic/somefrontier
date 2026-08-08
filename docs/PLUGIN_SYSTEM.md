@@ -842,6 +842,7 @@ energy_recharge = 8.0
 linear_drag = 0.985
 hull_capacity = 100.0
 shield_capacity = 100.0
+purchase_price = 8500
 power_modules = ["compact_fission_cell"]
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
@@ -860,6 +861,12 @@ Rules:
   to compensate for the New Game card. A missing or unreadable image leaves the
   ship selectable and uses the engine's fallback presentation.
 - `mass`, acceleration, energy, drag, hull, and shield values must be positive.
+- `purchase_price` is optional. When present, it must be a positive credit
+  amount and makes the hull available while the player is in range of an
+  available station service whose kind is `garage`; normal service reputation
+  requirements still apply. Omit it for preview, scenario-only, or otherwise
+  unavailable hulls. Purchased ships receive their configured default modules
+  and slots but do not receive starter inventory.
 - `power_modules` defaults to an empty list. Entries resolve to namespaced power
   module IDs and must reference loaded power modules.
 - `shield_slots` defaults to an empty list. Entries resolve to namespaced shield
@@ -873,6 +880,19 @@ Rules:
 ship. Its two ordered `weapon_slots` entries produce two independently swappable
 banks in the Defense rail, while its `starter.toml` nomination only controls the
 picker's initial highlight.
+
+Player ownership uses stable ship-instance IDs rather than treating a hull ID as
+unique. Saves can therefore hold several copies of one content-defined hull,
+each with independent cargo, upgrades, equipment, damage, position, and system.
+If a pack-owned hull is temporarily unavailable, its owned record remains in
+the save but cannot be activated until the pack returns.
+
+Inactive owned ships in the current system remain visible at their saved
+positions. Their configured power modules, shields, and automatic weapons keep
+running: shields and energy recharge, turrets acquire hostile targets, and
+ammunition is consumed from that ship's independent cargo. Hostiles can target
+and damage these ships. Inactive ships do not currently navigate or follow the
+active ship, so pack authors should not depend on autonomous fleet movement.
 
 ## `npc_ships.toml`
 
@@ -1371,6 +1391,7 @@ Reject startup when:
 - A ship references a missing weapon.
 - A ship has an empty name or non-positive mass, acceleration, energy, drag,
   hull, or shield values.
+- A ship declares a zero `purchase_price`.
 - Starter configuration references a missing ship.
 - A faction has an empty name or kind, or an unsupported default disposition.
 - An NPC ship references a missing system, faction, cargo item, shield, or
