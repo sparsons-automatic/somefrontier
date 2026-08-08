@@ -1,6 +1,7 @@
 mod audio;
 mod branding_icon;
 mod content;
+mod egui_inventory;
 mod remote_assets;
 
 use macroquad::prelude::*;
@@ -6481,6 +6482,7 @@ async fn main() {
                 }
             }
             AppState::Playing(game) => {
+                let egui_inventory_was_active = egui_inventory_active(game);
                 update_game(game, dt);
                 if game.quit_to_title_requested {
                     app = AppState::Title(loaded_title_menu().await);
@@ -6491,6 +6493,18 @@ async fn main() {
                         branding_logo.as_ref(),
                         ui_panel_corner.as_ref(),
                     );
+                    if egui_inventory_active(game) {
+                        let view = inventory_overlay_view(game);
+                        let mut actions = Vec::new();
+                        egui_macroquad::ui(|ctx| {
+                            actions =
+                                egui_inventory::draw(ctx, [screen_width(), screen_height()], &view);
+                        });
+                        if egui_inventory_was_active {
+                            apply_inventory_ui_actions(game, actions, production_keep_click_step());
+                        }
+                        egui_macroquad::draw();
+                    }
                 }
             }
         }
@@ -9291,28 +9305,27 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.fleet_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
-        if wheel != 0.0 {
-            handle_inventory_overlay_scroll(game, mouse, wheel);
-        }
-
-        if handle_action_rail_resize_input(game, mouse) {
+        if egui_inventory_active(game) {
+            click_handled = is_mouse_button_pressed(MouseButton::Left)
+                || is_mouse_button_pressed(MouseButton::Right);
+        } else if handle_action_rail_resize_input(game, mouse) {
             click_handled = true;
-        } else if let Some(planet_index) = game.selected_planet {
-            click_handled = handle_planet_orbit_input(game, planet_index, mouse)
-                || handle_planet_scan_input(game, planet_index, mouse)
-                || handle_mining_table_input(game, planet_index, mouse, wheel)
-                || handle_production_table_input(game, mouse, wheel);
-        } else if let Some(station_index) = game.selected_station {
-            click_handled = handle_station_service_input(game, station_index, mouse)
-                || handle_production_table_input(game, mouse, wheel);
-        } else if let Some(npc_ship_index) = game.selected_npc_ship {
-            click_handled = handle_npc_ship_interaction_input(game, npc_ship_index, mouse, wheel)
-                || handle_production_table_input(game, mouse, wheel);
         } else {
-            if handle_ship_shield_slot_input(game, mouse)
-                || handle_ship_weapon_slot_input(game, mouse)
-            {
-                click_handled = true;
+            if wheel != 0.0 {
+                handle_inventory_overlay_scroll(game, mouse, wheel);
+            }
+            if let Some(planet_index) = game.selected_planet {
+                click_handled = handle_planet_orbit_input(game, planet_index, mouse)
+                    || handle_planet_scan_input(game, planet_index, mouse)
+                    || handle_mining_table_input(game, planet_index, mouse, wheel)
+                    || handle_production_table_input(game, mouse, wheel);
+            } else if let Some(station_index) = game.selected_station {
+                click_handled = handle_station_service_input(game, station_index, mouse)
+                    || handle_production_table_input(game, mouse, wheel);
+            } else if let Some(npc_ship_index) = game.selected_npc_ship {
+                click_handled =
+                    handle_npc_ship_interaction_input(game, npc_ship_index, mouse, wheel)
+                        || handle_production_table_input(game, mouse, wheel);
             } else if is_mouse_button_pressed(MouseButton::Left)
                 && ship_detail_preview_rect(selected_action_rail_width(game)).contains(mouse)
             {
@@ -11151,87 +11164,6 @@ fn handle_ship_upgrades_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
             viewport_height,
         );
     }
-}
-
-fn handle_ship_shield_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-
-    (0..shield_slot_capacity(game))
-        .find(|slot_index| {
-            ship_shield_slot_rect(*slot_index, selected_action_rail_width(game)).contains(mouse)
-        })
-        .is_some_and(|slot_index| install_first_available_shield_for_slot(game, slot_index))
-}
-
-fn install_first_available_shield_for_slot(game: &mut GameState, slot_index: usize) -> bool {
-    let current_shield_id = game
-        .equipped_shields
-        .get(slot_index)
-        .map(|shield| shield.id.as_str());
-    let Some(shield_id) = game
-        .content_registry
-        .shield_order
-        .iter()
-        .find_map(|shield_id| {
-            if current_shield_id == Some(shield_id.as_str()) {
-                return None;
-            }
-            let shield = game.content_registry.shields.get(shield_id)?;
-            let install_item = registry_item(&game.content_registry, &shield.install_item)?;
-            (game.inventory.count(&install_item) > 0).then(|| shield_id.clone())
-        })
-    else {
-        return false;
-    };
-
-    install_shield_in_slot(game, slot_index, &shield_id).is_ok()
-}
-
-fn handle_ship_weapon_slot_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(width) = selected_action_rail_width(game) else {
-        return false;
-    };
-    let rail = action_rail_rect(width);
-
-    if let Some(slot_index) = game.open_turret_bank {
-        if turret_bank_button_rect(rail, slot_index).contains(mouse) {
-            game.open_turret_bank = None;
-            game.audio.play(audio::AudioCue::Back);
-            return true;
-        }
-        let turret_ids = inventory_turret_ids(&game.content_registry, &game.inventory);
-        let dropdown = turret_bank_dropdown_rect(rail, slot_index, turret_ids.len());
-        for (row_index, weapon_id) in turret_ids.iter().enumerate() {
-            if turret_bank_dropdown_row_rect(dropdown, row_index).contains(mouse) {
-                let installed = install_weapon_in_slot(game, slot_index, weapon_id).is_ok();
-                game.open_turret_bank = None;
-                game.audio.play(if installed {
-                    audio::AudioCue::Confirm
-                } else {
-                    audio::AudioCue::Warning
-                });
-                return true;
-            }
-        }
-        if dropdown.contains(mouse) {
-            return true;
-        }
-        game.open_turret_bank = None;
-    }
-
-    for slot_index in 0..weapon_slot_capacity(game).min(5) {
-        if turret_bank_button_rect(rail, slot_index).contains(mouse) {
-            game.open_turret_bank = Some(slot_index);
-            game.audio.play(audio::AudioCue::Select);
-            return true;
-        }
-    }
-    false
 }
 
 fn inventory_turret_ids(
@@ -14794,7 +14726,11 @@ fn draw_scene(
     draw_interaction_prompt(game);
 
     if game.inventory_open {
-        draw_inventory_overlay(game, panel_corner);
+        if egui_inventory_active(game) {
+            draw_egui_inventory_shell(panel_corner);
+        } else {
+            draw_inventory_overlay(game, panel_corner);
+        }
     }
     if game.map_open {
         draw_starmap_overlay(game, panel_corner);
@@ -18222,7 +18158,12 @@ fn inventory_panel_rect(action_rail_width: Option<f32>) -> (f32, f32, f32, f32) 
 }
 
 fn inventory_panel_height() -> f32 {
-    (screen_height() * 0.8).clamp(420.0, screen_height() - 56.0)
+    inventory_panel_height_for(screen_height())
+}
+
+fn inventory_panel_height_for(screen_height: f32) -> f32 {
+    let maximum = (screen_height - 56.0).max(260.0);
+    (screen_height * 0.8).clamp(260.0, maximum)
 }
 
 struct InventoryOverlayLayout {
@@ -18445,6 +18386,345 @@ fn ship_defense_action_rail_width(game: &GameState) -> f32 {
         );
 
     clamp_action_rail_width(slot_width.max(candidate_width).max(240.0) + 64.0)
+}
+
+fn egui_inventory_active(game: &GameState) -> bool {
+    game.inventory_open
+        && game.selected_planet.is_none()
+        && game.selected_station.is_none()
+        && game.selected_npc_ship.is_none()
+}
+
+fn draw_egui_inventory_shell(panel_corner: Option<&Texture2D>) {
+    let rect = egui_inventory::overlay_rect([screen_width(), screen_height()]);
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        Color::from_rgba(6, 12, 18, 228),
+    );
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        1.0,
+        Color::from_rgba(112, 151, 163, 150),
+    );
+    draw_panel_corner_art(
+        Rect::new(rect.x, rect.y, rect.width, rect.height),
+        panel_corner,
+    );
+}
+
+fn inventory_overlay_view(game: &GameState) -> egui_inventory::InventoryOverlayView {
+    let (recipes, settings) = active_production_rows(game);
+    let active_row = next_recipe_bill_index(game, recipes, settings);
+    let production = recipes
+        .iter()
+        .zip(settings)
+        .enumerate()
+        .map(|(index, (recipe, setting))| {
+            let unlocked = recipe_is_unlocked(game, &recipe.id);
+            egui_inventory::ProductionRow {
+                item: recipe_row_label(recipes, index),
+                keep: setting.keep,
+                status: if unlocked {
+                    work_row_status(
+                        game.inventory.count(&recipe.output.item),
+                        setting.keep,
+                        setting.queued,
+                    )
+                } else {
+                    "Locked".to_string()
+                },
+                percent: if active_row == Some(index) {
+                    format!("{:.0}%", setting.progress() * 100.0)
+                } else {
+                    String::new()
+                },
+                active: active_row == Some(index),
+                enabled: unlocked && game.inventory.can_craft(recipe),
+                unlocked,
+                requirements: recipe
+                    .ingredients
+                    .iter()
+                    .map(|ingredient| {
+                        format!(
+                            "{}: {} / {}",
+                            ingredient.item.name,
+                            game.inventory.count(&ingredient.item),
+                            ingredient.count
+                        )
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+
+    let inventory = game
+        .inventory
+        .slots
+        .iter()
+        .filter_map(|slot| slot.as_ref())
+        .map(|stack| egui_inventory::InventoryRow {
+            item: stack.item.name.clone(),
+            quantity: stack.count,
+            mass: format_mass(stack.item.unit_mass * stack.count as f32),
+        })
+        .collect();
+
+    egui_inventory::InventoryOverlayView {
+        credits: game.credits,
+        production_tab: production_tab_for_mode(game.production_mode),
+        production,
+        inventory,
+        ship: ship_pane_view(game),
+    }
+}
+
+fn active_production_rows(game: &GameState) -> (&[Recipe], &[CraftSetting]) {
+    match game.production_mode {
+        ProductionMode::Smelting => (&game.smelt_recipes, &game.smelt_settings),
+        ProductionMode::Crafting => (&game.craft_recipes, &game.craft_settings),
+        ProductionMode::Processing => (&game.processing_recipes, &game.processing_settings),
+    }
+}
+
+fn production_tab_for_mode(mode: ProductionMode) -> egui_inventory::ProductionTab {
+    match mode {
+        ProductionMode::Smelting => egui_inventory::ProductionTab::Smelt,
+        ProductionMode::Crafting => egui_inventory::ProductionTab::Craft,
+        ProductionMode::Processing => egui_inventory::ProductionTab::Process,
+    }
+}
+
+fn production_mode_for_tab(tab: egui_inventory::ProductionTab) -> ProductionMode {
+    match tab {
+        egui_inventory::ProductionTab::Smelt => ProductionMode::Smelting,
+        egui_inventory::ProductionTab::Craft => ProductionMode::Crafting,
+        egui_inventory::ProductionTab::Process => ProductionMode::Processing,
+    }
+}
+
+fn production_keep_click_step() -> i32 {
+    production_keep_click_step_for_keys(
+        is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift),
+        is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl),
+    )
+}
+
+fn production_keep_click_step_for_keys(shift: bool, control: bool) -> i32 {
+    if control {
+        20
+    } else if shift {
+        10
+    } else {
+        1
+    }
+}
+
+fn ship_pane_view(game: &GameState) -> egui_inventory::ShipPane {
+    let ship_name = game
+        .content_registry
+        .ships
+        .get(&game.ship_id)
+        .map(|ship| ship.name.clone())
+        .unwrap_or_else(|| local_content_id(&game.ship_id).replace('_', " "));
+    let shield_choices = inventory_shield_choices(game);
+    let weapon_choices = inventory_weapon_choices(game);
+    let shields = (0..shield_slot_capacity(game))
+        .map(|slot_index| {
+            let installed = game.equipped_shields.get(slot_index);
+            egui_inventory::EquipmentSlot {
+                label: format!("Shield Bank #{}", slot_index + 1),
+                installed_id: installed.map(|shield| shield.id.clone()),
+                installed_name: installed
+                    .map(|shield| shield.name.clone())
+                    .unwrap_or_else(|| "Empty shield slot".to_string()),
+                choices: shield_choices.clone(),
+            }
+        })
+        .collect();
+    let weapons = (0..weapon_slot_capacity(game))
+        .map(|slot_index| {
+            let installed = game
+                .equipped_weapons
+                .get(slot_index)
+                .filter(|weapon| weapon.resolved);
+            egui_inventory::EquipmentSlot {
+                label: format!("Turret Bank #{}", slot_index + 1),
+                installed_id: installed.map(|weapon| weapon.id.clone()),
+                installed_name: installed
+                    .map(|weapon| weapon.name.clone())
+                    .unwrap_or_else(|| "Empty weapon slot".to_string()),
+                choices: weapon_choices.clone(),
+            }
+        })
+        .collect();
+    let power = game
+        .installed_power_modules
+        .iter()
+        .map(|module| {
+            format!(
+                "{} · +{:.1}/s · {:.0}% heat",
+                module.name,
+                module.generation,
+                module.heat * 100.0
+            )
+        })
+        .collect();
+
+    egui_inventory::ShipPane {
+        ship_name,
+        cargo: format!(
+            "Cargo {} / {}",
+            format_mass(game.inventory.total_mass()),
+            format_mass(cargo_rating_kg(&game.ship_upgrades))
+        ),
+        hull: format!("{:.0}%", game.ship.systems.hull.fraction() * 100.0),
+        shield: format!("{:.0}%", game.ship.systems.shields.fraction() * 100.0),
+        energy: format!("{:.0}%", game.ship.systems.energy.fraction() * 100.0),
+        mass: format_mass(game.ship.attributes.mass),
+        engine: format!("{:.0}", game.ship.forward_acceleration()),
+        turn: format!("{:.1}", game.ship.turn_acceleration()),
+        power,
+        shields,
+        weapons,
+        feedback: game
+            .operation_feedback
+            .iter()
+            .map(|entry| format!("{} · {}", entry.category, entry.message))
+            .collect(),
+    }
+}
+
+fn inventory_shield_choices(game: &GameState) -> Vec<egui_inventory::EquipmentChoice> {
+    let installed = game
+        .equipped_shields
+        .iter()
+        .map(|shield| shield.id.as_str())
+        .collect::<HashSet<_>>();
+    game.content_registry
+        .shield_order
+        .iter()
+        .filter_map(|shield_id| {
+            let shield = game.content_registry.shields.get(shield_id)?;
+            let item = registry_item(&game.content_registry, &shield.install_item)?;
+            (installed.contains(shield_id.as_str()) || game.inventory.count(&item) > 0).then(|| {
+                egui_inventory::EquipmentChoice {
+                    id: shield_id.clone(),
+                    name: shield.name.clone(),
+                }
+            })
+        })
+        .collect()
+}
+
+fn inventory_weapon_choices(game: &GameState) -> Vec<egui_inventory::EquipmentChoice> {
+    let installed = game
+        .equipped_weapons
+        .iter()
+        .filter(|weapon| weapon.resolved)
+        .map(|weapon| weapon.id.as_str())
+        .collect::<HashSet<_>>();
+    game.content_registry
+        .weapon_order
+        .iter()
+        .filter_map(|weapon_id| {
+            let weapon = game.content_registry.weapons.get(weapon_id)?;
+            if weapon.kind != content::WeaponKind::TurretDefense {
+                return None;
+            }
+            let item = registry_item(&game.content_registry, &weapon.install_item)?;
+            (installed.contains(weapon_id.as_str()) || game.inventory.count(&item) > 0).then(|| {
+                egui_inventory::EquipmentChoice {
+                    id: weapon_id.clone(),
+                    name: weapon.name.clone(),
+                }
+            })
+        })
+        .collect()
+}
+
+fn apply_inventory_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_inventory::InventoryUiAction>,
+    keep_click_step: i32,
+) {
+    for action in actions {
+        match action {
+            egui_inventory::InventoryUiAction::SetProductionTab(tab) => {
+                let mode = production_mode_for_tab(tab);
+                if game.production_mode != mode {
+                    game.production_mode = mode;
+                    game.work_scroll = 0.0;
+                    game.save_dirty = true;
+                    game.audio.play(audio::AudioCue::Select);
+                }
+            }
+            egui_inventory::InventoryUiAction::AdjustKeep { row, direction } => {
+                let unlocked = active_production_rows(game)
+                    .0
+                    .get(row)
+                    .is_some_and(|recipe| recipe_is_unlocked(game, &recipe.id));
+                if unlocked {
+                    let settings = match game.production_mode {
+                        ProductionMode::Smelting => &mut game.smelt_settings,
+                        ProductionMode::Crafting => &mut game.craft_settings,
+                        ProductionMode::Processing => &mut game.processing_settings,
+                    };
+                    if let Some(setting) = settings.get_mut(row) {
+                        adjust_work_setting(
+                            &mut setting.keep,
+                            WorkColumn::Keep,
+                            direction.signum() * keep_click_step,
+                        );
+                        game.save_dirty = true;
+                    }
+                }
+            }
+            egui_inventory::InventoryUiAction::QueueRecipe { row } => {
+                let unlocked = active_production_rows(game)
+                    .0
+                    .get(row)
+                    .is_some_and(|recipe| recipe_is_unlocked(game, &recipe.id));
+                if unlocked {
+                    let settings = match game.production_mode {
+                        ProductionMode::Smelting => &mut game.smelt_settings,
+                        ProductionMode::Crafting => &mut game.craft_settings,
+                        ProductionMode::Processing => &mut game.processing_settings,
+                    };
+                    if let Some(setting) = settings.get_mut(row) {
+                        setting.queued = setting.queued.saturating_add(1).min(999);
+                        game.save_dirty = true;
+                    }
+                }
+            }
+            egui_inventory::InventoryUiAction::InstallShield { slot, shield_id } => {
+                let installed = install_shield_in_slot(game, slot, &shield_id).is_ok();
+                game.audio.play(if installed {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+            }
+            egui_inventory::InventoryUiAction::InstallWeapon { slot, weapon_id } => {
+                let installed = install_weapon_in_slot(game, slot, &weapon_id).is_ok();
+                game.audio.play(if installed {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+            }
+            egui_inventory::InventoryUiAction::OpenUpgrades => {
+                game.upgrades_open = true;
+                game.inventory_open = false;
+                game.audio.play(audio::AudioCue::Select);
+            }
+        }
+    }
 }
 
 fn draw_inventory_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
@@ -18938,17 +19218,6 @@ fn ship_detail_preview_rect(action_rail_width: Option<f32>) -> Rect {
         image_size,
         image_size,
     )
-}
-
-fn ship_shield_slot_rect(slot_index: usize, action_rail_width: Option<f32>) -> Rect {
-    let layout = inventory_overlay_layout(action_rail_width);
-    let detail_width = layout.detail_width;
-    let detail_x = layout.detail_x;
-    let detail_y = layout.panel_y + GAME_PANEL_BODY_TOP;
-    let stats_y = detail_y + 190.0 + 28.0;
-    let row_y = stats_y + 28.0 + slot_index as f32 * 66.0;
-
-    Rect::new(detail_x, row_y - 18.0, detail_width * 0.48, 62.0)
 }
 
 fn ship_weapon_slot_rect_for_rail(rail: Rect, slot_index: usize) -> Rect {
@@ -27337,6 +27606,14 @@ mod tests {
     }
 
     #[test]
+    fn inventory_panel_height_is_valid_at_the_minimum_supported_window() {
+        let height = inventory_panel_height_for(420.0);
+
+        assert_eq!(height, 336.0);
+        assert!(height <= 420.0 - 56.0);
+    }
+
+    #[test]
     fn expanded_inventory_prioritizes_item_names_over_numeric_columns() {
         let columns = ui_resolve_columns(
             Rect::new(0.0, 0.0, 400.0, 40.0),
@@ -30134,6 +30411,72 @@ mod tests {
             item: required_item(registry, item_id),
             count,
         });
+    }
+
+    #[test]
+    fn inventory_ui_actions_update_production_without_owning_game_rules() {
+        let registry = content::ContentRegistry::default();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let output = ItemRef {
+            id: "test:plate".to_string(),
+            name: "Test plate".to_string(),
+            unit_mass: 1.0,
+        };
+        game.smelt_recipes.push(Recipe {
+            id: "test:smelt_plate".to_string(),
+            output: ItemStack {
+                item: output,
+                count: 1,
+            },
+            ingredients: Vec::new(),
+            base_seconds: 1.0,
+        });
+        game.smelt_settings.push(CraftSetting::starter());
+
+        apply_inventory_ui_actions(
+            &mut game,
+            vec![
+                egui_inventory::InventoryUiAction::AdjustKeep {
+                    row: 0,
+                    direction: 1,
+                },
+                egui_inventory::InventoryUiAction::QueueRecipe { row: 0 },
+            ],
+            1,
+        );
+
+        assert_eq!(game.smelt_settings[0].keep, 1);
+        assert_eq!(game.smelt_settings[0].queued, 1);
+        assert!(
+            game.save_dirty,
+            "post-update UI actions must dirty the save"
+        );
+    }
+
+    #[test]
+    fn inventory_ui_mode_action_selects_the_matching_recipe_table() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.work_scroll = 90.0;
+
+        apply_inventory_ui_actions(
+            &mut game,
+            vec![egui_inventory::InventoryUiAction::SetProductionTab(
+                egui_inventory::ProductionTab::Process,
+            )],
+            1,
+        );
+
+        assert!(matches!(game.production_mode, ProductionMode::Processing));
+        assert_eq!(game.work_scroll, 0.0);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn production_keep_click_uses_macroquad_key_steps() {
+        assert_eq!(production_keep_click_step_for_keys(false, false), 1);
+        assert_eq!(production_keep_click_step_for_keys(true, false), 10);
+        assert_eq!(production_keep_click_step_for_keys(false, true), 20);
+        assert_eq!(production_keep_click_step_for_keys(true, true), 20);
     }
 
     fn assert_vec2_near(actual: Vec2, expected: Vec2) {

@@ -20,6 +20,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Install native audio dependencies
         run: |
@@ -45,6 +46,9 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check web build
+        run: cargo check --target wasm32-unknown-unknown --all-features
 
       - name: Run tests
         run: cargo test --all-targets --all-features

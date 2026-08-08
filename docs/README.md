@@ -19,6 +19,8 @@ world content that stacks on top.
   file-based content packs.
 - [Remote Assets](REMOTE_ASSETS.md): the optional, checksum-validated runtime
   audio delivery contract and offline/failure expectations.
+- [UI Architecture](UI_ARCHITECTURE.md): the Macroquad/egui presentation
+  boundary, responsive inventory layout, and visual validation matrix.
 
 ## Working Rules
 

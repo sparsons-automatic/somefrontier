@@ -70,7 +70,7 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Select a visible planet | Left click the planet; press `Space` to inspect |
 | Open object actions | Right click a visible planet, station, or ship |
 | Set a starmap destination | Left click a planet in the map |
-| Open ship upgrades | Click the ship preview in inventory |
+| Open ship upgrades | Choose `Inspect ship upgrades` in the Ship Pane |
 | Close menu / pause actions | `Esc` |
 
 `Tab` and `E` close an active planet, station, or contact pane without changing
@@ -147,7 +147,15 @@ Click a recipe row to queue one bill. Production consumes ingredients from
 inventory and completes one bill at a time. The `Keep` column works like mining:
 it keeps producing until the target stock level is reached, as long as inputs
 are available. Production rows use the same `Item`, `Keep`, `Status`, `%`, and
-`Active` layout as mining; `%` shows progress for the active bill.
+`Active` layout as mining; `%` shows progress for the active bill. Click the
+small `-` and `+` chips to change Keep by one, hold `Shift` while clicking for
+steps of 10, or hold `Control` while clicking for steps of 20. The up and down
+arrow keys select a production row, and `Enter` queues the selected unlocked
+recipe.
+
+On smaller windows, Ship Pane, Production, and Inventory become selectable tabs
+instead of compressing their columns together. Each table scrolls independently,
+and hovering clipped text reveals its full content-pack-provided name.
 
 Completed research can improve mining, smelting, fabrication, and bonus output
 effects.
@@ -162,7 +170,8 @@ capacity are shown in the ship detail panel below the ship image; cargo mass is
 currently informational and does not change flight handling.
 
 Some crafted items are installable modules. Shield and weapon install items can
-be swapped through ship detail surfaces when a matching slot exists.
+be swapped through the labeled Ship Pane dropdowns when a matching slot exists.
+Each dropdown lists compatible equipment currently installed or held in cargo.
 
 ## Fleet And Owned Ships
 
