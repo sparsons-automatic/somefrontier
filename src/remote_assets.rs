@@ -87,6 +87,7 @@ pub trait RemoteAssetTransport: Send + Sync + 'static {
 pub struct UreqTransport;
 
 impl RemoteAssetTransport for UreqTransport {
+    #[cfg(not(target_arch = "wasm32"))]
     fn get(&self, url: &str) -> Result<RemoteResponse, String> {
         let response = match ureq::get(url).call() {
             Ok(response) => response,
@@ -100,6 +101,11 @@ impl RemoteAssetTransport for UreqTransport {
             content_type,
             response.into_reader(),
         ))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn get(&self, _url: &str) -> Result<RemoteResponse, String> {
+        Err("Remote asset downloads are unavailable in the web build".to_string())
     }
 }
 

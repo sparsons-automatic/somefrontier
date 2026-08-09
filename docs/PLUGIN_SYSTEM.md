@@ -9,6 +9,12 @@ The goal is composition: a player or developer should be able to install one
 small thing or a larger themed pack, and packs should be able to reference each
 other when dependencies are declared.
 
+Content authors should also consult [the lore bible](LORE_BIBLE.md) for the
+setting tone, naming conventions, compact summary style, and economic logic
+expected of player-visible factions, places, materials, ships, NPCs, research,
+and services. Packs may introduce their own cultures and vocabulary; the lore
+bible provides compatibility constraints, not a requirement to imitate `core`.
+
 ## Ownership Boundary
 
 The base game owns mechanics. Content packs provide world content that stacks on
@@ -1258,6 +1264,10 @@ Rules:
 - Runtime object textures for planets, stations, player ships, and NPC ships
   should be transparent PNGs. Opaque source renders and full-screen transition
   backgrounds can remain outside the content-pack runtime asset folders.
+- Authored object textures also appear as aspect-preserving previews in the
+  corresponding egui object windows and Content Browser details. The preview
+  cache removes transparent canvas padding and creates a bounded thumbnail; it
+  does not require a separate UI-specific asset.
 - `system` is required and should reference an existing system.
 - `faction` is optional. When present, it resolves to a namespaced faction ID
   and must reference a loaded faction record.

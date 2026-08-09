@@ -28,14 +28,18 @@ For local debugging, `cargo run -- --debug` enables an in-game console. Press
 `` ` `` or `F12` during play to open it. Useful commands include
 `give <item_id> [count]`, `credits <amount>`, `credits set <amount>`,
 `research complete <id|all>`, `recipes unlock all`, and `warp <system_id>`.
+The console is a movable, resizable egui window with scrollable command history;
+press `Esc`, use its close button, or press its opening shortcut again to close
+it.
 
-The title screen displays the Some Frontier logo and lets you start a new game,
-load an existing save, review content packs, adjust settings, or quit. New games
-use a world seed; choose one manually or randomize it before starting. Loading a
-save restores the seed, ship state, inventory, research, upgrades, selected
-destination, equipped modules, production settings, scanned planets, mining
-quotas, and content-pack options. The Load Game list can be scrolled when many
-saves exist, supports double-click loading, and includes a two-step delete
+The stock-egui title screen displays the Some Frontier logo and lets you start a
+new game, load an existing save, review content packs, adjust settings, or quit.
+New Game, Load Game, Content Packs, and Settings open as centered stock-egui
+windows with native scrolling and controls. New games use a world seed; enter
+one in the text field or randomize it before starting. Loading a save restores the seed, ship
+state, inventory, research, upgrades, selected destination, equipped modules,
+production settings, scanned planets, mining quotas, and content-pack options.
+The Load Game list supports double-click loading and includes a two-step delete
 confirmation for removing the selected save without leaving the menu.
 
 ### Startup and Optional Remote Audio
@@ -69,14 +73,29 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Inspect nearby planet or station | `Space` |
 | Select a visible planet | Left click the planet; press `Space` to inspect |
 | Open object actions | Right click a visible planet, station, or ship |
-| Set a starmap destination | Left click a planet in the map |
-| Open ship upgrades | Click the ship preview in inventory |
+| Select a starmap destination | Left click a planet in the map |
+| Fly or build an itinerary | Use the Destinations window after selecting a planet |
+| Open ship upgrades | Choose `Inspect ship upgrades` in the Ship Pane |
 | Close menu / pause actions | `Esc` |
+| Reset movable menu positions | Pause with `Esc`, then choose `Reset Menus` or press `R` |
 
 `Tab` and `E` close an active planet, station, or contact pane without changing
 it into the Ship Pane. If a right-click Actions menu is open, they close that
 menu first. With no object pane active, they continue to toggle the general
 inventory and production pane.
+
+Every movable egui window has a `Pin` toggle. A pinned window remains visible
+and fully interactive when its parent workspace closes: for example, pin
+Production and press `Tab` to return to flight with only Production left open.
+Pins are remembered across launches and are independent of save slots. Pinning
+an inspection window also preserves its selected planet, station, or contact
+when `Tab` closes the surrounding inventory workspace.
+
+Movable egui window positions, sizes, collapsed sections, and scroll state are
+remembered across launches for the player, independently of save slots. If a
+display or resolution change leaves a window unreachable, the game discards the
+invalid layout automatically. `Reset Menus` in the pause menu restores every
+movable egui window to its default geometry and clears all pins at any time.
 
 On the title screen, use the visible buttons or keyboard shortcuts shown beside
 them. `Esc` backs out of submenus or leaves the title flow when available.
@@ -87,21 +106,48 @@ You pilot the Frontier Cargo Ship in local space. Thrust and turning are manual.
 The camera follows the ship, and zoom helps inspect nearby planets, stations,
 NPC ships, orbit guides, and route context.
 
-The map shows the current system and known destinations. Systems tagged as
+The map shows the current system and known destinations in a compact Macroquad
+3D panel. Opening it also opens a movable stock-egui Destinations window.
+Drag the map panel's header to move it, or its lower-right corner to resize it.
+Its 3D camera tracks the panel's aspect ratio so planets remain spherical at
+wide, tall, and compact sizes. The chosen position and size are remembered
+across launches, kept within the visible display, and restored to their defaults
+by `Reset Menus`.
+Clicking a planet selects it without changing course; choose `Fly Now` to begin
+a physical autopilot approach or `Add Stop` to append it to the itinerary.
+Numbered planet markers show itinerary order on the map. Systems tagged as
 starter, surveyed, known, or remote can appear in the known systems panel. Warp
 travel charges before switching systems, and non-starter routes can require fuel
 canisters. The starter system is always free to return to.
+
+`Activate Route` approaches every itinerary stop in order and advances after the
+ship reaches each planet's interaction range. Manual thrust or turning pauses
+the route without discarding its stops; use `Resume Route` when ready. Completed
+stops remain marked until the itinerary is cleared. Routes store stable system
+and planet content IDs in the world save, so content-pack destinations survive
+save/load while their packs remain installed. The current itinerary supports
+planets in the active system; a stop from another system pauses with an explicit
+message instead of initiating warp automatically.
+
+Pin the Destinations window before closing the map to keep route progress and
+controls visible during flight. Its position, size, collapsed state, and pin
+participate in the same persistence and `Reset Menus` behavior as other egui
+windows.
 
 Known system rows include route readiness guidance. If a remote route is not
 ready, the row calls out the missing fuel and can point at a local station that
 stocks it. If the ship can warp but the route leads to harsher remote space, the
 row can recommend scanner preparation before departure.
 
-Planets can be selected from local space or the map without opening an overlay.
+Planets can be selected from local space or the map without immediately changing
+course. The map selection populates Destinations; local-space inspection opens
+the planet record.
 Inspecting a planet opens its survey record even when it is distant; the record
 shows what remains unknown and what scan equipment is required. Launch scans
-only when close enough to the planet. You can enter orbit from the planet panel
-while in range; applying manual thrust or starting warp breaks orbit.
+only when close enough to the planet. Choose Orbit from the planet panel while
+in range to autopilot to the nearest safe orbital position; orbit locks only
+after the ship flies there. Applying manual thrust, choosing another destination,
+or starting warp cancels orbital entry or breaks an established orbit.
 
 ## Surveying
 
@@ -121,16 +167,17 @@ recover survey drones.
 
 ## Mining
 
-After a planet has composition data, selecting that planet changes the right
-side work table into mining rows. Click a mineable resource row to queue one
-mining bill. Mining completes one bill at a time from top to bottom.
+Inspecting a planet opens a movable Planet window alongside Production and
+Inventory. After the planet has composition data, its Mining section shows one
+row per mineable resource. Click a resource to queue one mining bill. Mining
+completes one bill at a time from top to bottom.
 
 The work table shows `Item`, `Keep`, `Status`, `%`, and `Active` columns.
 `Status` shows current stock against the keep target, `%` shows scanned resource
 richness when available, and `Active` shows the currently running mining bill.
-The `Keep` column sets an auto-maintained inventory target. Increase or decrease
-keep values with left click, right click, or mouse wheel over the keep cell. Hold
-`Shift` to adjust by 5 or `Control` to adjust by 10.
+The `Keep` column sets an auto-maintained inventory target. Click its stock egui
+`-` and `+` buttons to adjust by one, hold `Shift` while clicking to adjust by
+10, or hold `Control` while clicking to adjust by 20.
 
 Hazard effects are lightweight in the current build. Some planets can drain
 shields while the ship is close. Stable orbit mitigates configured shield drain.
@@ -147,7 +194,16 @@ Click a recipe row to queue one bill. Production consumes ingredients from
 inventory and completes one bill at a time. The `Keep` column works like mining:
 it keeps producing until the target stock level is reached, as long as inputs
 are available. Production rows use the same `Item`, `Keep`, `Status`, `%`, and
-`Active` layout as mining; `%` shows progress for the active bill.
+`Active` layout as mining; `%` shows progress for the active bill. Click the
+small `-` and `+` chips to change Keep by one, hold `Shift` while clicking for
+steps of 10, or hold `Control` while clicking for steps of 20. The up and down
+arrow keys select a production row, and `Enter` queues the selected unlocked
+recipe.
+
+Ship, Production, and Inventory open as separate windows over the game world.
+Drag their title bars to arrange them, resize from a window edge or corner, and
+use the title-bar arrow to collapse a window. Each window scrolls independently,
+and hovering clipped text reveals its full content-pack-provided name.
 
 Completed research can improve mining, smelting, fabrication, and bonus output
 effects.
@@ -162,12 +218,15 @@ capacity are shown in the ship detail panel below the ship image; cargo mass is
 currently informational and does not change flight handling.
 
 Some crafted items are installable modules. Shield and weapon install items can
-be swapped through ship detail surfaces when a matching slot exists.
+be swapped through the labeled Ship Pane dropdowns when a matching slot exists.
+Each dropdown lists compatible equipment currently installed or held in cargo.
 
 ## Fleet And Owned Ships
 
-Press `F` during local flight to open Fleet management. Each owned ship keeps
-its own hull and shield condition, energy, position, cargo, upgrades, power
+Press `F` during local flight to open the movable, resizable stock egui Fleet
+workspace. Its position, size, and scroll state are remembered with the other
+egui menus and can be restored with `Reset Menus`. Each owned ship keeps its own
+hull and shield condition, energy, position, cargo, upgrades, power
 modules, shields, and turret-bank loadout. Select a fleet row and choose `Switch
 control` to make that vessel active; switching to a vessel in another system
 moves the local-space view to its saved location. Destroyed ships and hulls from
@@ -181,7 +240,9 @@ ship purchases.
 
 Select a different owned ship in Fleet management to transfer cargo. Both ships
 must be in the same system and within 180 units. Transfer amounts respect the
-receiving ship's cargo mass and inventory-slot capacity. Inactive owned ships
+receiving ship's cargo mass and inventory-slot capacity. A normal quantity click
+changes the transfer amount by 1, `Shift` changes it by 10, and `Ctrl` changes it
+by 20. Inactive owned ships
 remain at their saved positions, but their reactors and shields continue to
 recharge and their installed turrets automatically engage hostile targets in the
 same system. They consume energy and ammunition from that ship's own stores,
@@ -200,12 +261,16 @@ offers.
 
 ## Research
 
-Open research with `K`. Research is arranged left to right by tier. Nodes show
-whether they are locked, available, affordable, researching, or completed with
-module colors, connection traces, tier lanes, and reward details. Click a node
-to inspect its cost, duration, requirements, rewards, and summary in the bottom
-console, then use the research button to spend credits and start it. Only one
-research project can run at a time. The active project completes in the
+Open the movable stock-egui Research window with `K`. Research modules are
+grouped into one column per authored tier and ordered by their content-pack grid
+position. The tier columns are generated from loaded data, so packs can add
+higher tiers without an engine UI change; scroll horizontally to reach them.
+Modules show whether they are locked, available, affordable, researching, or
+completed. Select one to inspect its cost, duration, requirements, rewards,
+summary, and live progress in the fixed details column on the right; horizontal
+scrolling moves only the research tiers. Then use `Start research` to
+spend credits and begin it. Pin the window to keep it visible after closing the
+Research workspace. Only one project can run at a time, and it completes in the
 background while you keep flying, mining, trading, or producing.
 
 Research can unlock production recipes and other progression hooks. Locked
@@ -213,17 +278,21 @@ production rows become available once the required research node is completed.
 
 ## Ship Upgrades
 
-Open inventory, then click the ship preview to open ship upgrades. Upgrades
-consume crafted components and immediately improve ship systems such as thrust,
-turning, energy, shields, survey drone behavior, warp charge time, scan depth,
-and cargo rating.
+Open inventory, then choose `Inspect ship upgrades` in the Ship Pane. The
+movable stock-egui window lists every upgrade's current level, effect, next
+component cost, and the amount currently held in cargo. Upgrades consume those
+crafted components and immediately improve ship systems such as thrust, turning,
+energy, shields, survey drone behavior, warp charge time, scan depth, and cargo
+rating. Pin the window to keep it open while returning to other workspaces.
 
 For the first remote route, fuel canisters make the jump possible and Scanner
 Array level 2 is recommended so improved survey work reaches deeper resource
 data after arrival.
 
 Upgrade costs scale by level. If you cannot afford an upgrade, its action is
-disabled until the required items are in inventory.
+disabled until the required items are in inventory. Shift and Control retain
+the existing upgrade modifiers, buying up to 5 or 10 levels respectively while
+components remain available.
 
 ## Shields And Weapons
 
@@ -305,27 +374,30 @@ not change the available contextual actions or object panes.
 ## Stations And Services
 
 Stations appear as local-space destinations. Fly within dock range and inspect
-or select them with `Space` or left click where supported. The station panel
-shows name, range, summary, ownership, culture, disposition, and service groups.
+or select them with `Space` or left click where supported. Inspection opens a
+movable, resizable stock egui Station window beside the independent Production
+and Inventory windows. It shows name, range, summary, ownership, culture,
+disposition, and service groups; egui remembers window placement across launches.
 Right-click a station for contextual Inspect, Approach, Dock, Trade, Contracts,
 and available service actions such as Repair. Approach engages the ship's
 autopilot until you reach the station's interaction range. The ship brakes as
-it approaches and stops with a safe clearance rather than trying to overlap the
-station. Manual thrust or turning cancels the approach. Actions show their
+it approaches and stops at a center-relative safe clearance comfortably inside
+the interaction ring rather than overlapping the station or balancing on the
+outer boundary. Planet approaches use the same rule. Manual thrust or turning
+cancels the approach. Actions show their
 range, reputation, or availability requirements before they can be used; a
 station without a repair service does not advertise Repair.
 
-Current service groups can include trade stock and research leads. Trade rows
-let you buy one unit with left click or sell one unit with right click when the
-ship is in range and the offer is available. Limited stock is replenished using
+Current service groups can include trade stock and research leads. Market rows
+provide explicit Buy and Sell buttons for one-unit transactions when the ship is
+in range and the offer is available. Limited stock is replenished using
 the game's elapsed time; the trade row shows the current stock and remaining
 time until its next restock. Selling cargo back to a station restores stock up
 to that offer's configured capacity. Research leads point to progression-tree
 nodes that can expose additional production recipes after completion.
 
-The actions rail opens at its wider default size so service names, objectives,
-and contract details are easier to read. Drag its left resize handle if you
-want a different width for a particular screen size.
+Resize or scroll the Station window when a station has a large catalog or long
+contract descriptions. Services remain accessible as native selectable buttons.
 
 Garage services provide a Maintenance action. When docked and carrying enough
 credits, repair restores damaged hull and shields; the price is based on the
@@ -336,12 +408,12 @@ the named planet, then return to the archive. The station panel shows contract
 progress, completion, expiry, and rewards. Up to three contracts can be active,
 and active contracts survive save/load.
 
-Press `J` at any time to open the Contracts menu. It lists every active contract
-with its objective, progress, origin, destination, deadline, reward, and current
-status. Click a contract to focus its originating station when that station is
-in the current system; remote contracts remain visible with their origin shown.
-Contract cards wrap long text instead of shortening it, and the station board
-uses the same readable card layout for accepting and completing work.
+Press `J` at any time to open the movable stock-egui Contracts window. Select an
+active contract on the left to inspect its objective, progress, origin,
+destination, deadline, reward, and current status. Use `Focus origin station`
+or double-click the contract when its origin is in the current system; remote
+contracts remain visible with their origin system explained. Pin the window to
+keep it visible after closing the Contracts workspace.
 
 Faction reputation is separate from station ownership, culture, and default
 disposition. Contract completion increases the reputation of the sponsoring
@@ -372,7 +444,12 @@ full mechanics exist.
 ## NPC Ships And Factions
 
 Planets, stations, and NPC ships can be selected with left click or `Space`,
-then right-clicked for an object-specific Actions menu. Planet menus include
+then right-clicked for an object-specific stock menu. Disabled actions use
+egui's muted styling; hover them to see the current range, equipment, survey, or
+service requirement. When interaction rings overlap, the object nearest the
+cursor is selected regardless of type. If two targets are nearly tied, choose
+the intended object from the short target list before its actions appear. Click
+elsewhere to dismiss the menu. Planet menus include
 Inspect and Approach, plus Orbit, Scan, and Mine when their range and survey
 requirements are met. NPC ships appear as moving contacts in local space. They
 have names, roles,
@@ -382,16 +459,18 @@ intercept. These behaviors make local space feel active while keeping ship
 interaction lightweight.
 
 Fly near an NPC ship and press `Space`, or click a visible NPC ship, to inspect
-the contact. Nearby contacts can be identified from the interaction panel,
+the contact in a movable, resizable stock egui Contact window. Nearby contacts
+can be identified from its interaction table,
 revealing faction, disposition, systems, cargo summary, and supported hooks such
 as hail, dock, trade, or conflict. Some hooks are visible before their full
 mechanics exist, so unavailable rows describe the current blocker. Identified
 non-hostile haulers with cargo expose a mobile Cargo market: open it from the
 Trade row, choose a quantity with the `−` and `+` controls, then buy or sell
-that many units. Scroll over a cargo row to adjust the quantity; hold `Ctrl`
-for steps of 10 or `Shift` for steps of 5. Hail a hauler first for a short
-price or supply rumor. Their remaining cargo is saved with the game, so trades
-survive a save and reload. Right-click a visible NPC ship for its contextual
+that many units. The quantity controls use the current modifier step: a normal
+click changes it by 1, `Shift` changes it by 10, and `Ctrl` changes it by 20.
+Hail a hauler first for a short price or supply rumor. Their remaining cargo is
+saved with the game, so trades survive a save and reload. Right-click a visible
+NPC ship for its contextual
 Actions menu. Follow matches your ship's course and pace while keeping you near
 the contact while maintaining a safe trailing distance; Approach engages the
 autopilot until you reach interaction range and brakes before arrival. Manual
@@ -412,9 +491,12 @@ planets, recipes, resources, and related data when enabled.
 
 Open the title screen Content Packs view to inspect available packs and options
 before starting a new game. In gameplay, press `C` to open the content browser.
-The content browser lists loaded packs, items, recipes, NPC ships, planets, and
-summary counts for other loaded content such as factions. Select a pack to
-narrow the visible rows and use the mouse wheel over a column to scroll.
+The movable stock egui Content Browser uses a three-pane layout. Select a loaded
+pack from the vertical list on the left, choose any authored object by category
+in the middle, and inspect its fields in the right pane. References such as a
+weapon's install item or ammunition are clickable, and `Back` returns through
+the inspection history. Select `All packs` for the aggregate registry summary.
+Pin the browser to keep it visible and interactive after pressing `C` again.
 
 Removing a content pack can leave old saves pointing at missing content. For
 stable saves, keep the same pack set enabled.
@@ -424,7 +506,8 @@ stable saves, keep the same pack set enabled.
 The game autosaves progress and also saves when using pause-menu save actions.
 `Esc` closes the topmost open overlay first. When no overlay is open, `Esc`
 opens the pause dialog with actions such as resume, save now, title menu, and
-quit to desktop.
+quit to desktop. The pause dialog can be moved like the other egui windows and
+remembers its position; `Reset Menus` restores its centered default.
 
 Save files are stored under:
 
