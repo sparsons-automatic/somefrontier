@@ -59,7 +59,8 @@ For the full current gameplay reference, see
 - `Space`: inspect/select a planet when the ship is over it
 - `Esc`: close the topmost menu or open the pause menu for manual save, title menu, or desktop quit
 - Left click a visible planet: select it and open the planet panel
-- Left click a planet in the starmap: set it as the active destination
+- Left click a planet in the starmap: select it in the Destinations window
+- Destinations window: fly immediately or build and activate a saved itinerary
 - Left click the ship in the inventory panel: open ship upgrades
 
 ## Configuration
@@ -110,9 +111,9 @@ within the planet interaction range, and launch a drone from the planet panel to
 reveal its classification, hazards, and mineable resources. Early survey drones
 are one-way probes and are consumed when launched.
 
-You can adjust `Keep` values by left clicking to increase, right clicking to
-decrease, or hovering the cell and using the mouse wheel. Hold `Shift` to adjust
-by 5 or `Control` to adjust by 10.
+Use the compact `−` and `+` controls beside a `Keep` value to adjust its stock
+target. A normal click changes it by 1; hold `Shift` for a step of 10 or
+`Control` for a step of 20.
 
 Items track `unit_mass` in kilograms. The inventory table shows per-stack mass,
 and the ship detail panel shows total cargo mass against cargo rating. Cargo
@@ -185,12 +186,10 @@ cargo, while energy weapons remain power-only.
 
 ## Content Debugging
 
-Press `C` to open a compact content browser showing loaded packs, items,
-recipes, factions, NPC ships, shields, weapons, systems, stars, planets, and
-upgrades.
-The pack list is selectable: choose a pack to filter the item, recipe, NPC ship,
-and planet columns to that pack, and use the mouse wheel over a column to scroll
-longer lists.
+Press `C` to open the content browser showing loaded packs and every supported
+content object category. Choose a pack in the left pane, an authored object in
+the middle pane, and inspect its fields and clickable references in the right
+pane. `Back` follows your inspection history.
 
 ## Startup Transition
 
@@ -220,8 +219,7 @@ Runtime world-content assets live under `content/packs/<pack>/assets/`:
 
 Shared engine/runtime assets live under `assets/`:
 
-- `assets/branding/some-frontier-logo.png` for title, pause, and documentation
-  branding
+- `assets/branding/some-frontier-logo.png` for title and documentation branding
 - `assets/branding/some-frontier-icon-16.png`,
   `assets/branding/some-frontier-icon-32.png`, and
   `assets/branding/some-frontier-icon-64.png` for app/window identity
@@ -239,6 +237,8 @@ Gameplay planning docs live under [docs/](docs/), including recipe/material
 chains, broader game guidelines, and the file-based plugin/content-pack model.
 Player-facing instructions live in
 [The Player's Guide to Some Frontier](docs/PLAYERS_GUIDE.md).
+Player-visible setting and naming guidance lives in the internal
+[Some Frontier Lore Bible](docs/LORE_BIBLE.md).
 The intended pattern is that base game code owns mechanics and validation while
 `core` and plugin packs add world content such as items, recipes, factions,
 planets, systems, and assets.

@@ -1,14 +1,30 @@
 mod audio;
 mod branding_icon;
 mod content;
+mod egui_art;
+mod egui_content;
+mod egui_context_menu;
+mod egui_contracts;
+mod egui_debug;
+mod egui_destinations;
+mod egui_escape;
+mod egui_fleet;
 mod egui_inventory;
+mod egui_loading;
+mod egui_npc;
+mod egui_pin;
+mod egui_planet;
+mod egui_research;
+mod egui_station;
+mod egui_title;
+mod egui_upgrades;
 mod remote_assets;
 
 use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -20,21 +36,11 @@ const DEFAULT_WINDOW_WIDTH: i32 = 1100;
 const DEFAULT_WINDOW_HEIGHT: i32 = 760;
 const BRANDING_LOGO_PATH: &str = "assets/branding/some-frontier-logo.png";
 const UI_PANEL_CORNER_PATH: &str = "assets/ui/research-panel-corner-top-left.png";
-const TITLE_PANEL_CONTENT_PAD_X: f32 = 56.0;
-const TITLE_PANEL_HEADER_BASELINE: f32 = 76.0;
-const TITLE_PANEL_SUBHEADER_BASELINE: f32 = 106.0;
-const TITLE_PANEL_BODY_TOP: f32 = 128.0;
 const TITLE_SHIP_GRID_COLUMNS: usize = 3;
-const TITLE_SHIP_CARD_HEIGHT: f32 = 218.0;
-const TITLE_SHIP_CARD_GAP: f32 = 14.0;
 const GAME_PANEL_CONTENT_PAD_X: f32 = 56.0;
 const GAME_PANEL_HEADER_PAD_X: f32 = 92.0;
 const GAME_PANEL_HEADER_BASELINE: f32 = 62.0;
 const GAME_PANEL_BODY_TOP: f32 = 94.0;
-const CONTRACT_CARD_GAP: f32 = 10.0;
-const RESEARCH_TIER_LABEL_HEIGHT: f32 = 28.0;
-const RESEARCH_DETAIL_HEIGHT: f32 = 150.0;
-const RESEARCH_TREE_INSET: f32 = 18.0;
 const STARFIELD_RADIUS: f32 = 9000.0;
 const SHIP_RADIUS: f32 = 22.0;
 const SHIP_SPRITE_SIZE: f32 = 72.0;
@@ -53,6 +59,7 @@ const NPC_FOLLOW_DISTANCE: f32 = 420.0;
 const PLAYER_FOLLOW_DISTANCE: f32 = 120.0;
 const PLAYER_APPROACH_SPEED: f32 = 240.0;
 const AUTOPILOT_CLEARANCE_MARGIN: f32 = 18.0;
+const AUTOPILOT_INTERACTION_INSET: f32 = 12.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
 const NPC_PRESSURE_RANGE: f32 = 520.0;
 const REDWAKE_PROBE_PRESSURE_PER_SECOND: f32 = 2.4;
@@ -60,6 +67,7 @@ const REDWAKE_PRESSURE_HULL_SPILLOVER: f32 = 0.35;
 const NPC_ROUTE_RADIUS: f32 = 520.0;
 const NPC_ROUTE_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 const NPC_INTERACTION_PADDING: f32 = 126.0;
+const CONTEXT_TARGET_AMBIGUITY_PIXELS: f32 = 24.0;
 const COLLISION_MIN_CLOSING_SPEED: f32 = 24.0;
 const COLLISION_DAMAGE_COEFFICIENT: f32 = 0.006;
 const COLLISION_REFERENCE_MASS: f32 = 100_000.0;
@@ -78,7 +86,6 @@ const STARTER_REVERSE_ACCELERATION: f32 = 280.0;
 const STARTER_TURN_ACCELERATION: f32 = 4.8;
 const STARTER_SHIP_ID: &str = "core:frontier_cargo_ship_01";
 const STARMAP_SCALE: f32 = 0.055;
-const STARMAP_PANEL_SCREEN_FRACTION: f32 = 0.80;
 const STARMAP_ZOOM_MIN: f32 = 0.45;
 const STARMAP_ZOOM_MAX: f32 = 3.5;
 const STARMAP_ZOOM_STEP: f32 = 1.15;
@@ -87,25 +94,13 @@ const ARC_SEGMENTS: usize = 72;
 const INVENTORY_SLOTS: usize = 200;
 const SHIP_UPGRADE_COUNT: usize = 8;
 const OWNED_SHIP_TRANSFER_RANGE: f32 = 180.0;
-const FLEET_ROW_HEIGHT: f32 = 86.0;
-const FLEET_TRANSFER_ROWS: usize = 5;
-const OBJECT_ACTION_RAIL_MIN_WIDTH: f32 = 280.0;
-const OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION: f32 = 0.55;
-const OBJECT_ACTION_RAIL_GAP: f32 = 8.0;
-const ACTION_RAIL_RESIZE_HITBOX_WIDTH: f32 = 28.0;
-const INVENTORY_OVERLAY_SCREEN_MARGIN: f32 = 8.0;
-const DEBUG_CONSOLE_DEFAULT_HEIGHT: f32 = 280.0;
-const DEBUG_CONSOLE_MIN_HEIGHT: f32 = 180.0;
-const DEBUG_CONSOLE_MAX_SCREEN_FRACTION: f32 = 0.82;
-const DEBUG_CONSOLE_RESIZE_HITBOX_HEIGHT: f32 = 28.0;
 const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const TITLE_SAVE_ROW_HEIGHT: f32 = 56.0;
-const TITLE_SAVE_ROW_STEP: f32 = 62.0;
 const SAVE_VERSION: u32 = 2;
 const AUTOSAVE_SECONDS: f32 = 60.0;
+const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
 const GAME_DAY_SECONDS: f32 = 120.0;
 const PLANET_SEED_JITTER: f32 = 180.0;
 const PLANET_SEED_ROTATION: f32 = 0.22;
@@ -129,7 +124,140 @@ const UI_FONT_PATH: &str = "assets/fonts/Junicode.ttf";
 
 thread_local! {
     static UI_FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
+    static BRANDING_LOGO: RefCell<Option<Texture2D>> = const { RefCell::new(None) };
+    static STARTUP_PROGRESS: RefCell<Option<StartupProgress>> = const { RefCell::new(None) };
+    static EGUI_LAYOUT_PERSISTENCE: RefCell<EguiLayoutPersistence> = RefCell::new(EguiLayoutPersistence::default());
+    static EGUI_PIN_PERSISTENCE: RefCell<EguiPinPersistence> = RefCell::new(EguiPinPersistence::default());
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StartupProgress {
+    completed: usize,
+    total: usize,
+}
+
+impl StartupProgress {
+    fn fraction(self) -> f32 {
+        self.completed as f32 / self.total.max(1) as f32
+    }
+
+    fn count(self) -> String {
+        format!("{} / {} startup steps", self.completed, self.total)
+    }
+}
+
+fn begin_startup_progress(total: usize) {
+    STARTUP_PROGRESS.with(|progress| {
+        *progress.borrow_mut() = Some(StartupProgress {
+            completed: 0,
+            total: total.max(1),
+        });
+    });
+}
+
+fn reset_startup_progress() {
+    STARTUP_PROGRESS.with(|progress| *progress.borrow_mut() = None);
+}
+
+fn advance_startup_progress() {
+    STARTUP_PROGRESS.with(|progress| {
+        if let Some(progress) = progress.borrow_mut().as_mut() {
+            progress.completed = progress.completed.saturating_add(1).min(progress.total);
+        }
+    });
+}
+
+fn startup_progress() -> Option<StartupProgress> {
+    STARTUP_PROGRESS.with(|progress| *progress.borrow())
+}
+
+#[derive(Default)]
+struct EguiLayoutPersistence {
+    loaded: bool,
+    last_written: String,
+    pending: Option<String>,
+    pending_seconds: f32,
+}
+
+#[derive(Default)]
+struct EguiPinPersistence {
+    loaded: bool,
+    pinned: BTreeSet<String>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct SavedEguiPins {
+    #[serde(default)]
+    pinned: BTreeSet<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EguiPane {
+    Ship,
+    Production,
+    Inventory,
+    Planet,
+    Station,
+    Contact,
+    Fleet,
+    Content,
+    Contracts,
+    Upgrades,
+    Research,
+    Destinations,
+}
+
+impl EguiPane {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Ship => "ship",
+            Self::Production => "production",
+            Self::Inventory => "inventory",
+            Self::Planet => "planet",
+            Self::Station => "station",
+            Self::Contact => "contact",
+            Self::Fleet => "fleet",
+            Self::Content => "content",
+            Self::Contracts => "contracts",
+            Self::Upgrades => "upgrades",
+            Self::Research => "research",
+            Self::Destinations => "destinations",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EguiPinSnapshot {
+    ship: bool,
+    production: bool,
+    inventory: bool,
+    planet: bool,
+    station: bool,
+    contact: bool,
+    fleet: bool,
+    content: bool,
+    contracts: bool,
+    upgrades: bool,
+    research: bool,
+    destinations: bool,
+}
+
+const PERSISTED_EGUI_WINDOW_IDS: [&str; 14] = [
+    "inventory-ship-window",
+    "inventory-production-window",
+    "inventory-cargo-window",
+    "planet-workspace-window",
+    "station-workspace-window",
+    "npc-contact-window",
+    "fleet-workspace-window",
+    "content-browser-window",
+    "contracts-workspace-window",
+    "ship-upgrades-window",
+    "research-workspace-window",
+    "starmap-destinations-window",
+    "escape-menu-window",
+    "debug-console-window",
+];
 
 #[derive(Clone, Copy)]
 struct Star {
@@ -233,13 +361,19 @@ struct GameState {
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
     system_destinations: HashMap<String, String>,
+    starmap_selected_planet: Option<usize>,
+    navigation_route: Vec<NavigationStop>,
+    navigation_route_current: Option<usize>,
+    navigation_route_active: bool,
     pending_warp: Option<PendingWarp>,
     camera_zoom: f32,
     starmap_zoom: f32,
     starmap_pan: Vec2,
     starmap_drag_previous_mouse: Option<Vec2>,
-    action_rail_width_override: Option<f32>,
-    action_rail_resize_previous_mouse: Option<Vec2>,
+    starmap_panel_position: Option<Vec2>,
+    starmap_panel_size: Option<Vec2>,
+    starmap_move_previous_mouse: Option<Vec2>,
+    starmap_resize_previous_mouse: Option<Vec2>,
     open_turret_bank: Option<usize>,
     inventory: Inventory,
     smelt_recipes: Vec<Recipe>,
@@ -332,10 +466,22 @@ enum ContextAction {
     Trade,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, PartialEq)]
 struct ContextActionMenu {
-    target: ContextTarget,
+    content: ContextMenuContent,
     position: Vec2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ContextMenuContent {
+    Actions(ContextTarget),
+    ChooseTarget(Vec<ContextTarget>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ContextTargetCandidate {
+    target: ContextTarget,
+    cursor_distance: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,8 +492,15 @@ enum FollowTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ApproachTarget {
     Planet(usize),
+    PlanetOrbit(usize),
     Station(usize),
     NpcShip(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NavigationStop {
+    system: String,
+    planet: String,
 }
 
 struct ContextMenuEntry {
@@ -357,10 +510,11 @@ struct ContextMenuEntry {
     detail: &'static str,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct ContentBrowserState {
     selected_pack_index: Option<usize>,
-    packs_scroll: f32,
+    selected_object: Option<egui_content::ObjectKey>,
+    object_history: Vec<egui_content::ObjectKey>,
     items_scroll: f32,
     recipes_scroll: f32,
     npc_ships_scroll: f32,
@@ -380,16 +534,15 @@ enum AppState {
 
 struct TitleMenu {
     view: TitleView,
+    pending_action: Option<TitleAction>,
+    branding_egui_image: Option<egui::ColorImage>,
+    branding_egui_texture: Option<egui::TextureHandle>,
     new_game_seed_text: String,
     ships: Vec<TitleShip>,
     selected_ship_index: usize,
-    ship_grid_scroll: f32,
     ship_textures: HashMap<String, TitleShipPreview>,
     save_slots: Vec<TitleSaveSlot>,
     selected_save_index: usize,
-    save_slots_scroll: f32,
-    last_save_click_index: Option<usize>,
-    last_save_click_time: f64,
     pending_delete_save_index: Option<usize>,
     delete_save_error: Option<String>,
     content_packs: Vec<TitleContentPack>,
@@ -409,8 +562,8 @@ struct TitleShip {
 }
 
 struct TitleShipPreview {
-    texture: Texture2D,
-    source: Rect,
+    egui_image: egui::ColorImage,
+    egui_texture: Option<egui::TextureHandle>,
 }
 
 struct TitleSaveSlot {
@@ -525,9 +678,9 @@ impl RemoteAudioStartup {
         draw_remote_audio_startup(&progress);
     }
 
-    fn draw_overlay(&mut self) {
+    fn current(&mut self) -> remote_assets::RemoteAssetProgress {
         self.poll();
-        draw_remote_audio_startup_overlay(&self.snapshot());
+        self.snapshot()
     }
 
     fn snapshot(&self) -> remote_assets::RemoteAssetProgress {
@@ -561,11 +714,8 @@ impl RemoteAudioStartup {
 #[derive(Clone, Default)]
 struct DebugConsole {
     open: bool,
-    input_active: bool,
     input: String,
     history: Vec<String>,
-    height_override: Option<f32>,
-    resize_previous_mouse: Option<Vec2>,
 }
 
 enum TitleAction {
@@ -584,6 +734,7 @@ enum TitleAction {
 enum EscapeDialogAction {
     Resume,
     SaveNow,
+    ResetMenus,
     SaveToTitle,
     QuitDesktop,
 }
@@ -628,13 +779,8 @@ struct Ship {
 struct PowerModule {
     id: String,
     name: String,
-    family: String,
     generation: f32,
-    mass: f32,
-    fuel_item: Option<String>,
-    fuel_per_minute: f32,
     heat: f32,
-    risk: f32,
 }
 
 #[derive(Clone)]
@@ -958,18 +1104,6 @@ struct NpcInteractionRow {
     status: &'static str,
 }
 
-struct NpcTradeRender<'a> {
-    ship: &'a Ship,
-    ship_upgrades: &'a [ShipUpgrade; SHIP_UPGRADE_COUNT],
-    npc_ship: &'a NpcShip,
-    world_seed: u64,
-    world_elapsed_days: f32,
-    credits: u32,
-    inventory: &'a Inventory,
-    quantity: u32,
-    rect: Rect,
-}
-
 struct StationService {
     id: String,
     name: String,
@@ -1182,6 +1316,12 @@ struct SaveData {
     #[serde(default)]
     system_destinations: Vec<SaveSystemDestination>,
     #[serde(default)]
+    navigation_route: Vec<SaveNavigationStop>,
+    #[serde(default)]
+    navigation_route_current: Option<usize>,
+    #[serde(default)]
+    navigation_route_active: bool,
+    #[serde(default)]
     content_pack_options: Vec<PackOptionSelection>,
     #[serde(default)]
     completed_research: Vec<String>,
@@ -1316,6 +1456,12 @@ struct SaveSystemDestination {
     planet: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SaveNavigationStop {
+    system: String,
+    planet: String,
+}
+
 struct PendingWarp {
     target_system_id: String,
     timer: f32,
@@ -1357,45 +1503,7 @@ struct MiningSetting {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkColumn {
-    Item,
     Keep,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum UiColumnSizing {
-    Fixed(f32),
-    Content { measured: f32, min: f32, max: f32 },
-    Flex { min: f32, weight: f32 },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct UiColumnSpec {
-    sizing: UiColumnSizing,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct UiTableLayout {
-    bounds: Rect,
-    viewport: Rect,
-    columns: Vec<Rect>,
-    row_height: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct UiTableCell {
-    row: usize,
-    column: usize,
-}
-
-struct UiTableBottomLayout<'a> {
-    x: f32,
-    y: f32,
-    width: f32,
-    row_start_offset: f32,
-    viewport_bottom: f32,
-    row_height: f32,
-    column_gap: f32,
-    columns: &'a [UiColumnSpec],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1434,6 +1542,7 @@ enum ShipUpgradeKind {
 
 impl GameState {
     async fn new(start_mode: GameStartMode, runtime_flags: RuntimeFlags) -> Self {
+        reset_startup_progress();
         let mut remote_audio_startup = RemoteAudioStartup::start();
         remote_audio_startup.draw();
         next_frame().await;
@@ -1446,9 +1555,21 @@ impl GameState {
             GameStartMode::LoadGame { .. } => None,
         };
         let content_registry = load_game_content_registry_with_options(&start_pack_options);
+        begin_startup_progress(startup_work_total(
+            &content_registry,
+            matches!(start_mode, GameStartMode::LoadGame { .. }),
+        ));
 
-        draw_startup_transition(None, "Loading save data ...", 1.0);
-        remote_audio_startup.draw_overlay();
+        egui_art::install_sources(load_egui_art_sources(&content_registry).await);
+
+        advance_startup_progress();
+        let remote_progress = remote_audio_startup.current();
+        draw_startup_transition_with_remote(
+            None,
+            "Loading save data ...",
+            1.0,
+            Some(&remote_progress),
+        );
         next_frame().await;
         let save_path = match &start_mode {
             GameStartMode::NewGame { seed, .. } => new_save_slot_path(*seed),
@@ -1480,8 +1601,14 @@ impl GameState {
             }
         };
 
-        draw_startup_transition(None, "Preparing production chains ...", 1.0);
-        remote_audio_startup.draw_overlay();
+        advance_startup_progress();
+        let remote_progress = remote_audio_startup.current();
+        draw_startup_transition_with_remote(
+            None,
+            "Preparing production chains ...",
+            1.0,
+            Some(&remote_progress),
+        );
         next_frame().await;
         let smelt_recipes = make_smelting_recipes(&content_registry);
         let craft_recipes = make_crafting_recipes(&content_registry);
@@ -1519,21 +1646,19 @@ impl GameState {
             resolved_new_game_ship_id(&content_registry, requested_new_game_ship)
         };
         let active_ship_def = content_registry.ships.get(&active_ship_id).cloned();
-        let active_ship_name = active_ship_def
-            .as_ref()
-            .map(|ship| ship.name.as_str())
-            .unwrap_or(active_ship_id.as_str());
-        draw_startup_transition_assets(
+        let ship_textures = load_player_ship_textures(
+            &content_registry,
             &transition_assets,
             startup_preferred_transition_id,
-            &format!("Loading ship asset ... {active_ship_name}"),
-            1.0,
-        );
-        remote_audio_startup.draw_overlay();
-        next_frame().await;
-        let ship_textures = load_player_ship_textures(&content_registry).await;
+        )
+        .await;
         let system_light_haze_texture = Some(make_system_light_haze_texture());
-        let weapon_projectile_textures = load_weapon_projectile_textures(&content_registry).await;
+        let weapon_projectile_textures = load_weapon_projectile_textures(
+            &content_registry,
+            &transition_assets,
+            startup_preferred_transition_id,
+        )
+        .await;
         let system_stars = make_system_stars(&content_registry);
         let planets = make_planets(
             &content_registry,
@@ -1572,6 +1697,7 @@ impl GameState {
             .unwrap_or_default();
         let defense_threats = make_defense_threats();
 
+        let (starmap_panel_position, starmap_panel_size) = load_starmap_panel_geometry();
         let mut game = Self {
             runtime_flags,
             audio: audio::AudioManager::empty(read_app_settings().master_volume),
@@ -1620,13 +1746,19 @@ impl GameState {
             destination_planet: Some(1),
             orbiting_planet: None,
             system_destinations: HashMap::new(),
+            starmap_selected_planet: None,
+            navigation_route: Vec::new(),
+            navigation_route_current: None,
+            navigation_route_active: false,
             pending_warp: None,
             camera_zoom: 1.0,
             starmap_zoom: 1.0,
             starmap_pan: Vec2::ZERO,
             starmap_drag_previous_mouse: None,
-            action_rail_width_override: None,
-            action_rail_resize_previous_mouse: None,
+            starmap_panel_position,
+            starmap_panel_size,
+            starmap_move_previous_mouse: None,
+            starmap_resize_previous_mouse: None,
             open_turret_bank: None,
             inventory,
             smelt_recipes,
@@ -1671,19 +1803,31 @@ impl GameState {
             npc_trade_quantity: 1,
         };
         if let Some(save_data) = save_data {
-            draw_startup_transition_assets(
+            advance_startup_progress();
+            let remote_progress = remote_audio_startup.current();
+            draw_startup_transition_assets_with_remote(
                 &game.transition_assets,
                 startup_preferred_transition_id,
                 "Restoring saved flight state ...",
                 1.0,
+                Some(&remote_progress),
             );
-            remote_audio_startup.draw_overlay();
             next_frame().await;
             game.apply_save(save_data);
             game.save_dirty = false;
         } else {
             game.owned_ships.push(game.capture_active_owned_ship());
         }
+        advance_startup_progress();
+        let remote_progress = remote_audio_startup.current();
+        draw_startup_transition_assets_with_remote(
+            &game.transition_assets,
+            startup_preferred_transition_id,
+            "Finalizing audio ...",
+            1.0,
+            Some(&remote_progress),
+        );
+        next_frame().await;
         let remote_audio_report = remote_audio_startup.finish().await;
         game.audio = audio::AudioManager::load_from_report(
             remote_audio_report.as_ref(),
@@ -1699,6 +1843,14 @@ impl GameState {
                     .filter_map(|weapon| weapon.fire_audio.as_deref()),
             )
             .await;
+        advance_startup_progress();
+        draw_startup_transition_assets(
+            &game.transition_assets,
+            startup_preferred_transition_id,
+            "Ready",
+            1.0,
+        );
+        next_frame().await;
         game.audio.play(audio::AudioCue::Ready);
         run_startup_transition_out(&game.transition_assets, startup_preferred_transition_id).await;
         game
@@ -1821,6 +1973,35 @@ impl GameState {
             })
             .map(|destination| (destination.system, destination.planet))
             .collect();
+        let saved_route_current = save.navigation_route_current;
+        let mut valid_stops_before_current = 0;
+        self.navigation_route = save
+            .navigation_route
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, stop)| {
+                let valid = self
+                    .planets
+                    .iter()
+                    .any(|planet| planet.id == stop.planet && planet.system == stop.system);
+                valid.then(|| {
+                    if saved_route_current.is_some_and(|current| index < current) {
+                        valid_stops_before_current += 1;
+                    }
+                    NavigationStop {
+                        system: stop.system,
+                        planet: stop.planet,
+                    }
+                })
+            })
+            .collect();
+        self.navigation_route_current = saved_route_current
+            .map(|_| valid_stops_before_current)
+            .filter(|current| *current <= self.navigation_route.len());
+        self.navigation_route_active = save.navigation_route_active
+            && self
+                .navigation_route_current
+                .is_some_and(|current| current < self.navigation_route.len());
         if let Some(destination_planet) = save.destination_planet {
             if let Some(planet) = self.planets.iter().find(|planet| {
                 planet.id == destination_planet && planet.system == self.current_system_id
@@ -1834,6 +2015,7 @@ impl GameState {
             &self.system_destinations,
             &self.current_system_id,
         );
+        self.starmap_selected_planet = self.destination_planet;
         self.orbiting_planet = save.orbiting_planet.as_deref().and_then(|planet_id| {
             self.planets.iter().position(|planet| {
                 planet.id == planet_id && planet.system == self.current_system_id
@@ -1901,6 +2083,9 @@ impl GameState {
                 self.owned_ships.push(self.capture_active_owned_ship());
                 self.selected_owned_ship_index = self.owned_ships.len() - 1;
             }
+        }
+        if self.navigation_route_active && !start_current_navigation_stop(self) {
+            self.navigation_route_active = false;
         }
     }
 
@@ -1983,6 +2168,16 @@ impl GameState {
             market_offers: save_market_offers(&self.stations),
             npc_cargo: save_npc_cargo(&self.npc_ships),
             system_destinations: save_system_destinations(self),
+            navigation_route: self
+                .navigation_route
+                .iter()
+                .map(|stop| SaveNavigationStop {
+                    system: stop.system.clone(),
+                    planet: stop.planet.clone(),
+                })
+                .collect(),
+            navigation_route_current: self.navigation_route_current,
+            navigation_route_active: self.navigation_route_active,
             content_pack_options: self.content_pack_options.clone(),
             completed_research: self.completed_research.clone(),
             active_research: self
@@ -2337,6 +2532,7 @@ async fn make_planets(
 
         let texture = match planet_def.texture.as_deref() {
             Some(path) => {
+                advance_startup_progress();
                 draw_startup_transition_assets(
                     transition_assets,
                     preferred_transition_id,
@@ -2431,6 +2627,7 @@ async fn make_station_destinations(
         };
         let texture = match station_def.texture.as_deref() {
             Some(path) => {
+                advance_startup_progress();
                 draw_startup_transition_assets(
                     transition_assets,
                     preferred_transition_id,
@@ -2897,6 +3094,7 @@ async fn make_npc_ships(
         };
         let texture = match npc_ship_def.texture.as_deref() {
             Some(path) => {
+                advance_startup_progress();
                 draw_startup_transition_assets(
                     transition_assets,
                     preferred_transition_id,
@@ -3091,18 +3289,6 @@ enum ResearchNodeState {
     Locked,
 }
 
-impl ResearchNodeState {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Completed => "Completed",
-            Self::Researching => "Researching",
-            Self::Affordable => "Affordable",
-            Self::Available => "Available",
-            Self::Locked => "Locked",
-        }
-    }
-}
-
 fn research_node_state(
     research: &content::ResearchDef,
     active_research: Option<&ActiveResearch>,
@@ -3247,8 +3433,140 @@ async fn load_asset_texture(path: &str) -> Option<Texture2D> {
     }
 }
 
+async fn load_egui_art_sources(
+    registry: &content::ContentRegistry,
+) -> HashMap<String, egui::ColorImage> {
+    let paths = egui_art_source_paths(registry);
+    let mut images = HashMap::new();
+    for path in paths {
+        advance_startup_progress();
+        draw_startup_transition(
+            None,
+            &format!("Preparing interface artwork ... {}", asset_file_name(&path)),
+            1.0,
+        );
+        next_frame().await;
+        match load_image(&path).await {
+            Ok(image) => {
+                images.insert(path, thumbnail_color_image(&image, 320));
+            }
+            Err(error) => eprintln!("Unable to load egui artwork `{path}`: {error}"),
+        }
+    }
+    images
+}
+
+fn egui_art_source_paths(registry: &content::ContentRegistry) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    paths.extend(
+        registry
+            .ships
+            .values()
+            .filter_map(|value| value.texture.clone()),
+    );
+    paths.extend(
+        registry
+            .npc_ships
+            .values()
+            .filter_map(|value| value.texture.clone()),
+    );
+    paths.extend(
+        registry
+            .planets
+            .values()
+            .filter_map(|value| value.texture.clone()),
+    );
+    paths.extend(
+        registry
+            .stations
+            .values()
+            .filter_map(|value| value.texture.clone()),
+    );
+    paths.extend(
+        registry
+            .weapons
+            .values()
+            .filter_map(|value| value.projectile_texture.clone()),
+    );
+    paths.into_iter().collect()
+}
+
+fn startup_work_total(registry: &content::ContentRegistry, restoring_save: bool) -> usize {
+    let transition_assets = transition_asset_paths(Path::new("assets/transitions")).len();
+    let ship_assets = registry
+        .ships
+        .values()
+        .filter(|ship| ship.texture.is_some())
+        .count();
+    let weapon_assets = registry
+        .weapons
+        .values()
+        .filter_map(|weapon| weapon.projectile_texture.as_deref())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let planet_assets = registry
+        .planets
+        .values()
+        .filter(|planet| {
+            planet.texture.is_some()
+                && planet
+                    .mineables
+                    .iter()
+                    .any(|item| registry.items.contains_key(item))
+        })
+        .count();
+    let station_assets = registry
+        .stations
+        .values()
+        .filter(|station| {
+            station.texture.is_some() && station.system.is_some() && station.position.is_some()
+        })
+        .count();
+    let npc_assets = registry
+        .npc_ships
+        .values()
+        .filter(|ship| ship.texture.is_some())
+        .count();
+
+    4 + egui_art_source_paths(registry).len()
+        + transition_assets
+        + ship_assets
+        + weapon_assets
+        + planet_assets
+        + station_assets
+        + npc_assets
+        + usize::from(restoring_save)
+}
+
+fn thumbnail_color_image(image: &Image, max_edge: usize) -> egui::ColorImage {
+    let source = image_alpha_bounds(image);
+    let source_x = source.x.max(0.0) as usize;
+    let source_y = source.y.max(0.0) as usize;
+    let source_width = source.w.max(1.0) as usize;
+    let source_height = source.h.max(1.0) as usize;
+    let scale = (max_edge.max(1) as f32 / source_width.max(source_height) as f32).min(1.0);
+    let width = (source_width as f32 * scale).round().max(1.0) as usize;
+    let height = (source_height as f32 * scale).round().max(1.0) as usize;
+    let image_width = usize::from(image.width);
+    let pixels = image.get_image_data();
+    let mut resized = Vec::with_capacity(width * height * 4);
+
+    for y in 0..height {
+        let sample_y = source_y + y * source_height / height;
+        for x in 0..width {
+            let sample_x = source_x + x * source_width / width;
+            let pixel = pixels[sample_y * image_width + sample_x];
+            resized.extend_from_slice(&pixel);
+        }
+    }
+
+    egui::ColorImage::from_rgba_unmultiplied([width, height], &resized)
+}
+
 async fn load_player_ship_textures(
     content_registry: &content::ContentRegistry,
+    transition_assets: &[TransitionAsset],
+    preferred_transition_id: Option<&str>,
 ) -> HashMap<String, Texture2D> {
     let mut textures = HashMap::new();
     for ship_id in &content_registry.ship_order {
@@ -3258,6 +3576,14 @@ async fn load_player_ship_textures(
         let Some(path) = ship.texture.as_deref() else {
             continue;
         };
+        advance_startup_progress();
+        draw_startup_transition_assets(
+            transition_assets,
+            preferred_transition_id,
+            &format!("Loading ship asset ... {}", ship.name),
+            1.0,
+        );
+        next_frame().await;
         if let Some(texture) = load_asset_texture(path).await {
             textures.insert(ship_id.clone(), texture);
         }
@@ -3267,6 +3593,8 @@ async fn load_player_ship_textures(
 
 async fn load_weapon_projectile_textures(
     registry: &content::ContentRegistry,
+    transition_assets: &[TransitionAsset],
+    preferred_transition_id: Option<&str>,
 ) -> HashMap<String, Texture2D> {
     let mut paths = registry
         .weapons
@@ -3278,6 +3606,14 @@ async fn load_weapon_projectile_textures(
 
     let mut textures = HashMap::new();
     for path in paths {
+        advance_startup_progress();
+        draw_startup_transition_assets(
+            transition_assets,
+            preferred_transition_id,
+            &format!("Loading weapon asset ... {}", asset_file_name(&path)),
+            1.0,
+        );
+        next_frame().await;
         if let Some(texture) = load_asset_texture(&path).await {
             textures.insert(path, texture);
         } else {
@@ -3333,6 +3669,12 @@ fn set_ui_font(font: Option<Font>) {
     });
 }
 
+fn set_branding_logo(texture: Option<Texture2D>) {
+    BRANDING_LOGO.with(|logo| {
+        *logo.borrow_mut() = texture;
+    });
+}
+
 fn draw_text(text: &str, x: f32, y: f32, font_size: f32, color: Color) -> TextDimensions {
     UI_FONT.with(|ui_font| {
         let ui_font = ui_font.borrow();
@@ -3369,22 +3711,16 @@ fn measure_text(
 
 async fn load_transition_assets(root: &Path) -> Vec<TransitionAsset> {
     let _ = fs::create_dir_all(root);
-    let Ok(entries) = fs::read_dir(root) else {
+    let paths = transition_asset_paths(root);
+    if paths.is_empty() && !root.is_dir() {
         eprintln!("Transition asset directory unavailable: {}", root.display());
-        return Vec::new();
-    };
-
-    let mut paths = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && is_supported_transition_image(path))
-        .collect::<Vec<_>>();
-    paths.sort();
+    }
 
     let mut assets = Vec::new();
     for path in paths {
         let path_string = path.to_string_lossy().to_string();
         let startup_background = assets.first().map(|asset: &TransitionAsset| &asset.texture);
+        advance_startup_progress();
         draw_startup_transition(
             startup_background,
             &format!(
@@ -3406,6 +3742,19 @@ async fn load_transition_assets(root: &Path) -> Vec<TransitionAsset> {
     }
 
     assets
+}
+
+fn transition_asset_paths(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_supported_transition_image(path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
 }
 
 fn transition_asset_id_from_path(path: &str) -> String {
@@ -3660,13 +4009,8 @@ impl PowerModule {
         Self {
             id: module.id.clone(),
             name: module.name.clone(),
-            family: module.family.clone(),
             generation: module.generation,
-            mass: module.mass,
-            fuel_item: module.fuel_item.clone(),
-            fuel_per_minute: module.fuel_per_minute,
             heat: module.heat,
-            risk: module.risk,
         }
     }
 }
@@ -3809,13 +4153,6 @@ fn core_item(content_registry: &content::ContentRegistry, local_id: &str) -> Opt
 fn required_item(content_registry: &content::ContentRegistry, item_id: &str) -> ItemRef {
     registry_item(content_registry, item_id)
         .unwrap_or_else(|| panic!("Required item `{item_id}` is missing from the content registry"))
-}
-
-fn player_weapon_ammo_count(inventory: &Inventory, weapon: &WeaponSystem) -> Option<u32> {
-    weapon
-        .ammo_item
-        .as_deref()
-        .map(|ammo_item| inventory.count_id(ammo_item))
 }
 
 fn npc_weapon_ammo_count(npc_ship: &NpcShip, weapon: &WeaponSystem) -> Option<u32> {
@@ -5236,6 +5573,7 @@ fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
     game.pending_warp = None;
     game.scene_transition = None;
     game.approach_target = None;
+    game.navigation_route_active = false;
     game.follow_target = None;
     game.orbiting_planet = None;
     game.selected_planet = None;
@@ -5976,6 +6314,308 @@ fn settings_path() -> PathBuf {
     config_dir().join("settings.toml")
 }
 
+fn egui_layout_path() -> PathBuf {
+    config_dir().join("egui-layout.ron")
+}
+
+fn starmap_panel_size_path() -> PathBuf {
+    config_dir().join("starmap-size.txt")
+}
+
+fn parse_starmap_panel_geometry(source: &str) -> Option<(Option<Vec2>, Vec2)> {
+    let mut values = source.split_whitespace();
+    let first = values.next()?.parse::<f32>().ok()?;
+    let second = values.next()?.parse::<f32>().ok()?;
+    let remaining = values
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let (position, size) = match remaining.as_slice() {
+        [] => (None, vec2(first, second)),
+        [width, height] => (Some(vec2(first, second)), vec2(*width, *height)),
+        _ => return None,
+    };
+    let position_valid = position
+        .map(|position| position.x.is_finite() && position.y.is_finite())
+        .unwrap_or(true);
+    (position_valid && size.x.is_finite() && size.y.is_finite() && size.x > 0.0 && size.y > 0.0)
+        .then_some((position, size))
+}
+
+fn load_starmap_panel_geometry() -> (Option<Vec2>, Option<Vec2>) {
+    fs::read_to_string(starmap_panel_size_path())
+        .ok()
+        .and_then(|source| parse_starmap_panel_geometry(&source))
+        .map(|(position, size)| (position, Some(size)))
+        .unwrap_or_default()
+}
+
+#[cfg(not(test))]
+fn save_starmap_panel_geometry(position: Vec2, size: Vec2) {
+    let path = starmap_panel_size_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        path,
+        format!(
+            "{:.0} {:.0} {:.0} {:.0}\n",
+            position.x, position.y, size.x, size.y
+        ),
+    );
+}
+
+#[cfg(test)]
+fn save_starmap_panel_geometry(_position: Vec2, _size: Vec2) {}
+
+fn reset_starmap_panel_geometry(game: &mut GameState) {
+    game.starmap_panel_position = None;
+    game.starmap_panel_size = None;
+    game.starmap_move_previous_mouse = None;
+    game.starmap_resize_previous_mouse = None;
+    remove_persisted_starmap_panel_size();
+}
+
+#[cfg(not(test))]
+fn remove_persisted_starmap_panel_size() {
+    let _ = fs::remove_file(starmap_panel_size_path());
+}
+
+#[cfg(test)]
+fn remove_persisted_starmap_panel_size() {}
+
+#[cfg(not(test))]
+fn egui_pins_path() -> PathBuf {
+    config_dir().join("egui-pins.ron")
+}
+
+#[cfg(not(test))]
+fn load_egui_pins() {
+    EGUI_PIN_PERSISTENCE.with(|persistence| {
+        let mut persistence = persistence.borrow_mut();
+        if persistence.loaded {
+            return;
+        }
+        persistence.loaded = true;
+        let path = egui_pins_path();
+        let Ok(source) = fs::read_to_string(&path) else {
+            return;
+        };
+        match ron::from_str::<SavedEguiPins>(&source) {
+            Ok(saved) => persistence.pinned = saved.pinned,
+            Err(error) => eprintln!("Failed to parse egui pin file {}: {error}", path.display()),
+        }
+    });
+}
+
+#[cfg(test)]
+fn load_egui_pins() {
+    EGUI_PIN_PERSISTENCE.with(|persistence| persistence.borrow_mut().loaded = true);
+}
+
+fn egui_pane_pinned(pane: EguiPane) -> bool {
+    load_egui_pins();
+    EGUI_PIN_PERSISTENCE.with(|persistence| persistence.borrow().pinned.contains(pane.id()))
+}
+
+fn egui_pin_snapshot() -> EguiPinSnapshot {
+    EguiPinSnapshot {
+        ship: egui_pane_pinned(EguiPane::Ship),
+        production: egui_pane_pinned(EguiPane::Production),
+        inventory: egui_pane_pinned(EguiPane::Inventory),
+        planet: egui_pane_pinned(EguiPane::Planet),
+        station: egui_pane_pinned(EguiPane::Station),
+        contact: egui_pane_pinned(EguiPane::Contact),
+        fleet: egui_pane_pinned(EguiPane::Fleet),
+        content: egui_pane_pinned(EguiPane::Content),
+        contracts: egui_pane_pinned(EguiPane::Contracts),
+        upgrades: egui_pane_pinned(EguiPane::Upgrades),
+        research: egui_pane_pinned(EguiPane::Research),
+        destinations: egui_pane_pinned(EguiPane::Destinations),
+    }
+}
+
+fn toggle_egui_pane_pin(pane: EguiPane) {
+    load_egui_pins();
+    EGUI_PIN_PERSISTENCE.with(|persistence| {
+        let mut persistence = persistence.borrow_mut();
+        if !persistence.pinned.remove(pane.id()) {
+            persistence.pinned.insert(pane.id().to_string());
+        }
+        let saved = SavedEguiPins {
+            pinned: persistence.pinned.clone(),
+        };
+        persist_egui_pins(&saved);
+    });
+}
+
+#[cfg(not(test))]
+fn persist_egui_pins(saved: &SavedEguiPins) {
+    let path = egui_pins_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match ron::to_string(saved) {
+        Ok(serialized) => {
+            if let Err(error) = fs::write(&path, serialized) {
+                eprintln!("Failed to write egui pin file {}: {error}", path.display());
+            }
+        }
+        Err(error) => eprintln!("Failed to serialize egui pins: {error}"),
+    }
+}
+
+#[cfg(test)]
+fn persist_egui_pins(_saved: &SavedEguiPins) {}
+
+fn reset_egui_pins() {
+    EGUI_PIN_PERSISTENCE.with(|persistence| {
+        let mut persistence = persistence.borrow_mut();
+        persistence.loaded = true;
+        persistence.pinned.clear();
+    });
+    remove_egui_pins_file();
+}
+
+#[cfg(not(test))]
+fn remove_egui_pins_file() {
+    let path = egui_pins_path();
+    if let Err(error) = fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("Failed to remove egui pin file {}: {error}", path.display());
+        }
+    }
+}
+
+#[cfg(test)]
+fn remove_egui_pins_file() {}
+
+fn prepare_egui_layout(ctx: &egui::Context, screen: [f32; 2]) {
+    EGUI_LAYOUT_PERSISTENCE.with(|persistence| {
+        let mut persistence = persistence.borrow_mut();
+        if persistence.loaded {
+            return;
+        }
+        persistence.loaded = true;
+
+        let path = egui_layout_path();
+        let Ok(source) = fs::read_to_string(&path) else {
+            return;
+        };
+        let memory = match ron::from_str::<egui::Memory>(&source) {
+            Ok(memory) => memory,
+            Err(error) => {
+                eprintln!(
+                    "Failed to parse egui layout file {}: {error}",
+                    path.display()
+                );
+                return;
+            }
+        };
+        ctx.memory_mut(|current| *current = memory);
+
+        let all_recoverable = PERSISTED_EGUI_WINDOW_IDS.iter().all(|id| {
+            ctx.memory(|memory| {
+                memory
+                    .area_rect(egui::Id::new(*id))
+                    .is_none_or(|rect| egui_window_has_reachable_area(rect, screen))
+            })
+        });
+        if all_recoverable {
+            persistence.last_written = source;
+        } else {
+            ctx.memory_mut(|memory| memory.reset_areas());
+            let _ = fs::remove_file(path);
+        }
+    });
+}
+
+fn egui_window_has_reachable_area(rect: egui::Rect, screen: [f32; 2]) -> bool {
+    let visible_width = rect.max.x.min(screen[0]) - rect.min.x.max(0.0);
+    let visible_height = rect.max.y.min(screen[1]) - rect.min.y.max(0.0);
+    visible_width >= 64.0 && visible_height >= 24.0
+}
+
+fn queue_egui_layout_save(ctx: &egui::Context, dt: f32) {
+    let Some(serialized) = ctx.memory(ron::to_string).ok() else {
+        return;
+    };
+
+    EGUI_LAYOUT_PERSISTENCE.with(|persistence| {
+        let mut persistence = persistence.borrow_mut();
+        if serialized == persistence.last_written {
+            persistence.pending = None;
+            persistence.pending_seconds = 0.0;
+            return;
+        }
+        persistence.pending = Some(serialized);
+        persistence.pending_seconds += dt.max(0.0);
+        if persistence.pending_seconds < EGUI_LAYOUT_SAVE_DELAY {
+            return;
+        }
+        write_pending_egui_layout(&mut persistence);
+    });
+}
+
+fn write_pending_egui_layout(persistence: &mut EguiLayoutPersistence) {
+    let Some(serialized) = persistence.pending.take() else {
+        return;
+    };
+    let path = egui_layout_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(error) = fs::write(&path, &serialized) {
+        eprintln!(
+            "Failed to write egui layout file {}: {error}",
+            path.display()
+        );
+        persistence.pending = Some(serialized);
+        return;
+    }
+    persistence.last_written = serialized;
+    persistence.pending_seconds = 0.0;
+}
+
+#[cfg(not(test))]
+fn flush_egui_layout() {
+    egui_macroquad::cfg(|ctx| {
+        if let Ok(serialized) = ctx.memory(ron::to_string) {
+            EGUI_LAYOUT_PERSISTENCE.with(|persistence| {
+                let mut persistence = persistence.borrow_mut();
+                if serialized != persistence.last_written {
+                    persistence.pending = Some(serialized);
+                }
+                write_pending_egui_layout(&mut persistence);
+            });
+        }
+    });
+}
+
+#[cfg(test)]
+fn flush_egui_layout() {}
+
+fn reset_egui_menu_layout() {
+    egui_macroquad::cfg(|ctx| ctx.memory_mut(|memory| memory.reset_areas()));
+    let path = egui_layout_path();
+    if let Err(error) = fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "Failed to remove egui layout file {}: {error}",
+                path.display()
+            );
+        }
+    }
+    EGUI_LAYOUT_PERSISTENCE.with(|persistence| {
+        let mut persistence = persistence.borrow_mut();
+        persistence.loaded = true;
+        persistence.last_written.clear();
+        persistence.pending = None;
+        persistence.pending_seconds = 0.0;
+    });
+    reset_egui_pins();
+}
+
 fn save_slots_dir() -> PathBuf {
     config_dir().join("saves")
 }
@@ -6107,6 +6747,15 @@ fn valid_window_size(width: i32, height: i32) -> bool {
 }
 
 fn draw_startup_transition(background: Option<&Texture2D>, label: &str, opacity: f32) {
+    draw_startup_transition_with_remote(background, label, opacity, None);
+}
+
+fn draw_startup_transition_with_remote(
+    background: Option<&Texture2D>,
+    label: &str,
+    opacity: f32,
+    remote_progress: Option<&remote_assets::RemoteAssetProgress>,
+) {
     let opacity = opacity.clamp(0.0, 1.0);
     let screen_w = screen_width();
     let screen_h = screen_height();
@@ -6124,69 +6773,16 @@ fn draw_startup_transition(background: Option<&Texture2D>, label: &str, opacity:
         screen_h,
         Color::new(0.01, 0.02, 0.04, 0.34 + 0.28 * opacity),
     );
-    draw_rectangle(
-        0.0,
-        screen_h * 0.72,
-        screen_w,
-        screen_h * 0.28,
-        Color::new(0.01, 0.02, 0.04, 0.46 + 0.28 * opacity),
-    );
-
-    let title = "Some Frontier";
-    let title_size = 34.0;
-    let label_size = 20.0;
-    let label = fit_debug_text(label, screen_w - 80.0, label_size as u16);
-    let title_width = measure_text(title, None, title_size as u16, 1.0).width;
-    let label_width = measure_text(&label, None, label_size as u16, 1.0).width;
-    let text_x = (screen_w - title_width).max(0.0) * 0.5;
-    let label_x = (screen_w - label_width).max(0.0) * 0.5;
-    let base_y = screen_h * 0.8;
-
-    draw_text(
-        title,
-        text_x,
-        base_y,
-        title_size,
-        Color::new(0.92, 0.95, 0.89, opacity),
-    );
-    draw_text(
-        &label,
-        label_x,
-        base_y + 34.0,
-        label_size,
-        Color::new(0.59, 0.87, 0.89, opacity),
-    );
-
-    let pulse = (get_time() as f32 * 4.0).sin() * 0.5 + 0.5;
-    let bar_width = 220.0;
-    let bar_x = (screen_w - bar_width) * 0.5;
-    let bar_y = base_y + 58.0;
-    draw_rectangle_lines(
-        bar_x,
-        bar_y,
-        bar_width,
-        4.0,
-        1.0,
-        Color::new(0.33, 0.47, 0.51, 0.55 * opacity),
-    );
-    draw_rectangle(
-        bar_x,
-        bar_y,
-        bar_width * (0.32 + 0.68 * pulse),
-        4.0,
-        Color::new(0.59, 0.87, 0.89, 0.82 * opacity),
-    );
+    draw_startup_branding_logo(opacity);
+    draw_startup_loading_panel(label, opacity, remote_progress);
 }
 
 fn draw_remote_audio_startup(progress: &remote_assets::RemoteAssetProgress) {
-    draw_startup_transition(None, &progress.message, 1.0);
-    draw_remote_audio_startup_overlay(progress);
+    draw_startup_transition_with_remote(None, &progress.message, 1.0, Some(progress));
 }
 
-fn draw_remote_audio_startup_overlay(progress: &remote_assets::RemoteAssetProgress) {
-    let screen_w = screen_width();
-    let screen_h = screen_height();
-    let detail = match progress.phase {
+fn remote_audio_startup_detail(progress: &remote_assets::RemoteAssetProgress) -> &'static str {
+    match progress.phase {
         remote_assets::RemoteAssetPhase::Checking => "Checking the optional remote audio release",
         remote_assets::RemoteAssetPhase::Downloading => "Downloading remote audio",
         remote_assets::RemoteAssetPhase::Verifying => "Verifying remote audio",
@@ -6195,60 +6791,93 @@ fn draw_remote_audio_startup_overlay(progress: &remote_assets::RemoteAssetProgre
             "Remote audio unavailable; startup will continue offline"
         }
         remote_assets::RemoteAssetPhase::Offline => "Continuing offline with local audio assets",
-    };
-    let detail_size = 16.0;
-    let detail_width = measure_text(detail, None, detail_size as u16, 1.0).width;
-    draw_text(
-        detail,
-        ((screen_w - detail_width) * 0.5).max(0.0),
-        screen_h * 0.8 + 92.0,
-        detail_size,
-        Color::new(0.59, 0.87, 0.89, 0.9),
-    );
+    }
+}
 
-    let fraction = if progress.total_assets == 0 {
-        0.0
+fn remote_audio_startup_fraction(progress: &remote_assets::RemoteAssetProgress) -> Option<f32> {
+    if progress.total_assets == 0 {
+        None
     } else {
         let current = if progress.current_total_bytes == 0 {
             0.0
         } else {
             progress.current_bytes as f32 / progress.current_total_bytes as f32
         };
-        ((progress.completed_assets as f32 + current) / progress.total_assets as f32)
-            .clamp(0.0, 1.0)
-    };
-    let bar_width = 320.0;
-    let bar_x = (screen_w - bar_width) * 0.5;
-    let bar_y = screen_h * 0.8 + 112.0;
-    draw_rectangle_lines(
-        bar_x,
-        bar_y,
-        bar_width,
-        6.0,
-        1.0,
-        Color::new(0.33, 0.47, 0.51, 0.7),
-    );
-    draw_rectangle(
-        bar_x,
-        bar_y,
-        bar_width * fraction,
-        6.0,
-        Color::new(0.59, 0.87, 0.89, 0.9),
-    );
-    if progress.total_assets > 0 {
-        let count = format!(
-            "{} / {} assets",
-            progress.completed_assets, progress.total_assets
-        );
-        let count_width = measure_text(&count, None, 14, 1.0).width;
-        draw_text(
-            &count,
-            ((screen_w - count_width) * 0.5).max(0.0),
-            bar_y + 26.0,
-            14.0,
-            Color::new(0.72, 0.76, 0.74, 0.86),
-        );
+        Some(
+            ((progress.completed_assets as f32 + current) / progress.total_assets as f32)
+                .clamp(0.0, 1.0),
+        )
     }
+}
+
+fn startup_loading_layout(screen: Vec2) -> (Rect, f32) {
+    let logo_width = (screen.x - 48.0).clamp(280.0, 720.0);
+    let logo_height = ((screen.y - 250.0).clamp(170.0, 400.0)).min(logo_width * 0.57);
+    let composition_height = logo_height + 142.0;
+    let logo_y = ((screen.y - composition_height) * 0.5).max(12.0);
+    (
+        Rect::new(
+            (screen.x - logo_width) * 0.5,
+            logo_y,
+            logo_width,
+            logo_height,
+        ),
+        (logo_y + logo_height + 76.0).min(screen.y - 72.0),
+    )
+}
+
+fn draw_startup_branding_logo(opacity: f32) {
+    let (destination, _) = startup_loading_layout(vec2(screen_width(), screen_height()));
+    BRANDING_LOGO.with(|logo| {
+        let logo = logo.borrow();
+        if let Some(logo) = logo.as_ref() {
+            let source = Rect::new(
+                logo.width() * 0.20,
+                logo.height() * 0.18,
+                logo.width() * 0.61,
+                logo.height() * 0.52,
+            );
+            draw_texture_source_contain(logo, source, destination, opacity);
+        }
+    });
+}
+
+fn draw_startup_loading_panel(
+    label: &str,
+    opacity: f32,
+    remote_progress: Option<&remote_assets::RemoteAssetProgress>,
+) {
+    let (_, panel_center_y) = startup_loading_layout(vec2(screen_width(), screen_height()));
+    let detail = remote_progress.map(remote_audio_startup_detail);
+    let local_progress = startup_progress();
+    let progress = local_progress
+        .map(StartupProgress::fraction)
+        .or_else(|| remote_progress.and_then(remote_audio_startup_fraction));
+    let count = local_progress.map(StartupProgress::count).or_else(|| {
+        remote_progress.and_then(|progress| {
+            (progress.total_assets > 0).then(|| {
+                format!(
+                    "{} / {} assets",
+                    progress.completed_assets, progress.total_assets
+                )
+            })
+        })
+    });
+    egui_macroquad::ui(|ctx| {
+        egui_loading::draw(
+            ctx,
+            [screen_width(), screen_height()],
+            &egui_loading::LoadingView {
+                label,
+                detail,
+                progress,
+                count: count.as_deref(),
+                opacity,
+                panel_center_y,
+            },
+        );
+    });
+    egui_macroquad::draw();
 }
 
 fn draw_startup_transition_assets(
@@ -6257,11 +6886,26 @@ fn draw_startup_transition_assets(
     label: &str,
     opacity: f32,
 ) {
-    let ordered_assets = ordered_startup_transition_assets(assets, preferred_id);
-    draw_startup_transition_sequence(&ordered_assets, label, opacity);
+    draw_startup_transition_assets_with_remote(assets, preferred_id, label, opacity, None);
 }
 
-fn draw_startup_transition_sequence(assets: &[&TransitionAsset], label: &str, opacity: f32) {
+fn draw_startup_transition_assets_with_remote(
+    assets: &[TransitionAsset],
+    preferred_id: Option<&str>,
+    label: &str,
+    opacity: f32,
+    remote_progress: Option<&remote_assets::RemoteAssetProgress>,
+) {
+    let ordered_assets = ordered_startup_transition_assets(assets, preferred_id);
+    draw_startup_transition_sequence(&ordered_assets, label, opacity, remote_progress);
+}
+
+fn draw_startup_transition_sequence(
+    assets: &[&TransitionAsset],
+    label: &str,
+    opacity: f32,
+    remote_progress: Option<&remote_assets::RemoteAssetProgress>,
+) {
     let background = startup_transition_background_at_time(
         assets,
         get_time() as f32,
@@ -6296,58 +6940,8 @@ fn draw_startup_transition_sequence(assets: &[&TransitionAsset], label: &str, op
         screen_h,
         Color::new(0.01, 0.02, 0.04, 0.34 + 0.28 * opacity),
     );
-    draw_rectangle(
-        0.0,
-        screen_h * 0.72,
-        screen_w,
-        screen_h * 0.28,
-        Color::new(0.01, 0.02, 0.04, 0.46 + 0.28 * opacity),
-    );
-
-    let title = "Some Frontier";
-    let title_size = 34.0;
-    let label_size = 20.0;
-    let label = fit_debug_text(label, screen_w - 80.0, label_size as u16);
-    let title_width = measure_text(title, None, title_size as u16, 1.0).width;
-    let label_width = measure_text(&label, None, label_size as u16, 1.0).width;
-    let text_x = (screen_w - title_width).max(0.0) * 0.5;
-    let label_x = (screen_w - label_width).max(0.0) * 0.5;
-    let base_y = screen_h * 0.8;
-
-    draw_text(
-        title,
-        text_x,
-        base_y,
-        title_size,
-        Color::new(0.92, 0.95, 0.89, opacity),
-    );
-    draw_text(
-        &label,
-        label_x,
-        base_y + 34.0,
-        label_size,
-        Color::new(0.59, 0.87, 0.89, opacity),
-    );
-
-    let pulse = (get_time() as f32 * 4.0).sin() * 0.5 + 0.5;
-    let bar_width = 220.0;
-    let bar_x = (screen_w - bar_width) * 0.5;
-    let bar_y = base_y + 58.0;
-    draw_rectangle_lines(
-        bar_x,
-        bar_y,
-        bar_width,
-        4.0,
-        1.0,
-        Color::new(0.33, 0.47, 0.51, 0.55 * opacity),
-    );
-    draw_rectangle(
-        bar_x,
-        bar_y,
-        bar_width * (0.32 + 0.68 * pulse),
-        4.0,
-        Color::new(0.59, 0.87, 0.89, 0.82 * opacity),
-    );
+    draw_startup_branding_logo(opacity);
+    draw_startup_loading_panel(label, opacity, remote_progress);
 }
 
 enum StartupTransitionBackground<'a> {
@@ -6414,7 +7008,12 @@ async fn run_startup_transition_out(assets: &[TransitionAsset], preferred_id: Op
         let dt = get_frame_time().min(1.0 / 30.0);
         elapsed += dt;
         let opacity = 1.0 - (elapsed / STARTUP_FADE_SECONDS).clamp(0.0, 1.0);
-        draw_startup_transition_assets(assets, preferred_id, "Launching ...", opacity);
+        draw_startup_transition_sequence(
+            &ordered_startup_transition_assets(assets, preferred_id),
+            "Launching ...",
+            opacity,
+            None,
+        );
         next_frame().await;
     }
 }
@@ -6424,6 +7023,7 @@ async fn main() {
     let runtime_flags = RuntimeFlags::from_env_args();
     set_ui_font(load_ui_font().await);
     let branding_logo = load_asset_texture(BRANDING_LOGO_PATH).await;
+    set_branding_logo(branding_logo.clone());
     let ui_panel_corner = load_asset_texture(UI_PANEL_CORNER_PATH).await;
     let background = make_background();
     let mut app = if fast_start_enabled() {
@@ -6473,35 +7073,221 @@ async fn main() {
                         }
                     }
                 } else {
-                    draw_title_menu(
-                        menu,
-                        &background,
-                        branding_logo.as_ref(),
-                        ui_panel_corner.as_ref(),
-                    );
+                    draw_title_menu(menu, &background);
                 }
             }
             AppState::Playing(game) => {
-                let egui_inventory_was_active = egui_inventory_active(game);
+                let egui_debug_was_active = game.runtime_flags.debug && game.debug_console.open;
+                let egui_escape_was_active = game.escape_dialog_open;
+                let pins_before_update = egui_pin_snapshot();
+                let egui_fleet_was_active = egui_fleet_visible(game, pins_before_update);
+                let egui_inventory_was_active =
+                    egui_inventory_windows_visible(game, pins_before_update);
+                let egui_planet_was_active = egui_planet_visible(game, pins_before_update);
+                let egui_station_was_active = egui_station_visible(game, pins_before_update);
+                let egui_npc_was_active = egui_npc_visible(game, pins_before_update);
+                let egui_content_was_active = egui_content_visible(game, pins_before_update);
+                let egui_contracts_was_active = egui_contracts_visible(game, pins_before_update);
+                let egui_upgrades_was_active = egui_upgrades_visible(game, pins_before_update);
+                let egui_research_was_active = egui_research_visible(game, pins_before_update);
+                let egui_destinations_was_active =
+                    egui_destinations_visible(game, pins_before_update);
+                let egui_context_menu_was_active = game.context_action_menu.is_some();
                 update_game(game, dt);
                 if game.quit_to_title_requested {
                     app = AppState::Title(loaded_title_menu().await);
                 } else {
-                    draw_scene(
-                        game,
-                        &background,
-                        branding_logo.as_ref(),
-                        ui_panel_corner.as_ref(),
-                    );
-                    if egui_inventory_active(game) {
-                        let view = inventory_overlay_view(game);
-                        let mut actions = Vec::new();
+                    draw_scene(game, &background, ui_panel_corner.as_ref());
+                    let pins = egui_pin_snapshot();
+                    let keep_click_step = production_keep_click_step();
+                    let quantity_step = keep_click_step.max(1) as u32;
+                    let upgrade_purchase_count = work_setting_step().max(1) as u32;
+                    let egui_windows_allowed = !game.escape_dialog_open;
+                    let inventory_visible =
+                        egui_windows_allowed && egui_inventory_windows_visible(game, pins);
+                    let planet_visible = egui_windows_allowed && egui_planet_visible(game, pins);
+                    let station_visible = egui_windows_allowed && egui_station_visible(game, pins);
+                    let npc_visible = egui_windows_allowed && egui_npc_visible(game, pins);
+                    let fleet_visible = egui_windows_allowed && egui_fleet_visible(game, pins);
+                    let content_visible = egui_windows_allowed && egui_content_visible(game, pins);
+                    let contracts_visible =
+                        egui_windows_allowed && egui_contracts_visible(game, pins);
+                    let upgrades_visible =
+                        egui_windows_allowed && egui_upgrades_visible(game, pins);
+                    let research_visible =
+                        egui_windows_allowed && egui_research_visible(game, pins);
+                    let destinations_visible =
+                        egui_windows_allowed && egui_destinations_visible(game, pins);
+                    let inventory_view =
+                        inventory_visible.then(|| inventory_overlay_view(game, keep_click_step));
+                    let planet_view =
+                        planet_visible.then(|| planet_pane_view(game, keep_click_step));
+                    let station_view = station_visible.then(|| station_pane_view(game));
+                    let npc_view = npc_visible.then(|| npc_pane_view(game, quantity_step));
+                    let fleet_view = fleet_visible.then(|| fleet_pane_view(game, quantity_step));
+                    let content_view = content_visible.then(|| content_browser_view(game));
+                    let contracts_view = contracts_visible.then(|| contracts_view(game));
+                    let upgrades_view =
+                        upgrades_visible.then(|| upgrades_view(game, upgrade_purchase_count));
+                    let research_view = research_visible.then(|| research_view(game));
+                    let destinations_view = destinations_visible.then(|| destinations_view(game));
+                    let context_view = if egui_windows_allowed {
+                        context_menu_view(game)
+                    } else {
+                        None
+                    };
+                    let escape_visible = game.escape_dialog_open;
+                    let escape_view = escape_visible.then_some(egui_escape::EscapeView {
+                        save_dirty: game.save_dirty,
+                    });
+                    let debug_visible = game.runtime_flags.debug && game.debug_console.open;
+                    let debug_view = debug_visible.then(|| debug_console_view(game));
+                    let any_egui_visible = debug_visible
+                        || escape_visible
+                        || inventory_visible
+                        || planet_visible
+                        || station_visible
+                        || npc_visible
+                        || fleet_visible
+                        || content_visible
+                        || contracts_visible
+                        || upgrades_visible
+                        || research_visible
+                        || destinations_visible
+                        || context_view.is_some();
+
+                    if any_egui_visible {
+                        let mut inventory_actions = Vec::new();
+                        let mut planet_actions = Vec::new();
+                        let mut station_actions = Vec::new();
+                        let mut npc_actions = Vec::new();
+                        let mut fleet_actions = Vec::new();
+                        let mut content_actions = Vec::new();
+                        let mut contracts_actions = Vec::new();
+                        let mut upgrades_actions = Vec::new();
+                        let mut research_actions = Vec::new();
+                        let mut destinations_actions = Vec::new();
+                        let mut escape_actions = Vec::new();
+                        let mut debug_actions = Vec::new();
+                        let mut context_outcome = None;
                         egui_macroquad::ui(|ctx| {
-                            actions =
-                                egui_inventory::draw(ctx, [screen_width(), screen_height()], &view);
+                            prepare_egui_layout(ctx, [screen_width(), screen_height()]);
+                            if let Some(view) = &inventory_view {
+                                inventory_actions = egui_inventory::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = &planet_view {
+                                planet_actions =
+                                    egui_planet::draw(ctx, [screen_width(), screen_height()], view);
+                            }
+                            if let Some(view) = &station_view {
+                                station_actions = egui_station::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = &npc_view {
+                                npc_actions =
+                                    egui_npc::draw(ctx, [screen_width(), screen_height()], view);
+                            }
+                            if let Some(view) = &fleet_view {
+                                fleet_actions =
+                                    egui_fleet::draw(ctx, [screen_width(), screen_height()], view);
+                            }
+                            if let Some(view) = &content_view {
+                                content_actions = egui_content::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = &contracts_view {
+                                contracts_actions = egui_contracts::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = &upgrades_view {
+                                upgrades_actions = egui_upgrades::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = &research_view {
+                                research_actions = egui_research::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = &destinations_view {
+                                destinations_actions = egui_destinations::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
+                            if let Some(view) = escape_view {
+                                escape_actions =
+                                    egui_escape::draw(ctx, [screen_width(), screen_height()], view);
+                            }
+                            if let Some(view) = &debug_view {
+                                debug_actions =
+                                    egui_debug::draw(ctx, [screen_width(), screen_height()], view);
+                            }
+                            if let Some(view) = &context_view {
+                                context_outcome = egui_context_menu::draw(ctx, view);
+                            }
+                            queue_egui_layout_save(ctx, dt);
                         });
-                        if egui_inventory_was_active {
-                            apply_inventory_ui_actions(game, actions, production_keep_click_step());
+                        if egui_inventory_was_active && inventory_visible {
+                            apply_inventory_ui_actions(game, inventory_actions, keep_click_step);
+                        }
+                        if egui_planet_was_active && planet_visible {
+                            apply_planet_ui_actions(game, planet_actions, keep_click_step);
+                        }
+                        if egui_station_was_active && station_visible {
+                            apply_station_ui_actions(game, station_actions);
+                        }
+                        if egui_npc_was_active && npc_visible {
+                            apply_npc_ui_actions(game, npc_actions, quantity_step);
+                        }
+                        if egui_fleet_was_active && fleet_visible {
+                            apply_fleet_ui_actions(game, fleet_actions, quantity_step);
+                        }
+                        if egui_content_was_active && content_visible {
+                            apply_content_ui_actions(game, content_actions);
+                        }
+                        if egui_contracts_was_active && contracts_visible {
+                            apply_contracts_ui_actions(game, contracts_actions);
+                        }
+                        if egui_upgrades_was_active && upgrades_visible {
+                            apply_upgrades_ui_actions(
+                                game,
+                                upgrades_actions,
+                                upgrade_purchase_count,
+                            );
+                        }
+                        if egui_research_was_active && research_visible {
+                            apply_research_ui_actions(game, research_actions);
+                        }
+                        if egui_destinations_was_active && destinations_visible {
+                            apply_destinations_ui_actions(game, destinations_actions);
+                        }
+                        if egui_escape_was_active && escape_visible {
+                            apply_escape_ui_actions(game, escape_actions);
+                        }
+                        if egui_debug_was_active && debug_visible {
+                            apply_debug_console_ui_actions(game, debug_actions);
+                        }
+                        if egui_context_menu_was_active && context_view.is_some() {
+                            apply_context_menu_outcome(game, context_outcome);
                         }
                         egui_macroquad::draw();
                     }
@@ -6536,7 +7322,6 @@ fn handle_debug_console_toggle(game: &mut GameState) -> bool {
     }
     if is_key_pressed(KeyCode::GraveAccent) || is_key_pressed(KeyCode::F12) {
         game.debug_console.open = !game.debug_console.open;
-        game.debug_console.input_active = false;
         return true;
     }
     false
@@ -6546,64 +7331,42 @@ fn handle_debug_console_input(game: &mut GameState) {
     if !game.debug_console.open {
         return;
     }
-    let mouse = mouse_vec2();
-    if handle_debug_console_resize_input(game, mouse) {
-        return;
-    }
-    if is_mouse_button_pressed(MouseButton::Left) {
-        let console = debug_console_rect(game);
-        game.debug_console.input_active = debug_console_input_rect(console).contains(mouse);
-    }
     if is_key_pressed(KeyCode::Escape) {
         game.debug_console.open = false;
-        game.debug_console.input_active = false;
-        return;
-    }
-    if !game.debug_console.input_active {
-        return;
-    }
-    if is_key_pressed(KeyCode::Backspace) {
-        game.debug_console.input.pop();
-    }
-    while let Some(character) = get_char_pressed() {
-        if !character.is_control() {
-            game.debug_console.input.push(character);
-        }
-    }
-    if is_key_pressed(KeyCode::Enter) {
-        let command = game.debug_console.input.trim().to_string();
-        if command.is_empty() {
-            return;
-        }
-        let result = execute_debug_console_command(game, &command);
-        game.debug_console.history.insert(0, format!("> {command}"));
-        game.debug_console.history.insert(0, result);
-        game.debug_console
-            .history
-            .truncate(DEBUG_CONSOLE_HISTORY_LIMIT);
-        game.debug_console.input.clear();
     }
 }
 
-fn handle_debug_console_resize_input(game: &mut GameState, mouse: Vec2) -> bool {
-    let console = debug_console_rect(game);
-    let handle = debug_console_resize_handle_rect(console);
-    if is_mouse_button_down(MouseButton::Left) {
-        if let Some(previous_mouse) = game.debug_console.resize_previous_mouse {
-            let delta_y = mouse.y - previous_mouse.y;
-            let height = debug_console_height(game);
-            game.debug_console.height_override = Some(clamp_debug_console_height(height - delta_y));
-            game.debug_console.resize_previous_mouse = Some(mouse);
-            return true;
-        }
-        if handle.contains(mouse) {
-            game.debug_console.resize_previous_mouse = Some(mouse);
-            return true;
-        }
-    } else {
-        game.debug_console.resize_previous_mouse = None;
+fn debug_console_view(game: &GameState) -> egui_debug::DebugConsoleView {
+    egui_debug::DebugConsoleView {
+        input: game.debug_console.input.clone(),
+        history: game.debug_console.history.clone(),
+        help: debug_console_help().to_string(),
     }
-    false
+}
+
+fn apply_debug_console_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_debug::DebugConsoleUiAction>,
+) {
+    for action in actions {
+        match action {
+            egui_debug::DebugConsoleUiAction::SetInput(input) => {
+                game.debug_console.input = input;
+            }
+            egui_debug::DebugConsoleUiAction::Execute(command) => {
+                let result = execute_debug_console_command(game, &command);
+                game.debug_console.history.insert(0, format!("> {command}"));
+                game.debug_console.history.insert(0, result);
+                game.debug_console
+                    .history
+                    .truncate(DEBUG_CONSOLE_HISTORY_LIMIT);
+                game.debug_console.input.clear();
+            }
+            egui_debug::DebugConsoleUiAction::Close => {
+                game.debug_console.open = false;
+            }
+        }
+    }
 }
 
 fn execute_debug_console_command(game: &mut GameState, command: &str) -> String {
@@ -6740,47 +7503,6 @@ fn debug_console_help() -> &'static str {
     "Commands: give <item> [count], credits <amount>, credits set <amount>, research complete <id|all>, recipes unlock all, warp <system>"
 }
 
-fn debug_console_height(game: &GameState) -> f32 {
-    clamp_debug_console_height(
-        game.debug_console
-            .height_override
-            .unwrap_or(DEBUG_CONSOLE_DEFAULT_HEIGHT),
-    )
-}
-
-fn clamp_debug_console_height(height: f32) -> f32 {
-    height.clamp(
-        DEBUG_CONSOLE_MIN_HEIGHT,
-        (screen_height() * DEBUG_CONSOLE_MAX_SCREEN_FRACTION)
-            .max(DEBUG_CONSOLE_MIN_HEIGHT)
-            .min(screen_height() - 42.0),
-    )
-}
-
-fn debug_console_rect(game: &GameState) -> Rect {
-    let width = (screen_width() * 0.72).clamp(520.0, 920.0);
-    let height = debug_console_height(game);
-    Rect::new(28.0, screen_height() - height - 28.0, width, height)
-}
-
-fn debug_console_resize_handle_rect(console: Rect) -> Rect {
-    Rect::new(
-        console.x + 8.0,
-        console.y - DEBUG_CONSOLE_RESIZE_HITBOX_HEIGHT * 0.5,
-        console.w - 16.0,
-        DEBUG_CONSOLE_RESIZE_HITBOX_HEIGHT,
-    )
-}
-
-fn debug_console_input_rect(console: Rect) -> Rect {
-    Rect::new(
-        console.x + 14.0,
-        console.y + console.h - 48.0,
-        console.w - 28.0,
-        34.0,
-    )
-}
-
 impl Default for TitleMenu {
     fn default() -> Self {
         let registry = load_game_content_registry();
@@ -6792,16 +7514,15 @@ impl Default for TitleMenu {
             .unwrap_or(0);
         Self {
             view: TitleView::Main,
+            pending_action: None,
+            branding_egui_image: None,
+            branding_egui_texture: None,
             new_game_seed_text: new_world_seed().to_string(),
             ships,
             selected_ship_index,
-            ship_grid_scroll: 0.0,
             ship_textures: HashMap::new(),
             save_slots: title_save_slots(),
             selected_save_index: 0,
-            save_slots_scroll: 0.0,
-            last_save_click_index: None,
-            last_save_click_time: 0.0,
             pending_delete_save_index: None,
             delete_save_error: None,
             content_packs: title_content_packs(&registry),
@@ -6813,6 +7534,13 @@ impl Default for TitleMenu {
 }
 
 impl TitleMenu {
+    async fn load_branding_image(&mut self) {
+        if let Ok(image) = load_image(BRANDING_LOGO_PATH).await {
+            self.branding_egui_image =
+                Some(cropped_color_image(&image, image_alpha_bounds(&image)));
+        }
+    }
+
     async fn load_ship_textures(&mut self) {
         let ship_assets = self
             .ships
@@ -6826,17 +7554,69 @@ impl TitleMenu {
         for (ship_id, texture_path) in ship_assets {
             if let Ok(image) = load_image(&texture_path).await {
                 let source = image_alpha_bounds(&image);
-                let texture = Texture2D::from_image(&image);
-                texture.set_filter(FilterMode::Linear);
-                self.ship_textures
-                    .insert(ship_id, TitleShipPreview { texture, source });
+                let egui_image = quarter_turned_cropped_color_image(&image, source);
+                self.ship_textures.insert(
+                    ship_id,
+                    TitleShipPreview {
+                        egui_image,
+                        egui_texture: None,
+                    },
+                );
             }
         }
     }
 }
 
+fn cropped_color_image(image: &Image, source: Rect) -> egui::ColorImage {
+    let source_x = source.x.max(0.0) as usize;
+    let source_y = source.y.max(0.0) as usize;
+    let source_width = source.w.max(1.0) as usize;
+    let source_height = source.h.max(1.0) as usize;
+    let image_width = usize::from(image.width);
+    let mut cropped = vec![0_u8; source_width * source_height * 4];
+
+    for row in 0..source_height {
+        let source_start = ((source_y + row) * image_width + source_x) * 4;
+        let source_end = source_start + source_width * 4;
+        let destination_start = row * source_width * 4;
+        let destination_end = destination_start + source_width * 4;
+        if source_end <= image.bytes.len() {
+            cropped[destination_start..destination_end]
+                .copy_from_slice(&image.bytes[source_start..source_end]);
+        }
+    }
+
+    egui::ColorImage::from_rgba_unmultiplied([source_width, source_height], &cropped)
+}
+
+fn quarter_turned_cropped_color_image(image: &Image, source: Rect) -> egui::ColorImage {
+    let source_x = source.x.max(0.0) as usize;
+    let source_y = source.y.max(0.0) as usize;
+    let source_width = source.w.max(1.0) as usize;
+    let source_height = source.h.max(1.0) as usize;
+    let image_width = usize::from(image.width);
+    let mut rotated = vec![0_u8; source_width * source_height * 4];
+
+    for source_row in 0..source_height {
+        for source_column in 0..source_width {
+            let source_index =
+                ((source_y + source_row) * image_width + source_x + source_column) * 4;
+            let destination_column = source_height - source_row - 1;
+            let destination_row = source_column;
+            let destination_index = (destination_row * source_height + destination_column) * 4;
+            if source_index + 4 <= image.bytes.len() && destination_index + 4 <= rotated.len() {
+                rotated[destination_index..destination_index + 4]
+                    .copy_from_slice(&image.bytes[source_index..source_index + 4]);
+            }
+        }
+    }
+
+    egui::ColorImage::from_rgba_unmultiplied([source_height, source_width], &rotated)
+}
+
 async fn loaded_title_menu() -> Box<TitleMenu> {
     let mut menu = TitleMenu::default();
+    menu.load_branding_image().await;
     menu.load_ship_textures().await;
     Box::new(menu)
 }
@@ -7142,6 +7922,9 @@ fn load_game_content_registry_with_options(
 }
 
 fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
+    if menu.pending_action.is_some() {
+        return menu.pending_action.take();
+    }
     if is_key_pressed(KeyCode::Escape) {
         if menu.view == TitleView::Main {
             return Some(TitleAction::QuitDesktop);
@@ -7150,17 +7933,18 @@ fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
         return None;
     }
 
+    let mut egui_wants_keyboard = false;
+    egui_macroquad::cfg(|ctx| egui_wants_keyboard = ctx.wants_keyboard_input());
+
     match menu.view {
         TitleView::Main => update_title_main_menu(menu),
         TitleView::NewGame => {
+            if egui_wants_keyboard {
+                return None;
+            }
             let action = update_title_new_game(menu);
             if action.is_some() {
                 return action;
-            }
-            if is_mouse_button_pressed(MouseButton::Left)
-                && title_new_game_back_button_rect().contains(mouse_vec2())
-            {
-                menu.view = TitleView::Main;
             }
             None
         }
@@ -7169,30 +7953,21 @@ fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
             if action.is_some() {
                 return action;
             }
-            if is_key_pressed(KeyCode::Backspace)
-                || (is_mouse_button_pressed(MouseButton::Left)
-                    && title_load_back_button_rect().contains(mouse_vec2()))
-            {
+            if is_key_pressed(KeyCode::Backspace) {
                 menu.view = TitleView::Main;
             }
             None
         }
         TitleView::ContentPacks => {
             update_title_content_packs(menu);
-            if is_key_pressed(KeyCode::Backspace)
-                || (is_mouse_button_pressed(MouseButton::Left)
-                    && title_back_button_rect().contains(mouse_vec2()))
-            {
+            if is_key_pressed(KeyCode::Backspace) {
                 menu.view = TitleView::Main;
             }
             None
         }
         TitleView::Settings => {
             update_title_settings(menu);
-            if is_key_pressed(KeyCode::Backspace)
-                || (is_mouse_button_pressed(MouseButton::Left)
-                    && title_back_button_rect().contains(mouse_vec2()))
-            {
+            if is_key_pressed(KeyCode::Backspace) {
                 menu.view = TitleView::Main;
             }
             None
@@ -7220,24 +7995,6 @@ fn update_title_settings(menu: &mut TitleMenu) {
         changed = true;
     }
 
-    if is_mouse_button_pressed(MouseButton::Left) {
-        let mouse = mouse_vec2();
-        for (index, category) in SettingsCategory::ALL.iter().copied().enumerate() {
-            if title_settings_category_row_rect(index).contains(mouse) {
-                menu.selected_settings_category = category;
-            }
-        }
-        if title_settings_decrement_button_rect().contains(mouse) {
-            menu.settings
-                .adjust_selected(menu.selected_settings_category, -1);
-            changed = true;
-        } else if title_settings_increment_button_rect().contains(mouse) {
-            menu.settings
-                .adjust_selected(menu.selected_settings_category, 1);
-            changed = true;
-        }
-    }
-
     if changed {
         save_app_settings(&menu.settings);
     }
@@ -7263,88 +8020,21 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
     if menu.save_slots.is_empty() {
         menu.pending_delete_save_index = None;
         menu.delete_save_error = None;
-        menu.save_slots_scroll = 0.0;
         return None;
     }
-    clamp_title_save_slots_scroll(menu);
 
     if is_key_pressed(KeyCode::Up) {
         menu.selected_save_index = menu.selected_save_index.saturating_sub(1);
         menu.pending_delete_save_index = None;
         menu.delete_save_error = None;
-        scroll_title_save_selection_into_view(menu);
     }
     if is_key_pressed(KeyCode::Down) {
         menu.selected_save_index =
             (menu.selected_save_index + 1).min(menu.save_slots.len().saturating_sub(1));
         menu.pending_delete_save_index = None;
         menu.delete_save_error = None;
-        scroll_title_save_selection_into_view(menu);
     }
     if is_key_pressed(KeyCode::Enter) {
-        return menu
-            .save_slots
-            .get(menu.selected_save_index)
-            .map(|slot| TitleAction::LoadGame {
-                path: slot.path.clone(),
-            });
-    }
-
-    let mouse = mouse_vec2();
-    let list = title_save_list_rect();
-    let wheel = mouse_wheel().1;
-    if wheel != 0.0 && list.contains(mouse) {
-        menu.save_slots_scroll = title_save_slots_scrolled_offset(
-            menu.save_slots_scroll,
-            wheel,
-            menu.save_slots.len(),
-            list.h,
-        );
-    }
-
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return None;
-    }
-
-    if list.contains(mouse) {
-        for index in 0..menu.save_slots.len() {
-            let row = title_save_row_rect_with_scroll(index, menu.save_slots_scroll);
-            if !title_save_row_is_visible(row, list) || !row.contains(mouse) {
-                continue;
-            }
-            let clicked_at = get_time();
-            if menu.selected_save_index != index {
-                menu.pending_delete_save_index = None;
-                menu.delete_save_error = None;
-            }
-            let is_double_click = title_save_row_double_clicked(
-                menu.last_save_click_index,
-                menu.last_save_click_time,
-                index,
-                clicked_at,
-            );
-            menu.selected_save_index = index;
-            menu.last_save_click_index = Some(index);
-            menu.last_save_click_time = clicked_at;
-            scroll_title_save_selection_into_view(menu);
-            return if is_double_click {
-                menu.save_slots
-                    .get(index)
-                    .map(|slot| TitleAction::LoadGame {
-                        path: slot.path.clone(),
-                    })
-            } else {
-                None
-            };
-        }
-    }
-
-    if title_delete_save_button_rect().contains(mouse) {
-        handle_title_delete_save_click(menu);
-        return None;
-    }
-
-    if title_load_game_button_rect().contains(mouse) {
         return menu
             .save_slots
             .get(menu.selected_save_index)
@@ -7388,9 +8078,6 @@ fn delete_title_save_at(menu: &mut TitleMenu, save_index: usize) -> bool {
     menu.save_slots = title_save_slots();
     menu.selected_save_index =
         selected_save_index_after_delete(previous_index, save_index, menu.save_slots.len());
-    scroll_title_save_selection_into_view(menu);
-    menu.last_save_click_index = None;
-    menu.last_save_click_time = 0.0;
     menu.pending_delete_save_index = None;
     menu.delete_save_error = None;
     true
@@ -7414,19 +8101,6 @@ fn selected_save_index_after_delete(
     }
 }
 
-fn title_save_row_double_clicked(
-    previous_index: Option<usize>,
-    previous_time: f64,
-    clicked_index: usize,
-    clicked_time: f64,
-) -> bool {
-    const DOUBLE_CLICK_SECONDS: f64 = 0.42;
-
-    previous_index == Some(clicked_index)
-        && clicked_time >= previous_time
-        && clicked_time - previous_time <= DOUBLE_CLICK_SECONDS
-}
-
 fn update_title_content_packs(menu: &mut TitleMenu) {
     if menu.content_packs.is_empty() {
         return;
@@ -7438,26 +8112,6 @@ fn update_title_content_packs(menu: &mut TitleMenu) {
     if is_key_pressed(KeyCode::Down) {
         menu.selected_pack_index =
             (menu.selected_pack_index + 1).min(menu.content_packs.len().saturating_sub(1));
-    }
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return;
-    }
-
-    let mouse = mouse_vec2();
-    for index in 0..menu.content_packs.len() {
-        if title_pack_row_rect(index).contains(mouse) {
-            menu.selected_pack_index = index;
-            return;
-        }
-    }
-
-    if let Some(pack) = menu.content_packs.get_mut(menu.selected_pack_index) {
-        for option_index in 0..pack.options.len() {
-            if title_pack_option_row_rect(option_index).contains(mouse) {
-                cycle_title_pack_option(pack, option_index);
-                return;
-            }
-        }
     }
 }
 
@@ -7500,15 +8154,6 @@ fn title_pack_option_is_interactive(option: &TitlePackOption) -> bool {
 }
 
 fn update_title_new_game(menu: &mut TitleMenu) -> Option<TitleAction> {
-    while let Some(character) = get_char_pressed() {
-        if character.is_ascii_digit() && menu.new_game_seed_text.len() < 20 {
-            menu.new_game_seed_text.push(character);
-        }
-    }
-
-    if is_key_pressed(KeyCode::Backspace) {
-        menu.new_game_seed_text.pop();
-    }
     if is_key_pressed(KeyCode::R) {
         menu.new_game_seed_text = new_world_seed().to_string();
     }
@@ -7525,17 +8170,6 @@ fn update_title_new_game(menu: &mut TitleMenu) -> Option<TitleAction> {
         cycle_title_ship(menu, TITLE_SHIP_GRID_COLUMNS as i32);
     }
 
-    let mouse = mouse_vec2();
-    let (_, wheel) = mouse_wheel();
-    if wheel.abs() > f32::EPSILON && title_ship_grid_rect().contains(mouse) {
-        menu.ship_grid_scroll = title_ship_grid_scrolled_offset(
-            menu.ship_grid_scroll,
-            wheel,
-            menu.ships.len(),
-            title_ship_grid_rect().h,
-        );
-    }
-
     let parsed_seed = parse_title_seed(&menu.new_game_seed_text);
     if is_key_pressed(KeyCode::Enter) {
         if let (Some(seed), Some(ship)) = (parsed_seed, selected_title_ship(menu)) {
@@ -7547,32 +8181,7 @@ fn update_title_new_game(menu: &mut TitleMenu) -> Option<TitleAction> {
         }
     }
 
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return None;
-    }
-
-    if title_seed_randomize_button_rect().contains(mouse) {
-        menu.new_game_seed_text = new_world_seed().to_string();
-        None
-    } else if title_new_game_start_button_rect().contains(mouse) {
-        parsed_seed.and_then(|seed| {
-            selected_title_ship(menu).map(|ship| TitleAction::NewGame {
-                seed,
-                ship_id: ship.id.clone(),
-                pack_options: selected_title_pack_options(&menu.content_packs),
-            })
-        })
-    } else if title_ship_grid_rect().contains(mouse) {
-        if let Some(index) = (0..menu.ships.len()).find(|index| {
-            let card = title_ship_card_rect(*index, menu.ship_grid_scroll);
-            title_ship_card_is_visible(card, title_ship_grid_rect()) && card.contains(mouse)
-        }) {
-            menu.selected_ship_index = index;
-        }
-        None
-    } else {
-        None
-    }
+    None
 }
 
 fn selected_title_ship(menu: &TitleMenu) -> Option<&TitleShip> {
@@ -7581,7 +8190,6 @@ fn selected_title_ship(menu: &TitleMenu) -> Option<&TitleShip> {
 
 fn cycle_title_ship(menu: &mut TitleMenu, direction: i32) {
     menu.selected_ship_index = cycled_index(menu.selected_ship_index, menu.ships.len(), direction);
-    scroll_title_ship_selection_into_view(menu);
 }
 
 fn cycled_index(current: usize, len: usize, direction: i32) -> usize {
@@ -7621,48 +8229,253 @@ fn update_title_main_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
     if is_key_pressed(KeyCode::Q) {
         return Some(TitleAction::QuitDesktop);
     }
-
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return None;
-    }
-
-    let mouse = mouse_vec2();
-    if title_menu_button_rect(0).contains(mouse) {
-        menu.view = TitleView::NewGame;
-        None
-    } else if title_menu_button_rect(1).contains(mouse) && !menu.save_slots.is_empty() {
-        menu.view = TitleView::LoadGame;
-        None
-    } else if title_menu_button_rect(2).contains(mouse) {
-        menu.view = TitleView::ContentPacks;
-        None
-    } else if title_menu_button_rect(3).contains(mouse) {
-        menu.view = TitleView::Settings;
-        None
-    } else if title_menu_button_rect(4).contains(mouse) {
-        Some(TitleAction::QuitDesktop)
-    } else {
-        None
-    }
+    None
 }
 
 fn mouse_vec2() -> Vec2 {
     vec2(mouse_position().0, mouse_position().1)
 }
 
-fn draw_title_menu(
-    menu: &TitleMenu,
-    background: &UniverseBackground,
-    logo: Option<&Texture2D>,
-    panel_corner: Option<&Texture2D>,
-) {
+fn draw_title_menu(menu: &mut TitleMenu, background: &UniverseBackground) {
     draw_title_background(background);
     match menu.view {
-        TitleView::Main => draw_title_main_menu(menu, logo, panel_corner),
-        TitleView::NewGame => draw_title_new_game(menu, panel_corner),
-        TitleView::LoadGame => draw_title_load_game(menu, panel_corner),
-        TitleView::ContentPacks => draw_title_content_packs(menu, panel_corner),
-        TitleView::Settings => draw_title_settings(menu, panel_corner),
+        TitleView::Main => draw_title_main_egui(menu),
+        TitleView::NewGame
+        | TitleView::LoadGame
+        | TitleView::ContentPacks
+        | TitleView::Settings => draw_title_submenu_egui(menu),
+    }
+}
+
+fn draw_title_main_egui(menu: &mut TitleMenu) {
+    let mut actions = Vec::new();
+    egui_macroquad::ui(|ctx| {
+        if menu.branding_egui_texture.is_none() {
+            if let Some(image) = &menu.branding_egui_image {
+                menu.branding_egui_texture = Some(ctx.load_texture(
+                    "some-frontier-title-logo",
+                    image.clone(),
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
+        let logo_aspect_ratio = menu
+            .branding_egui_image
+            .as_ref()
+            .map(|image| image.size[0] as f32 / image.size[1].max(1) as f32)
+            .unwrap_or(1.0);
+        actions = egui_title::draw_main(
+            ctx,
+            [screen_width(), screen_height()],
+            egui_title::TitleMainView {
+                logo: menu
+                    .branding_egui_texture
+                    .as_ref()
+                    .map(egui::TextureHandle::id),
+                logo_aspect_ratio,
+                load_enabled: !menu.save_slots.is_empty(),
+                fast_start: fast_start_enabled(),
+            },
+        );
+    });
+    for action in actions {
+        match action {
+            egui_title::TitleMainAction::NewGame => menu.view = TitleView::NewGame,
+            egui_title::TitleMainAction::LoadGame if !menu.save_slots.is_empty() => {
+                menu.view = TitleView::LoadGame;
+            }
+            egui_title::TitleMainAction::LoadGame => {}
+            egui_title::TitleMainAction::ContentPacks => menu.view = TitleView::ContentPacks,
+            egui_title::TitleMainAction::Settings => menu.view = TitleView::Settings,
+            egui_title::TitleMainAction::Quit => {
+                menu.pending_action = Some(TitleAction::QuitDesktop);
+            }
+        }
+    }
+    egui_macroquad::draw();
+}
+
+fn draw_title_submenu_egui(menu: &mut TitleMenu) {
+    let mut actions = Vec::new();
+    egui_macroquad::ui(|ctx| {
+        ensure_title_ship_egui_textures(menu, ctx);
+        let view = title_submenu_view(menu);
+        actions = egui_title::draw(ctx, [screen_width(), screen_height()], &view);
+    });
+    apply_title_submenu_actions(menu, actions);
+    egui_macroquad::draw();
+}
+
+fn ensure_title_ship_egui_textures(menu: &mut TitleMenu, ctx: &egui::Context) {
+    for (ship_id, preview) in &mut menu.ship_textures {
+        if preview.egui_texture.is_none() {
+            preview.egui_texture = Some(ctx.load_texture(
+                format!("title-ship-{ship_id}"),
+                preview.egui_image.clone(),
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+    }
+}
+
+fn title_submenu_view(menu: &TitleMenu) -> egui_title::TitleSubmenuView {
+    let kind = match menu.view {
+        TitleView::NewGame => egui_title::SubmenuKind::NewGame,
+        TitleView::LoadGame => egui_title::SubmenuKind::LoadGame,
+        TitleView::ContentPacks => egui_title::SubmenuKind::ContentPacks,
+        TitleView::Settings => egui_title::SubmenuKind::Settings,
+        TitleView::Main => unreachable!("main title view does not use an egui submenu"),
+    };
+    let ships = menu
+        .ships
+        .iter()
+        .map(|ship| egui_title::ShipChoice {
+            name: ship.name.clone(),
+            pack: ship.id.split(':').next().unwrap_or("content").to_string(),
+            hull: ship.hull_capacity,
+            shields: ship.shield_capacity,
+            weapon_banks: ship.weapon_banks,
+            texture: menu
+                .ship_textures
+                .get(&ship.id)
+                .and_then(|preview| preview.egui_texture.as_ref())
+                .map(egui::TextureHandle::id),
+        })
+        .collect();
+    let saves = menu
+        .save_slots
+        .iter()
+        .map(|save| egui_title::SaveChoice {
+            label: save.label.clone(),
+            system: save.current_system_id.clone(),
+            last_played: format_last_played(save.modified_unix_seconds),
+            seed: save.world_seed,
+            elapsed_days: save.world_elapsed_days,
+            legacy: save.is_legacy,
+        })
+        .collect();
+    let packs = menu
+        .content_packs
+        .iter()
+        .map(|pack| egui_title::PackChoice {
+            name: pack.name.clone(),
+            id: pack.id.clone(),
+            version: pack.version.clone(),
+            description: pack
+                .description
+                .clone()
+                .unwrap_or_else(|| "No description provided.".to_string()),
+            options: pack
+                .options
+                .iter()
+                .map(|option| {
+                    let interactive = title_pack_option_is_interactive(option);
+                    egui_title::PackOptionView {
+                        label: option.label.clone(),
+                        description: option.description.clone().unwrap_or_else(|| {
+                            "Saved with new games; application pending.".to_string()
+                        }),
+                        value: if interactive {
+                            option.current_value.clone()
+                        } else {
+                            format!("{} pending", option.default_value)
+                        },
+                        interactive,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    let settings = SettingsCategory::ALL
+        .iter()
+        .copied()
+        .map(|category| {
+            let (label, value, note) = title_selected_setting_text(&menu.settings, category);
+            egui_title::SettingsChoice {
+                category: category.label().to_string(),
+                label: label.to_string(),
+                value,
+                note: note.to_string(),
+            }
+        })
+        .collect();
+    let selected_setting = SettingsCategory::ALL
+        .iter()
+        .position(|category| *category == menu.selected_settings_category)
+        .unwrap_or(0);
+
+    egui_title::TitleSubmenuView {
+        kind,
+        seed: menu.new_game_seed_text.clone(),
+        seed_valid: parse_title_seed(&menu.new_game_seed_text).is_some(),
+        ships,
+        selected_ship: menu.selected_ship_index,
+        saves,
+        selected_save: menu.selected_save_index,
+        confirming_delete: menu.pending_delete_save_index == Some(menu.selected_save_index),
+        delete_error: menu.delete_save_error.clone(),
+        packs,
+        selected_pack: menu.selected_pack_index,
+        settings,
+        selected_setting,
+    }
+}
+
+fn apply_title_submenu_actions(menu: &mut TitleMenu, actions: Vec<egui_title::TitleSubmenuAction>) {
+    for action in actions {
+        match action {
+            egui_title::TitleSubmenuAction::Back => menu.view = TitleView::Main,
+            egui_title::TitleSubmenuAction::SetSeed(seed) => menu.new_game_seed_text = seed,
+            egui_title::TitleSubmenuAction::RandomizeSeed => {
+                menu.new_game_seed_text = new_world_seed().to_string();
+            }
+            egui_title::TitleSubmenuAction::SelectShip(index) => {
+                menu.selected_ship_index = index.min(menu.ships.len().saturating_sub(1));
+            }
+            egui_title::TitleSubmenuAction::StartGame => {
+                if let (Some(seed), Some(ship)) = (
+                    parse_title_seed(&menu.new_game_seed_text),
+                    selected_title_ship(menu),
+                ) {
+                    menu.pending_action = Some(TitleAction::NewGame {
+                        seed,
+                        ship_id: ship.id.clone(),
+                        pack_options: selected_title_pack_options(&menu.content_packs),
+                    });
+                }
+            }
+            egui_title::TitleSubmenuAction::SelectSave(index) => {
+                menu.selected_save_index = index.min(menu.save_slots.len().saturating_sub(1));
+                menu.pending_delete_save_index = None;
+                menu.delete_save_error = None;
+            }
+            egui_title::TitleSubmenuAction::LoadSave => {
+                if let Some(save) = menu.save_slots.get(menu.selected_save_index) {
+                    menu.pending_action = Some(TitleAction::LoadGame {
+                        path: save.path.clone(),
+                    });
+                }
+            }
+            egui_title::TitleSubmenuAction::DeleteSave => handle_title_delete_save_click(menu),
+            egui_title::TitleSubmenuAction::SelectPack(index) => {
+                menu.selected_pack_index = index.min(menu.content_packs.len().saturating_sub(1));
+            }
+            egui_title::TitleSubmenuAction::CyclePackOption(index) => {
+                if let Some(pack) = menu.content_packs.get_mut(menu.selected_pack_index) {
+                    cycle_title_pack_option(pack, index);
+                }
+            }
+            egui_title::TitleSubmenuAction::SelectSetting(index) => {
+                if let Some(category) = SettingsCategory::ALL.get(index) {
+                    menu.selected_settings_category = *category;
+                }
+            }
+            egui_title::TitleSubmenuAction::AdjustSetting(direction) => {
+                menu.settings
+                    .adjust_selected(menu.selected_settings_category, direction);
+                save_app_settings(&menu.settings);
+            }
+        }
     }
 }
 
@@ -7692,830 +8505,6 @@ fn draw_title_background(background: &UniverseBackground) {
     }
 }
 
-fn title_panel_rect() -> Rect {
-    let width = 470.0;
-    let height = 430.0;
-    Rect::new(
-        (screen_width() - width) * 0.5,
-        (screen_height() - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn title_new_game_panel_rect() -> Rect {
-    title_new_game_panel_rect_for_screen(screen_width(), screen_height())
-}
-
-fn title_new_game_panel_rect_for_screen(screen_width: f32, screen_height: f32) -> Rect {
-    let width = (screen_width - 64.0).clamp(780.0, 1_060.0);
-    let height = (screen_height - 48.0).clamp(620.0, 740.0);
-    Rect::new(
-        (screen_width - width) * 0.5,
-        (screen_height - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn title_load_panel_rect() -> Rect {
-    title_load_panel_rect_for_screen(screen_width(), screen_height())
-}
-
-fn title_load_panel_rect_for_screen(screen_width: f32, screen_height: f32) -> Rect {
-    let width = (screen_width - 96.0).clamp(720.0, 980.0);
-    let height = (screen_height - 96.0).clamp(480.0, 620.0);
-    Rect::new(
-        (screen_width - width) * 0.5,
-        (screen_height - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn title_main_panel_rect() -> Rect {
-    let width = (screen_width() - 64.0).clamp(640.0, 920.0);
-    let height = (screen_height() - 64.0).clamp(520.0, 680.0);
-    Rect::new(
-        (screen_width() - width) * 0.5,
-        (screen_height() - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn title_menu_button_rect(index: usize) -> Rect {
-    let panel = title_main_panel_rect();
-    Rect::new(
-        panel.x + panel.w * 0.5 - 178.0,
-        panel.y + panel.h - 270.0 + index as f32 * 52.0,
-        356.0,
-        38.0,
-    )
-}
-
-fn title_back_button_rect() -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + panel.h - 64.0,
-        126.0,
-        38.0,
-    )
-}
-
-fn title_new_game_back_button_rect() -> Rect {
-    let panel = title_new_game_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + panel.h - 64.0,
-        126.0,
-        38.0,
-    )
-}
-
-fn title_load_back_button_rect() -> Rect {
-    let panel = title_load_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + panel.h - 64.0,
-        126.0,
-        38.0,
-    )
-}
-
-fn title_pack_list_rect() -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_BODY_TOP,
-        176.0,
-        panel.h - 210.0,
-    )
-}
-
-fn title_settings_category_list_rect() -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_BODY_TOP,
-        166.0,
-        panel.h - 210.0,
-    )
-}
-
-fn title_settings_category_row_rect(index: usize) -> Rect {
-    let list = title_settings_category_list_rect();
-    Rect::new(list.x, list.y + index as f32 * 44.0, list.w, 38.0)
-}
-
-fn title_settings_decrement_button_rect() -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(panel.x + 258.0, panel.y + 204.0, 44.0, 38.0)
-}
-
-fn title_settings_increment_button_rect() -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(panel.x + panel.w - 72.0, panel.y + 204.0, 44.0, 38.0)
-}
-
-fn title_save_list_rect() -> Rect {
-    title_save_list_rect_for_panel(title_load_panel_rect())
-}
-
-fn title_save_list_rect_for_panel(panel: Rect) -> Rect {
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_BODY_TOP,
-        panel.w * 0.42,
-        panel.h - 212.0,
-    )
-}
-
-fn title_save_row_rect_with_scroll(index: usize, scroll: f32) -> Rect {
-    title_save_row_rect_for_list(title_save_list_rect(), index, scroll)
-}
-
-fn title_save_row_rect_for_list(list: Rect, index: usize, scroll: f32) -> Rect {
-    Rect::new(
-        list.x,
-        list.y + index as f32 * TITLE_SAVE_ROW_STEP - scroll,
-        list.w,
-        TITLE_SAVE_ROW_HEIGHT,
-    )
-}
-
-fn title_save_row_is_visible(row: Rect, list: Rect) -> bool {
-    row.y >= list.y && row.y + row.h <= list.y + list.h
-}
-
-fn row_save_text_width(row_width: f32, show_scrollbar: bool) -> f32 {
-    row_width - if show_scrollbar { 32.0 } else { 20.0 }
-}
-
-fn title_save_slots_scrolled_offset(
-    current: f32,
-    wheel: f32,
-    row_count: usize,
-    viewport_height: f32,
-) -> f32 {
-    let max_scroll = title_save_slots_max_scroll(row_count, viewport_height);
-    (current - wheel * TITLE_SAVE_ROW_STEP * 2.0).clamp(0.0, max_scroll)
-}
-
-fn title_save_slots_max_scroll(row_count: usize, viewport_height: f32) -> f32 {
-    let overflow = max_scroll_offset(row_count, TITLE_SAVE_ROW_STEP, viewport_height);
-    if overflow <= 0.0 {
-        0.0
-    } else {
-        (overflow / TITLE_SAVE_ROW_STEP).ceil() * TITLE_SAVE_ROW_STEP
-    }
-}
-
-fn clamp_title_save_slots_scroll(menu: &mut TitleMenu) {
-    let list = title_save_list_rect();
-    menu.save_slots_scroll = menu.save_slots_scroll.clamp(
-        0.0,
-        title_save_slots_max_scroll(menu.save_slots.len(), list.h),
-    );
-}
-
-fn scroll_title_save_selection_into_view(menu: &mut TitleMenu) {
-    let list = title_save_list_rect();
-    let row_top = menu.selected_save_index as f32 * TITLE_SAVE_ROW_STEP;
-    let row_bottom = row_top + TITLE_SAVE_ROW_HEIGHT;
-    if row_top < menu.save_slots_scroll {
-        menu.save_slots_scroll = row_top;
-    } else if row_bottom > menu.save_slots_scroll + list.h {
-        menu.save_slots_scroll = row_bottom - list.h;
-    }
-    menu.save_slots_scroll =
-        (menu.save_slots_scroll / TITLE_SAVE_ROW_STEP).ceil() * TITLE_SAVE_ROW_STEP;
-    clamp_title_save_slots_scroll(menu);
-}
-
-fn title_load_game_button_rect() -> Rect {
-    let panel = title_load_panel_rect();
-    Rect::new(
-        panel.x + panel.w - 176.0,
-        panel.y + panel.h - 64.0,
-        148.0,
-        38.0,
-    )
-}
-
-fn title_delete_save_button_rect() -> Rect {
-    let panel = title_load_panel_rect();
-    Rect::new(
-        panel.x + panel.w - 340.0,
-        panel.y + panel.h - 64.0,
-        148.0,
-        38.0,
-    )
-}
-
-fn title_pack_row_rect(index: usize) -> Rect {
-    let list = title_pack_list_rect();
-    Rect::new(list.x, list.y + index as f32 * 42.0, list.w, 36.0)
-}
-
-fn title_pack_option_row_rect(index: usize) -> Rect {
-    let panel = title_panel_rect();
-    Rect::new(
-        panel.x + 254.0,
-        panel.y + 242.0 + index as f32 * 52.0,
-        panel.w - 282.0,
-        44.0,
-    )
-}
-
-fn title_seed_input_rect() -> Rect {
-    let panel = title_new_game_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + 150.0,
-        panel.w - TITLE_PANEL_CONTENT_PAD_X - 168.0,
-        40.0,
-    )
-}
-
-fn title_seed_randomize_button_rect() -> Rect {
-    let panel = title_new_game_panel_rect();
-    Rect::new(panel.x + panel.w - 154.0, panel.y + 150.0, 126.0, 40.0)
-}
-
-fn title_ship_grid_rect() -> Rect {
-    let panel = title_new_game_panel_rect();
-    Rect::new(
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + 236.0,
-        panel.w - TITLE_PANEL_CONTENT_PAD_X - 28.0,
-        panel.h - 350.0,
-    )
-}
-
-fn title_ship_card_rect(index: usize, scroll: f32) -> Rect {
-    title_ship_card_rect_for_grid(title_ship_grid_rect(), index, scroll)
-}
-
-fn title_ship_card_rect_for_grid(grid: Rect, index: usize, scroll: f32) -> Rect {
-    let column = index % TITLE_SHIP_GRID_COLUMNS;
-    let row = index / TITLE_SHIP_GRID_COLUMNS;
-    let card_width = (grid.w
-        - TITLE_SHIP_CARD_GAP * (TITLE_SHIP_GRID_COLUMNS.saturating_sub(1) as f32))
-        / TITLE_SHIP_GRID_COLUMNS as f32;
-    Rect::new(
-        grid.x + column as f32 * (card_width + TITLE_SHIP_CARD_GAP),
-        grid.y + row as f32 * (TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP) - scroll,
-        card_width,
-        TITLE_SHIP_CARD_HEIGHT,
-    )
-}
-
-fn title_ship_card_is_visible(card: Rect, grid: Rect) -> bool {
-    card.y >= grid.y && card.y + card.h <= grid.y + grid.h
-}
-
-fn title_ship_grid_max_scroll(ship_count: usize, viewport_height: f32) -> f32 {
-    let rows = ship_count.div_ceil(TITLE_SHIP_GRID_COLUMNS);
-    let content_height = if rows == 0 {
-        0.0
-    } else {
-        rows as f32 * TITLE_SHIP_CARD_HEIGHT + rows.saturating_sub(1) as f32 * TITLE_SHIP_CARD_GAP
-    };
-    (content_height - viewport_height).max(0.0)
-}
-
-fn title_ship_grid_scrolled_offset(
-    current: f32,
-    wheel: f32,
-    ship_count: usize,
-    viewport_height: f32,
-) -> f32 {
-    let step = TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP;
-    (current - wheel * step).clamp(0.0, title_ship_grid_max_scroll(ship_count, viewport_height))
-}
-
-fn scroll_title_ship_selection_into_view(menu: &mut TitleMenu) {
-    if menu.ships.is_empty() {
-        menu.ship_grid_scroll = 0.0;
-        return;
-    }
-    let grid = title_ship_grid_rect();
-    let row = menu.selected_ship_index / TITLE_SHIP_GRID_COLUMNS;
-    let row_top = row as f32 * (TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP);
-    let row_bottom = row_top + TITLE_SHIP_CARD_HEIGHT;
-    if row_top < menu.ship_grid_scroll {
-        menu.ship_grid_scroll = row_top;
-    } else if row_bottom > menu.ship_grid_scroll + grid.h {
-        menu.ship_grid_scroll = row_bottom - grid.h;
-    }
-    menu.ship_grid_scroll = menu
-        .ship_grid_scroll
-        .clamp(0.0, title_ship_grid_max_scroll(menu.ships.len(), grid.h));
-}
-
-fn title_new_game_start_button_rect() -> Rect {
-    let panel = title_new_game_panel_rect();
-    Rect::new(
-        panel.x + panel.w - 176.0,
-        panel.y + panel.h - 64.0,
-        148.0,
-        38.0,
-    )
-}
-
-fn draw_title_main_menu(
-    menu: &TitleMenu,
-    logo: Option<&Texture2D>,
-    panel_corner: Option<&Texture2D>,
-) {
-    let panel = title_main_panel_rect();
-    draw_title_panel(panel, panel_corner);
-    if let Some(logo) = logo {
-        let logo_source = Rect::new(
-            logo.width() * 0.20,
-            logo.height() * 0.18,
-            logo.width() * 0.61,
-            logo.height() * 0.52,
-        );
-        draw_texture_source_contain(
-            logo,
-            logo_source,
-            Rect::new(
-                panel.x + 18.0,
-                panel.y + 18.0,
-                panel.w - 36.0,
-                panel.h - 278.0,
-            ),
-            1.0,
-        );
-    } else {
-        let title = "Some Frontier";
-        let title_measure = measure_text(title, None, 34, 1.0);
-        draw_text(
-            title,
-            panel.x + (panel.w - title_measure.width) * 0.5,
-            panel.y + 56.0,
-            34.0,
-            Color::from_rgba(235, 242, 226, 255),
-        );
-    }
-    let subtitle = "Local systems, rough ore, quiet engines";
-    let subtitle_measure = measure_text(subtitle, None, 18, 1.0);
-    draw_text(
-        subtitle,
-        panel.x + (panel.w - subtitle_measure.width) * 0.5,
-        panel.y + panel.h - 282.0,
-        18.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-
-    let load_enabled = !menu.save_slots.is_empty();
-    draw_title_button(title_menu_button_rect(0), "New Game", true, "N");
-    draw_title_button(title_menu_button_rect(1), "Load Game", load_enabled, "L");
-    draw_title_button(title_menu_button_rect(2), "Content Packs", true, "C");
-    draw_title_button(title_menu_button_rect(3), "Settings", true, "S");
-    draw_title_button(title_menu_button_rect(4), "Quit", true, "Q");
-
-    if fast_start_enabled() {
-        draw_text(
-            "Fast start enabled by SOME_FRONTIER_FAST_START",
-            panel.x + TITLE_PANEL_CONTENT_PAD_X,
-            panel.y + panel.h - 22.0,
-            14.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-    }
-}
-
-fn draw_title_new_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
-    let panel = title_new_game_panel_rect();
-    draw_title_panel(panel, panel_corner);
-    draw_text(
-        "New Game",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_HEADER_BASELINE,
-        30.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Choose a ship and world seed for your fresh run.",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
-        17.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-
-    draw_text(
-        "World seed",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + 140.0,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    let input = title_seed_input_rect();
-    let seed_valid = parse_title_seed(&menu.new_game_seed_text).is_some();
-    draw_rectangle(
-        input.x,
-        input.y,
-        input.w,
-        input.h,
-        Color::from_rgba(8, 18, 24, 245),
-    );
-    draw_rectangle_lines(
-        input.x,
-        input.y,
-        input.w,
-        input.h,
-        1.0,
-        if seed_valid {
-            Color::from_rgba(150, 221, 226, 220)
-        } else {
-            Color::from_rgba(226, 190, 150, 220)
-        },
-    );
-    draw_text(
-        &fit_debug_text(&menu.new_game_seed_text, input.w - 26.0, 19),
-        input.x + 12.0,
-        input.y + 26.0,
-        19.0,
-        if seed_valid {
-            Color::from_rgba(235, 242, 226, 255)
-        } else {
-            Color::from_rgba(226, 190, 150, 255)
-        },
-    );
-    draw_title_button(title_seed_randomize_button_rect(), "Randomize", true, "R");
-
-    let grid = title_ship_grid_rect();
-    draw_text(
-        &format!("Select ship  ·  {} loaded", menu.ships.len()),
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        grid.y - 16.0,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_rectangle(
-        grid.x,
-        grid.y,
-        grid.w,
-        grid.h,
-        Color::from_rgba(5, 12, 18, 155),
-    );
-    draw_rectangle_lines(
-        grid.x,
-        grid.y,
-        grid.w,
-        grid.h,
-        1.0,
-        Color::from_rgba(83, 127, 139, 135),
-    );
-    for (index, ship) in menu.ships.iter().enumerate() {
-        let card = title_ship_card_rect(index, menu.ship_grid_scroll);
-        if title_ship_card_is_visible(card, grid) {
-            draw_title_ship_card(
-                ship,
-                menu.ship_textures.get(&ship.id),
-                card,
-                index == menu.selected_ship_index,
-            );
-        }
-    }
-
-    draw_text(
-        "Click a ship or use the arrow keys. Scroll for additional hulls.",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + panel.h - 88.0,
-        15.0,
-        Color::from_rgba(178, 197, 203, 255),
-    );
-    draw_title_button(title_new_game_back_button_rect(), "Back", true, "Esc");
-    draw_title_button(
-        title_new_game_start_button_rect(),
-        "Start Game",
-        seed_valid && selected_title_ship(menu).is_some(),
-        "Enter",
-    );
-}
-
-fn draw_title_ship_card(
-    ship: &TitleShip,
-    preview: Option<&TitleShipPreview>,
-    rect: Rect,
-    selected: bool,
-) {
-    let hovered = rect.contains(mouse_vec2());
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        if selected {
-            Color::from_rgba(25, 61, 68, 245)
-        } else if hovered {
-            Color::from_rgba(32, 74, 80, 245)
-        } else {
-            Color::from_rgba(11, 25, 32, 235)
-        },
-    );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        if selected {
-            Color::from_rgba(150, 221, 226, 245)
-        } else {
-            Color::from_rgba(83, 127, 139, 185)
-        },
-    );
-    draw_text(
-        &fit_debug_text(&ship.name, rect.w - 24.0, 19),
-        rect.x + 12.0,
-        rect.y + 27.0,
-        19.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    let pack_id = ship.id.split(':').next().unwrap_or("content");
-    draw_text(
-        &fit_debug_text(pack_id, rect.w - 24.0, 13),
-        rect.x + 12.0,
-        rect.y + 47.0,
-        13.0,
-        Color::from_rgba(150, 178, 184, 255),
-    );
-    let image_rect = Rect::new(rect.x + 12.0, rect.y + 54.0, rect.w - 24.0, 108.0);
-    draw_rectangle(
-        image_rect.x,
-        image_rect.y,
-        image_rect.w,
-        image_rect.h,
-        Color::from_rgba(4, 10, 15, 185),
-    );
-    if let Some(preview) = preview {
-        draw_quarter_turned_texture_source_contain(
-            &preview.texture,
-            preview.source,
-            image_rect,
-            if selected { 1.0 } else { 0.88 },
-        );
-    } else {
-        draw_text(
-            "Ship image unavailable",
-            image_rect.x + 12.0,
-            image_rect.y + image_rect.h * 0.5 + 5.0,
-            14.0,
-            Color::from_rgba(126, 143, 148, 255),
-        );
-    }
-    draw_text(
-        &format!(
-            "Hull {:.0}   Shield {:.0}",
-            ship.hull_capacity, ship.shield_capacity
-        ),
-        rect.x + 12.0,
-        rect.y + 185.0,
-        15.0,
-        Color::from_rgba(178, 197, 203, 255),
-    );
-    draw_text(
-        &format!(
-            "{} turret {}",
-            ship.weapon_banks,
-            if ship.weapon_banks == 1 {
-                "bank"
-            } else {
-                "banks"
-            }
-        ),
-        rect.x + 12.0,
-        rect.y + 207.0,
-        15.0,
-        if selected {
-            Color::from_rgba(150, 221, 226, 255)
-        } else {
-            Color::from_rgba(178, 197, 203, 255)
-        },
-    );
-    if selected {
-        let label = "SELECTED";
-        let measure = measure_text(label, None, 12, 1.0);
-        draw_text(
-            label,
-            rect.x + rect.w - measure.width - 12.0,
-            rect.y + 207.0,
-            12.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-    }
-}
-
-fn draw_title_load_game(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
-    let panel = title_load_panel_rect();
-    draw_title_panel(panel, panel_corner);
-    draw_text(
-        "Load Game",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_HEADER_BASELINE,
-        30.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Last played saves appear first.",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-
-    let list = title_save_list_rect();
-    draw_rectangle_lines(
-        list.x,
-        list.y,
-        list.w,
-        list.h,
-        1.0,
-        Color::from_rgba(96, 137, 150, 205),
-    );
-
-    let show_scrollbar = title_save_slots_max_scroll(menu.save_slots.len(), list.h) > 0.0;
-    let row_text_width = row_save_text_width(list.w, show_scrollbar);
-    for (index, slot) in menu.save_slots.iter().enumerate() {
-        let row = title_save_row_rect_with_scroll(index, menu.save_slots_scroll);
-        if row.y > list.y + list.h {
-            break;
-        }
-        if !title_save_row_is_visible(row, list) {
-            continue;
-        }
-        let selected = index == menu.selected_save_index;
-        let hovered = row.contains(mouse_vec2());
-        if selected || hovered {
-            draw_rectangle(
-                row.x,
-                row.y,
-                row.w,
-                row.h,
-                if selected {
-                    Color::from_rgba(24, 58, 66, 230)
-                } else {
-                    Color::from_rgba(10, 18, 24, 150)
-                },
-            );
-        }
-        draw_text(
-            &fit_debug_text(&slot.label, row_text_width, 19),
-            row.x + 10.0,
-            row.y + 23.0,
-            19.0,
-            if selected {
-                Color::from_rgba(235, 242, 226, 255)
-            } else {
-                Color::from_rgba(205, 226, 230, 255)
-            },
-        );
-        draw_text(
-            &fit_debug_text(
-                &format!(
-                    "{}  /  {}",
-                    slot.current_system_id,
-                    format_last_played(slot.modified_unix_seconds)
-                ),
-                row_text_width,
-                14,
-            ),
-            row.x + 10.0,
-            row.y + 43.0,
-            14.0,
-            Color::from_rgba(150, 221, 226, 255),
-        );
-    }
-    draw_scrollbar(
-        list.x + list.w - 8.0,
-        list.y + 6.0,
-        list.h - 12.0,
-        menu.save_slots.len(),
-        TITLE_SAVE_ROW_STEP,
-        menu.save_slots_scroll,
-    );
-
-    let detail_x = list.x + list.w + 28.0;
-    let detail_y = panel.y + TITLE_PANEL_BODY_TOP;
-    let detail_width = panel.x + panel.w - detail_x - 28.0;
-    if let Some(slot) = menu.save_slots.get(menu.selected_save_index) {
-        draw_text(
-            &fit_debug_text(&slot.label, detail_width, 22),
-            detail_x,
-            detail_y,
-            22.0,
-            Color::from_rgba(235, 242, 226, 255),
-        );
-        draw_text(
-            if slot.is_legacy {
-                "Legacy save file"
-            } else {
-                "Save slot"
-            },
-            detail_x,
-            detail_y + 28.0,
-            16.0,
-            Color::from_rgba(150, 221, 226, 255),
-        );
-        draw_title_save_detail_row(
-            detail_x,
-            detail_y + 68.0,
-            detail_width,
-            "Seed",
-            &slot.world_seed.to_string(),
-        );
-        draw_title_save_detail_row(
-            detail_x,
-            detail_y + 102.0,
-            detail_width,
-            "System",
-            &slot.current_system_id,
-        );
-        draw_title_save_detail_row(
-            detail_x,
-            detail_y + 136.0,
-            detail_width,
-            "Elapsed",
-            &format!("{:.1} days", slot.world_elapsed_days),
-        );
-        draw_title_save_detail_row(
-            detail_x,
-            detail_y + 170.0,
-            detail_width,
-            "Played",
-            &format_last_played(slot.modified_unix_seconds),
-        );
-        if let Some(error) = &menu.delete_save_error {
-            draw_wrapped_text(
-                error,
-                detail_x,
-                detail_y + 218.0,
-                detail_width,
-                15,
-                Color::from_rgba(226, 190, 150, 255),
-            );
-        } else if menu.pending_delete_save_index == Some(menu.selected_save_index) {
-            let warning = if slot.is_legacy {
-                "Confirm deletion of this legacy save file."
-            } else {
-                "Confirm deletion of this save slot."
-            };
-            draw_wrapped_text(
-                warning,
-                detail_x,
-                detail_y + 218.0,
-                detail_width,
-                15,
-                Color::from_rgba(226, 190, 150, 255),
-            );
-        }
-    } else {
-        draw_text(
-            "No saved games found.",
-            detail_x,
-            detail_y,
-            18.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-    }
-
-    draw_title_button(title_load_back_button_rect(), "Back", true, "Esc");
-    let confirming_delete = menu.pending_delete_save_index == Some(menu.selected_save_index);
-    draw_title_button(
-        title_delete_save_button_rect(),
-        if confirming_delete {
-            "Confirm Delete"
-        } else {
-            "Delete"
-        },
-        !menu.save_slots.is_empty(),
-        "Delete",
-    );
-    draw_title_button(
-        title_load_game_button_rect(),
-        "Load",
-        !menu.save_slots.is_empty(),
-        "Enter",
-    );
-}
-
-fn draw_title_save_detail_row(x: f32, y: f32, width: f32, label: &str, value: &str) {
-    draw_text(label, x, y, 15.0, Color::from_rgba(168, 204, 210, 255));
-    draw_text(
-        &fit_debug_text(value, width - 92.0, 17),
-        x + 78.0,
-        y,
-        17.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-}
-
 fn format_last_played(modified_unix_seconds: u64) -> String {
     let now = current_unix_seconds();
     if modified_unix_seconds == 0 || modified_unix_seconds > now {
@@ -8532,119 +8521,6 @@ fn format_last_played(modified_unix_seconds: u64) -> String {
     } else {
         format!("{} days ago", elapsed / 86_400)
     }
-}
-
-fn draw_title_settings(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
-    let panel = title_panel_rect();
-    draw_title_panel(panel, panel_corner);
-    draw_text(
-        "Settings",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_HEADER_BASELINE,
-        30.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Saved separately from game saves.",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-
-    let list = title_settings_category_list_rect();
-    draw_rectangle_lines(
-        list.x,
-        list.y,
-        list.w,
-        list.h,
-        1.0,
-        Color::from_rgba(96, 137, 150, 205),
-    );
-    for (index, category) in SettingsCategory::ALL.iter().copied().enumerate() {
-        let row = title_settings_category_row_rect(index);
-        let selected = category == menu.selected_settings_category;
-        let hovered = row.contains(mouse_vec2());
-        if selected || hovered {
-            draw_rectangle(
-                row.x,
-                row.y,
-                row.w,
-                row.h,
-                if selected {
-                    Color::from_rgba(24, 58, 66, 230)
-                } else {
-                    Color::from_rgba(10, 18, 24, 150)
-                },
-            );
-        }
-        draw_text(
-            category.label(),
-            row.x + 8.0,
-            row.y + 24.0,
-            18.0,
-            if selected {
-                Color::from_rgba(235, 242, 226, 255)
-            } else {
-                Color::from_rgba(205, 226, 230, 255)
-            },
-        );
-    }
-
-    let detail_x = panel.x + 254.0;
-    draw_text(
-        menu.selected_settings_category.label(),
-        detail_x,
-        panel.y + 140.0,
-        24.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    let (setting_label, setting_value, setting_note) =
-        title_selected_setting_text(&menu.settings, menu.selected_settings_category);
-    draw_text(
-        setting_label,
-        detail_x,
-        panel.y + 182.0,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_title_button(title_settings_decrement_button_rect(), "-", true, "Left");
-    let value_measure = measure_text(&setting_value, None, 22, 1.0);
-    let value_x =
-        title_settings_decrement_button_rect().x + title_settings_decrement_button_rect().w + 18.0;
-    draw_text(
-        &setting_value,
-        value_x,
-        panel.y + 229.0,
-        22.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_title_button(title_settings_increment_button_rect(), "+", true, "Right");
-    draw_line(
-        value_x,
-        panel.y + 238.0,
-        value_x + value_measure.width,
-        panel.y + 238.0,
-        1.0,
-        Color::from_rgba(150, 221, 226, 160),
-    );
-    draw_wrapped_text(
-        setting_note,
-        detail_x,
-        panel.y + 274.0,
-        panel.w - 282.0,
-        16,
-        Color::from_rgba(178, 197, 203, 255),
-    );
-    draw_text(
-        "Use Up/Down to choose a category and Left/Right to change it.",
-        detail_x,
-        panel.y + panel.h - 84.0,
-        15.0,
-        Color::from_rgba(150, 221, 226, 255),
-    );
-
-    draw_title_button(title_back_button_rect(), "Back", true, "Esc");
 }
 
 fn title_selected_setting_text(
@@ -8675,214 +8551,6 @@ fn title_selected_setting_text(
     }
 }
 
-fn draw_title_content_packs(menu: &TitleMenu, panel_corner: Option<&Texture2D>) {
-    let panel = title_panel_rect();
-    draw_title_panel(panel, panel_corner);
-    draw_text(
-        "Content Packs",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_HEADER_BASELINE,
-        30.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Installed",
-        panel.x + TITLE_PANEL_CONTENT_PAD_X,
-        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "Configuration",
-        panel.x + 254.0,
-        panel.y + TITLE_PANEL_SUBHEADER_BASELINE,
-        16.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-
-    let list = title_pack_list_rect();
-    draw_rectangle_lines(
-        list.x,
-        list.y,
-        list.w,
-        list.h,
-        1.0,
-        Color::from_rgba(96, 137, 150, 205),
-    );
-
-    for (index, pack) in menu.content_packs.iter().enumerate() {
-        let row = title_pack_row_rect(index);
-        if row.y + row.h > list.y + list.h {
-            break;
-        }
-        let selected = index == menu.selected_pack_index;
-        let hovered = row.contains(mouse_vec2());
-        if selected || hovered {
-            draw_rectangle(
-                row.x,
-                row.y,
-                row.w,
-                row.h,
-                if selected {
-                    Color::from_rgba(24, 58, 66, 230)
-                } else {
-                    Color::from_rgba(10, 18, 24, 150)
-                },
-            );
-        }
-        draw_text(
-            &fit_debug_text(&pack.name, row.w - 14.0, 17),
-            row.x + 8.0,
-            row.y + 23.0,
-            17.0,
-            if selected {
-                Color::from_rgba(235, 242, 226, 255)
-            } else {
-                Color::from_rgba(205, 226, 230, 255)
-            },
-        );
-    }
-
-    let detail_x = panel.x + 254.0;
-    let detail_y = panel.y + TITLE_PANEL_BODY_TOP;
-    let detail_width = panel.w - 282.0;
-    if let Some(pack) = menu.content_packs.get(menu.selected_pack_index) {
-        draw_text(
-            &fit_debug_text(&pack.name, detail_width, 22),
-            detail_x,
-            detail_y,
-            22.0,
-            Color::from_rgba(235, 242, 226, 255),
-        );
-        draw_text(
-            &format!("{}  v{}", pack.id, pack.version),
-            detail_x,
-            detail_y + 30.0,
-            16.0,
-            Color::from_rgba(150, 221, 226, 255),
-        );
-        let after_description = draw_wrapped_text(
-            pack.description
-                .as_deref()
-                .unwrap_or("No description provided."),
-            detail_x,
-            detail_y + 64.0,
-            detail_width,
-            17,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        draw_text(
-            "Options",
-            detail_x,
-            (after_description + 22.0).min(panel.y + 202.0),
-            16.0,
-            Color::from_rgba(168, 204, 210, 255),
-        );
-        if pack.options.is_empty() {
-            draw_text(
-                "No configurable options declared.",
-                detail_x,
-                panel.y + 236.0,
-                16.0,
-                Color::from_rgba(226, 190, 150, 255),
-            );
-        }
-        for (option_index, option) in pack.options.iter().enumerate() {
-            let row = title_pack_option_row_rect(option_index);
-            if row.y + row.h > panel.y + panel.h - 78.0 {
-                break;
-            }
-            let interactive = title_pack_option_is_interactive(option);
-            let hovered = interactive && row.contains(mouse_vec2());
-            draw_rectangle(
-                row.x,
-                row.y,
-                row.w,
-                row.h,
-                if hovered {
-                    Color::from_rgba(24, 58, 66, 230)
-                } else {
-                    Color::from_rgba(8, 18, 24, 210)
-                },
-            );
-            draw_rectangle_lines(
-                row.x,
-                row.y,
-                row.w,
-                row.h,
-                1.0,
-                Color::from_rgba(96, 137, 150, 220),
-            );
-            draw_text(
-                &fit_debug_text(&option.label, row.w - 112.0, 16),
-                row.x + 10.0,
-                row.y + 18.0,
-                16.0,
-                Color::from_rgba(235, 242, 226, 255),
-            );
-            draw_text(
-                &fit_debug_text(
-                    option
-                        .description
-                        .as_deref()
-                        .unwrap_or("Saved with new games; application pending."),
-                    row.w - 118.0,
-                    13,
-                ),
-                row.x + 10.0,
-                row.y + 36.0,
-                13.0,
-                Color::from_rgba(178, 197, 203, 255),
-            );
-            let value_label = if interactive {
-                option.current_value.clone()
-            } else {
-                format!("{} pending", option.default_value)
-            };
-            draw_text(
-                &fit_debug_text(&value_label, 94.0, 15),
-                row.x + row.w - 102.0,
-                row.y + 27.0,
-                15.0,
-                if interactive {
-                    Color::from_rgba(150, 221, 226, 255)
-                } else {
-                    Color::from_rgba(226, 190, 150, 255)
-                },
-            );
-        }
-    } else {
-        draw_text(
-            "No content packs found.",
-            detail_x,
-            detail_y,
-            18.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-    }
-
-    draw_title_button(title_back_button_rect(), "Back", true, "Esc");
-}
-
-fn draw_title_panel(rect: Rect, panel_corner: Option<&Texture2D>) {
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        Color::from_rgba(3, 8, 13, 244),
-    );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        Color::from_rgba(112, 151, 163, 220),
-    );
-    draw_panel_corner_art(rect, panel_corner);
-}
-
 fn draw_panel_corner_art(rect: Rect, texture: Option<&Texture2D>) {
     let Some(texture) = texture else {
         return;
@@ -8897,77 +8565,6 @@ fn draw_panel_corner_art(rect: Rect, texture: Option<&Texture2D>) {
             dest_size: Some(vec2(size, size)),
             ..Default::default()
         },
-    );
-}
-
-fn draw_title_button(rect: Rect, label: &str, enabled: bool, shortcut: &str) {
-    let hovered = enabled && rect.contains(mouse_vec2());
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        if enabled {
-            if hovered {
-                Color::from_rgba(32, 74, 80, 245)
-            } else {
-                Color::from_rgba(13, 32, 40, 235)
-            }
-        } else {
-            Color::from_rgba(12, 18, 22, 220)
-        },
-    );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        if enabled {
-            Color::from_rgba(150, 221, 226, 210)
-        } else {
-            Color::from_rgba(96, 112, 116, 170)
-        },
-    );
-    draw_text(
-        label,
-        rect.x + 16.0,
-        rect.y + 25.0,
-        19.0,
-        if enabled {
-            Color::from_rgba(235, 242, 226, 255)
-        } else {
-            Color::from_rgba(126, 143, 148, 255)
-        },
-    );
-    if hovered && !shortcut.is_empty() {
-        draw_title_button_shortcut_tooltip(rect, shortcut);
-    }
-}
-
-fn draw_title_button_shortcut_tooltip(rect: Rect, shortcut: &str) {
-    let label = format!("Key {shortcut}");
-    let measure = measure_text(&label, None, 14, 1.0);
-    let width = measure.width + 20.0;
-    let height = 28.0;
-    let x = (rect.x + rect.w - width).clamp(12.0, screen_width() - width - 12.0);
-    let y = (rect.y - height - 8.0).max(12.0);
-
-    draw_rectangle(x, y, width, height, Color::from_rgba(2, 6, 10, 245));
-    draw_rectangle_lines(
-        x,
-        y,
-        width,
-        height,
-        1.0,
-        Color::from_rgba(112, 151, 163, 170),
-    );
-    draw_text(
-        &label,
-        x + 10.0,
-        y + 19.0,
-        14.0,
-        Color::from_rgba(150, 221, 226, 255),
     );
 }
 
@@ -9076,6 +8673,9 @@ fn update_game(game: &mut GameState, dt: f32) {
         if game.map_open {
             game.starmap_pan = Vec2::ZERO;
             game.starmap_drag_previous_mouse = None;
+            if game.starmap_selected_planet.is_none() {
+                game.starmap_selected_planet = game.destination_planet;
+            }
             game.inventory_open = false;
             game.research_open = false;
             game.upgrades_open = false;
@@ -9158,10 +8758,7 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.upgrades_open = false;
             game.contracts_open = false;
             game.fleet_open = false;
-            game.selected_planet = None;
-            game.selected_station = None;
-            game.selected_npc_ship = None;
-            game.selected_station_service = None;
+            clear_unpinned_inspection_selection(game, egui_pin_snapshot());
         }
     }
     if is_key_pressed(KeyCode::J) {
@@ -9223,6 +8820,8 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_weapon_systems(game, dt);
     remove_destroyed_npc_ships(game);
 
+    let mut egui_pointer_captured = false;
+    egui_macroquad::cfg(|ctx| egui_pointer_captured = ctx.wants_pointer_input());
     let wheel = mouse_wheel().1;
     if game.map_open {
         update_starmap_view_input(game, dt, wheel);
@@ -9234,38 +8833,33 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.upgrades_open
         && !game.content_open
         && !game.contracts_open
+        && !game.fleet_open
+        && !egui_pointer_captured
     {
         adjust_camera_zoom(game, wheel.signum() as i32);
     }
 
-    let mut click_handled = false;
+    let mut click_handled = egui_pointer_captured
+        && (is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right));
     if game.research_open {
-        let mouse = vec2(mouse_position().0, mouse_position().1);
-        click_handled = handle_research_tree_input(game, mouse);
+        click_handled = is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right);
     }
 
     if game.upgrades_open {
-        let mouse = vec2(mouse_position().0, mouse_position().1);
-        if wheel != 0.0 {
-            handle_ship_upgrades_scroll(game, mouse, wheel);
-        }
-        click_handled = handle_ship_upgrades_input(game, mouse);
+        click_handled = is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right);
     }
 
     if game.content_open {
-        let mouse = vec2(mouse_position().0, mouse_position().1);
-        if wheel != 0.0 {
-            handle_content_browser_scroll(game, mouse, wheel);
-        }
-        click_handled = handle_content_browser_input(game, mouse);
+        click_handled = is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right);
     }
 
     if game.contracts_open {
-        let mouse = vec2(mouse_position().0, mouse_position().1);
-        if wheel != 0.0 {
-            handle_contracts_overlay_scroll(game, mouse, wheel);
-        }
-        click_handled = handle_contracts_overlay_input(game, mouse);
+        click_handled = is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right);
     }
 
     if game.fleet_open {
@@ -9279,8 +8873,8 @@ fn update_game(game: &mut GameState, dt: f32) {
         if is_key_pressed(KeyCode::Enter) {
             switch_active_owned_ship(game, game.selected_owned_ship_index);
         }
-        let mouse = mouse_vec2();
-        click_handled = handle_fleet_overlay_input(game, mouse);
+        click_handled = is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right);
     }
 
     if !game.map_open
@@ -9289,6 +8883,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.content_open
         && !game.contracts_open
         && !game.fleet_open
+        && !egui_pointer_captured
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if handle_context_action_input(game, mouse) {
@@ -9304,45 +8899,16 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.contracts_open
         && !game.fleet_open
     {
-        let mouse = vec2(mouse_position().0, mouse_position().1);
-        if egui_inventory_active(game) {
-            click_handled = is_mouse_button_pressed(MouseButton::Left)
-                || is_mouse_button_pressed(MouseButton::Right);
-        } else if handle_action_rail_resize_input(game, mouse) {
-            click_handled = true;
-        } else {
-            if wheel != 0.0 {
-                handle_inventory_overlay_scroll(game, mouse, wheel);
-            }
-            if let Some(planet_index) = game.selected_planet {
-                click_handled = handle_planet_orbit_input(game, planet_index, mouse)
-                    || handle_planet_scan_input(game, planet_index, mouse)
-                    || handle_mining_table_input(game, planet_index, mouse, wheel)
-                    || handle_production_table_input(game, mouse, wheel);
-            } else if let Some(station_index) = game.selected_station {
-                click_handled = handle_station_service_input(game, station_index, mouse)
-                    || handle_production_table_input(game, mouse, wheel);
-            } else if let Some(npc_ship_index) = game.selected_npc_ship {
-                click_handled =
-                    handle_npc_ship_interaction_input(game, npc_ship_index, mouse, wheel)
-                        || handle_production_table_input(game, mouse, wheel);
-            } else if is_mouse_button_pressed(MouseButton::Left)
-                && ship_detail_preview_rect(selected_action_rail_width(game)).contains(mouse)
-            {
-                game.upgrades_open = true;
-                game.inventory_open = false;
-                click_handled = true;
-            } else {
-                click_handled = handle_production_table_input(game, mouse, wheel);
-            }
-        }
-
-        if !click_handled && action_rail_consumes_pointer_click(game, mouse) {
-            click_handled = true;
-        }
+        click_handled = is_mouse_button_pressed(MouseButton::Left)
+            || is_mouse_button_pressed(MouseButton::Right);
     }
 
-    if game.map_open && is_mouse_button_pressed(MouseButton::Left) {
+    if game.map_open
+        && !egui_pointer_captured
+        && game.starmap_move_previous_mouse.is_none()
+        && game.starmap_resize_previous_mouse.is_none()
+        && is_mouse_button_pressed(MouseButton::Left)
+    {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if let Some(system_id) = clicked_known_system_id(mouse, game) {
             if system_id != game.current_system_id && game.scene_transition.is_none() {
@@ -9350,11 +8916,8 @@ fn update_game(game: &mut GameState, dt: f32) {
             }
             click_handled = true;
         } else if let Some(planet_index) = clicked_starmap_planet_index(mouse, game) {
-            set_destination_planet(game, Some(planet_index));
-            game.selected_planet = None;
-            game.selected_station = None;
-            game.selected_npc_ship = None;
-            game.selected_station_service = None;
+            game.starmap_selected_planet = Some(planet_index);
+            game.audio.play(audio::AudioCue::Select);
             click_handled = true;
         }
     }
@@ -9405,7 +8968,11 @@ fn update_game(game: &mut GameState, dt: f32) {
         }
     } else if game.approach_target.is_some() {
         if movement_input_pressed() {
-            game.approach_target = None;
+            if game.navigation_route_active {
+                pause_navigation_route(game, Some("Manual flight input paused itinerary"));
+            } else {
+                game.approach_target = None;
+            }
             let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
             update_ship(&mut game.ship, dt, energy_recharge);
         } else {
@@ -9427,36 +8994,33 @@ fn handle_inventory_shortcut(game: &mut GameState) {
         return;
     }
 
-    if game.inventory_open
-        && (game.selected_planet.is_some()
-            || game.selected_station.is_some()
-            || game.selected_npc_ship.is_some())
-    {
-        game.inventory_open = false;
-        game.selected_planet = None;
-        game.selected_station = None;
-        game.selected_npc_ship = None;
-        game.selected_station_service = None;
-        game.audio.play(audio::AudioCue::Back);
-        return;
-    }
-
+    let pins = egui_pin_snapshot();
     game.map_open = false;
     game.research_open = false;
     game.upgrades_open = false;
     game.content_open = false;
     game.contracts_open = false;
     game.fleet_open = false;
-    game.selected_planet = None;
-    game.selected_station = None;
-    game.selected_npc_ship = None;
-    game.selected_station_service = None;
     game.inventory_open = !game.inventory_open;
+    clear_unpinned_inspection_selection(game, pins);
     game.audio.play(if game.inventory_open {
         audio::AudioCue::Select
     } else {
         audio::AudioCue::Back
     });
+}
+
+fn clear_unpinned_inspection_selection(game: &mut GameState, pins: EguiPinSnapshot) {
+    if !pins.planet {
+        game.selected_planet = None;
+    }
+    if !pins.station {
+        game.selected_station = None;
+        game.selected_station_service = None;
+    }
+    if !pins.contact {
+        game.selected_npc_ship = None;
+    }
 }
 
 fn handle_escape_pressed(game: &mut GameState) {
@@ -9508,8 +9072,12 @@ fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<Contex
                 ContextMenuEntry {
                     action: ContextAction::Orbit,
                     label: "Orbit",
-                    enabled: in_range && game.orbiting_planet != Some(index),
-                    detail: if in_range {
+                    enabled: in_range
+                        && game.orbiting_planet != Some(index)
+                        && game.approach_target != Some(ApproachTarget::PlanetOrbit(index)),
+                    detail: if game.approach_target == Some(ApproachTarget::PlanetOrbit(index)) {
+                        "Flying to orbital position"
+                    } else if in_range {
                         "Enter stable orbit"
                     } else {
                         "Approach planet"
@@ -9696,56 +9264,130 @@ fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<Contex
     }
 }
 
-fn context_action_menu_rect(menu: &ContextActionMenu, entry_count: usize) -> Rect {
-    let width = 210.0;
-    let height = 24.0 + entry_count as f32 * 44.0;
-    Rect::new(
-        menu.position.x.clamp(8.0, screen_width() - width - 8.0),
-        menu.position.y.clamp(8.0, screen_height() - height - 8.0),
-        width,
-        height,
-    )
+fn context_menu_view(game: &GameState) -> Option<egui_context_menu::ContextMenuView> {
+    let menu = game.context_action_menu.as_ref()?;
+    let (heading, entries) = match &menu.content {
+        ContextMenuContent::Actions(target) => (
+            None,
+            context_action_entries(game, *target)
+                .into_iter()
+                .map(|entry| egui_context_menu::ContextMenuEntryView {
+                    label: entry.label.to_string(),
+                    detail: entry.detail.to_string(),
+                    enabled: entry.enabled,
+                })
+                .collect(),
+        ),
+        ContextMenuContent::ChooseTarget(targets) => (
+            Some("Choose target".to_string()),
+            targets
+                .iter()
+                .map(|target| {
+                    let (label, detail) = context_target_label(game, *target);
+                    egui_context_menu::ContextMenuEntryView {
+                        label,
+                        detail,
+                        enabled: true,
+                    }
+                })
+                .collect(),
+        ),
+    };
+    Some(egui_context_menu::ContextMenuView {
+        position: [menu.position.x, menu.position.y],
+        heading,
+        entries,
+    })
 }
 
-fn context_action_entry_rect(menu_rect: Rect, index: usize) -> Rect {
-    Rect::new(
-        menu_rect.x + 8.0,
-        menu_rect.y + 16.0 + index as f32 * 44.0,
-        menu_rect.w - 16.0,
-        36.0,
-    )
+fn context_target_label(game: &GameState, target: ContextTarget) -> (String, String) {
+    match target {
+        ContextTarget::Planet(index) => game.planets.get(index).map_or_else(
+            || ("Unavailable planet".to_string(), "Planet".to_string()),
+            |planet| {
+                (
+                    if planet_has_surface_scan(planet) {
+                        planet.info.classification.clone()
+                    } else {
+                        "Unscanned body".to_string()
+                    },
+                    format!("Planet · {}", planet.id),
+                )
+            },
+        ),
+        ContextTarget::Station(index) => game.stations.get(index).map_or_else(
+            || ("Unavailable station".to_string(), "Station".to_string()),
+            |station| (station.name.clone(), format!("Station · {}", station.id)),
+        ),
+        ContextTarget::NpcShip(index) => game.npc_ships.get(index).map_or_else(
+            || ("Unavailable contact".to_string(), "Contact".to_string()),
+            |npc_ship| {
+                (
+                    if npc_ship.identified {
+                        npc_ship.name.clone()
+                    } else {
+                        "Unidentified contact".to_string()
+                    },
+                    format!("Contact · {}", npc_ship.id),
+                )
+            },
+        ),
+    }
 }
 
-fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if let Some(menu) = game.context_action_menu {
-        let entries = context_action_entries(game, menu.target);
-        let menu_rect = context_action_menu_rect(&menu, entries.len());
-        if is_mouse_button_pressed(MouseButton::Left) {
-            let selected = entries.iter().enumerate().find_map(|(index, entry)| {
-                context_action_entry_rect(menu_rect, index)
-                    .contains(mouse)
-                    .then_some((entry.action, entry.enabled))
-            });
-            game.context_action_menu = None;
-            if let Some((action, enabled)) = selected {
-                if enabled {
-                    execute_context_action(game, menu.target, action);
+fn apply_context_menu_outcome(
+    game: &mut GameState,
+    outcome: Option<egui_context_menu::ContextMenuOutcome>,
+) {
+    let Some(outcome) = outcome else {
+        return;
+    };
+    let Some(menu) = game.context_action_menu.clone() else {
+        return;
+    };
+
+    match outcome {
+        egui_context_menu::ContextMenuOutcome::Choose(index) => match menu.content {
+            ContextMenuContent::Actions(target) => {
+                let selected = context_action_entries(game, target)
+                    .get(index)
+                    .map(|entry| (entry.action, entry.enabled));
+                game.context_action_menu = None;
+                if let Some((action, true)) = selected {
+                    execute_context_action(game, target, action);
                     game.audio.play(audio::AudioCue::Confirm);
                 } else {
                     game.audio.play(audio::AudioCue::Warning);
                 }
             }
+            ContextMenuContent::ChooseTarget(targets) => {
+                if let Some(target) = targets.get(index).copied() {
+                    select_context_target(game, target);
+                    game.context_action_menu = Some(ContextActionMenu {
+                        content: ContextMenuContent::Actions(target),
+                        position: menu.position,
+                    });
+                    game.audio.play(audio::AudioCue::Select);
+                } else {
+                    game.context_action_menu = None;
+                    game.audio.play(audio::AudioCue::Warning);
+                }
+            }
+        },
+        egui_context_menu::ContextMenuOutcome::Dismiss => {
+            game.context_action_menu = None;
+        }
+    }
+}
+
+fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if game.context_action_menu.is_some() {
+        if is_mouse_button_pressed(MouseButton::Left) {
+            // Egui owns hit-testing and click-away dismissal for an open menu.
             return true;
         }
         if is_mouse_button_pressed(MouseButton::Right) {
-            if let Some(target) = clicked_context_target(game, mouse) {
-                select_context_target(game, target);
-                game.inventory_open = false;
-                game.context_action_menu = Some(ContextActionMenu {
-                    target,
-                    position: mouse,
-                });
-            } else {
+            if !open_context_menu_at(game, mouse) {
                 game.context_action_menu = None;
             }
             return true;
@@ -9756,48 +9398,99 @@ fn handle_context_action_input(game: &mut GameState, mouse: Vec2) -> bool {
     if !is_mouse_button_pressed(MouseButton::Right) {
         return false;
     }
-    let Some(target) = clicked_context_target(game, mouse) else {
+    if !open_context_menu_at(game, mouse) {
         return false;
-    };
-    select_context_target(game, target);
-    game.inventory_open = false;
-    game.context_action_menu = Some(ContextActionMenu {
-        target,
-        position: mouse,
-    });
+    }
     game.audio.play(audio::AudioCue::Select);
     true
 }
 
-fn clicked_context_target(game: &GameState, mouse: Vec2) -> Option<ContextTarget> {
-    clicked_planet_index(
-        mouse,
-        &game.ship,
-        &game.planets,
-        &game.current_system_id,
-        game.camera_zoom,
-    )
-    .map(ContextTarget::Planet)
-    .or_else(|| {
-        clicked_station_index(
-            mouse,
-            &game.ship,
-            &game.stations,
-            &game.current_system_id,
-            game.camera_zoom,
-        )
-        .map(ContextTarget::Station)
-    })
-    .or_else(|| {
-        clicked_npc_ship_index(
-            mouse,
-            &game.ship,
-            &game.npc_ships,
-            &game.current_system_id,
-            game.camera_zoom,
-        )
-        .map(ContextTarget::NpcShip)
-    })
+fn open_context_menu_at(game: &mut GameState, mouse: Vec2) -> bool {
+    let Some(content) = context_menu_content_at(game, mouse) else {
+        return false;
+    };
+    if let ContextMenuContent::Actions(target) = &content {
+        select_context_target(game, *target);
+    }
+    game.inventory_open = false;
+    game.context_action_menu = Some(ContextActionMenu {
+        content,
+        position: mouse,
+    });
+    true
+}
+
+fn context_menu_content_at(game: &GameState, mouse: Vec2) -> Option<ContextMenuContent> {
+    context_menu_content_for_candidates(context_target_candidates(game, mouse))
+}
+
+fn context_menu_content_for_candidates(
+    mut candidates: Vec<ContextTargetCandidate>,
+) -> Option<ContextMenuContent> {
+    candidates.sort_by(|left, right| left.cursor_distance.total_cmp(&right.cursor_distance));
+    let nearest = candidates.first()?;
+    let ambiguous = candidates
+        .iter()
+        .take_while(|candidate| {
+            candidate.cursor_distance - nearest.cursor_distance <= CONTEXT_TARGET_AMBIGUITY_PIXELS
+        })
+        .map(|candidate| candidate.target)
+        .collect::<Vec<_>>();
+    if ambiguous.len() > 1 {
+        Some(ContextMenuContent::ChooseTarget(ambiguous))
+    } else {
+        Some(ContextMenuContent::Actions(nearest.target))
+    }
+}
+
+fn context_target_candidates(game: &GameState, mouse: Vec2) -> Vec<ContextTargetCandidate> {
+    let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
+    let mut candidates = Vec::new();
+
+    for (index, planet) in game.planets.iter().enumerate() {
+        if !planet_is_in_system(planet, &game.current_system_id) {
+            continue;
+        }
+        let screen_position =
+            world_to_screen(planet.position, center, &game.ship, game.camera_zoom);
+        let cursor_distance = mouse.distance(screen_position);
+        if cursor_distance <= planet_interaction_radius(planet) * game.camera_zoom {
+            candidates.push(ContextTargetCandidate {
+                target: ContextTarget::Planet(index),
+                cursor_distance,
+            });
+        }
+    }
+    for (index, station) in game.stations.iter().enumerate() {
+        if !station_is_in_system(station, &game.current_system_id) {
+            continue;
+        }
+        let screen_position =
+            world_to_screen(station.position, center, &game.ship, game.camera_zoom);
+        let cursor_distance = mouse.distance(screen_position);
+        if cursor_distance <= station_interaction_radius(station) * game.camera_zoom {
+            candidates.push(ContextTargetCandidate {
+                target: ContextTarget::Station(index),
+                cursor_distance,
+            });
+        }
+    }
+    for (index, npc_ship) in game.npc_ships.iter().enumerate() {
+        if !npc_ship_is_in_system(npc_ship, &game.current_system_id) {
+            continue;
+        }
+        let screen_position =
+            world_to_screen(npc_ship.position, center, &game.ship, game.camera_zoom);
+        let cursor_distance = mouse.distance(screen_position);
+        if cursor_distance <= npc_ship_click_radius(npc_ship, game.camera_zoom) {
+            candidates.push(ContextTargetCandidate {
+                target: ContextTarget::NpcShip(index),
+                cursor_distance,
+            });
+        }
+    }
+
+    candidates
 }
 
 fn select_context_target(game: &mut GameState, target: ContextTarget) {
@@ -9967,46 +9660,49 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         ApproachTarget::Planet(index) => game.planets.get(index).and_then(|planet| {
             planet_is_in_system(planet, &game.current_system_id).then_some((
                 planet.position,
-                planet_interaction_radius(planet),
-                planet.radius,
+                body_approach_stop_radius(planet.radius, planet_interaction_radius(planet)),
             ))
+        }),
+        ApproachTarget::PlanetOrbit(index) => game.planets.get(index).and_then(|planet| {
+            planet_is_in_system(planet, &game.current_system_id)
+                .then_some((planet_orbit_position(planet, game.ship.position), 0.0))
         }),
         ApproachTarget::Station(index) => game.stations.get(index).and_then(|station| {
             station_is_in_system(station, &game.current_system_id).then_some((
                 station.position,
-                station_interaction_radius(station),
-                station.radius,
+                body_approach_stop_radius(station.radius, station_interaction_radius(station)),
             ))
         }),
         ApproachTarget::NpcShip(index) => game.npc_ships.get(index).and_then(|npc_ship| {
-            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0).then_some((
-                npc_ship.position,
-                npc_ship_interaction_radius(npc_ship),
-                npc_ship.radius,
-            ))
+            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0)
+                .then_some((npc_ship.position, npc_ship_interaction_radius(npc_ship)))
         }),
     };
 
-    let Some((target_position, interaction_radius, target_radius)) = target_state else {
-        game.approach_target = None;
-        push_operation_feedback(
-            game,
-            "Autopilot",
-            "Approach target is no longer available".to_string(),
-        );
+    let Some((target_position, safe_distance)) = target_state else {
+        if game.navigation_route_active {
+            pause_navigation_route(
+                game,
+                Some("Itinerary paused: approach target is no longer available"),
+            );
+        } else {
+            game.approach_target = None;
+            push_operation_feedback(
+                game,
+                "Autopilot",
+                "Approach target is no longer available".to_string(),
+            );
+        }
         return;
     };
 
     let offset = target_position - game.ship.position;
-    let safe_distance =
-        interaction_radius.max(target_radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN);
     let distance = offset.length();
     let remaining_distance = distance - safe_distance;
     if remaining_distance <= 0.0 {
         game.ship.velocity = Vec2::ZERO;
         game.ship.angular_velocity = 0.0;
-        game.approach_target = None;
-        push_operation_feedback(game, "Autopilot", "Approach target reached".to_string());
+        complete_ship_approach(game, target);
         return;
     }
 
@@ -10039,8 +9735,7 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         game.ship.position = target_position - direction * safe_distance;
         game.ship.velocity = Vec2::ZERO;
         game.ship.angular_velocity = 0.0;
-        game.approach_target = None;
-        push_operation_feedback(game, "Autopilot", "Approach target reached".to_string());
+        complete_ship_approach(game, target);
     } else {
         game.ship.position += movement;
     }
@@ -10048,6 +9743,35 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         .systems
         .energy
         .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
+}
+
+fn complete_ship_approach(game: &mut GameState, target: ApproachTarget) {
+    game.ship.velocity = Vec2::ZERO;
+    game.ship.angular_velocity = 0.0;
+    game.approach_target = None;
+    if let ApproachTarget::PlanetOrbit(planet_index) = target {
+        if game
+            .planets
+            .get(planet_index)
+            .is_some_and(|planet| planet_is_in_system(planet, &game.current_system_id))
+        {
+            game.orbiting_planet = Some(planet_index);
+            game.save_dirty = true;
+            push_operation_feedback(game, "Orbit", "Stable orbit established".to_string());
+            return;
+        }
+    }
+    push_operation_feedback(game, "Autopilot", "Approach target reached".to_string());
+    if let ApproachTarget::Planet(planet_index) = target {
+        advance_navigation_route_after_arrival(game, planet_index);
+    }
+}
+
+fn body_approach_stop_radius(target_radius: f32, interaction_radius: f32) -> f32 {
+    let non_overlapping_radius = target_radius + SHIP_RADIUS;
+    let preferred_radius = non_overlapping_radius + AUTOPILOT_CLEARANCE_MARGIN;
+    let inside_interaction_radius = interaction_radius - AUTOPILOT_INTERACTION_INSET;
+    preferred_radius.min(inside_interaction_radius.max(non_overlapping_radius))
 }
 
 fn stop_following(game: &mut GameState, message: &str) {
@@ -10193,36 +9917,39 @@ fn handle_escape_dialog_input(game: &mut GameState) {
         return;
     }
 
+    if is_key_pressed(KeyCode::R) {
+        apply_escape_dialog_action(game, EscapeDialogAction::ResetMenus);
+        return;
+    }
+
     if is_key_pressed(KeyCode::T) {
         apply_escape_dialog_action(game, EscapeDialogAction::SaveToTitle);
         return;
     }
 
-    if is_key_pressed(KeyCode::Q) {
-        if apply_escape_dialog_action(game, EscapeDialogAction::QuitDesktop)
-            == EscapeDialogResult::QuitDesktop
-        {
-            macroquad::miniquad::window::quit();
-        }
-        return;
-    }
-
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return;
-    }
-
-    let mouse = vec2(mouse_position().0, mouse_position().1);
-    if escape_dialog_resume_button_rect().contains(mouse) {
-        apply_escape_dialog_action(game, EscapeDialogAction::Resume);
-    } else if escape_dialog_save_button_rect().contains(mouse) {
-        apply_escape_dialog_action(game, EscapeDialogAction::SaveNow);
-    } else if escape_dialog_title_button_rect().contains(mouse) {
-        apply_escape_dialog_action(game, EscapeDialogAction::SaveToTitle);
-    } else if escape_dialog_quit_button_rect().contains(mouse)
+    if is_key_pressed(KeyCode::Q)
         && apply_escape_dialog_action(game, EscapeDialogAction::QuitDesktop)
             == EscapeDialogResult::QuitDesktop
     {
         macroquad::miniquad::window::quit();
+    }
+}
+
+fn apply_escape_ui_actions(game: &mut GameState, actions: Vec<egui_escape::EscapeUiAction>) {
+    for action in actions {
+        let action = match action {
+            egui_escape::EscapeUiAction::Resume => EscapeDialogAction::Resume,
+            egui_escape::EscapeUiAction::SaveNow => EscapeDialogAction::SaveNow,
+            egui_escape::EscapeUiAction::ResetMenus => EscapeDialogAction::ResetMenus,
+            egui_escape::EscapeUiAction::SaveToTitle => EscapeDialogAction::SaveToTitle,
+            egui_escape::EscapeUiAction::QuitDesktop => EscapeDialogAction::QuitDesktop,
+        };
+        if apply_escape_dialog_action(game, action) == EscapeDialogResult::QuitDesktop {
+            macroquad::miniquad::window::quit();
+        }
+        if !game.escape_dialog_open {
+            break;
+        }
     }
 }
 
@@ -10239,13 +9966,25 @@ fn apply_escape_dialog_action(
             save_game_now(game, SaveFeedback::Manual);
             EscapeDialogResult::Continue
         }
+        EscapeDialogAction::ResetMenus => {
+            reset_egui_menu_layout();
+            reset_starmap_panel_geometry(game);
+            push_operation_feedback(
+                game,
+                "UI",
+                "Menu positions and map geometry restored; pins cleared".to_string(),
+            );
+            EscapeDialogResult::Continue
+        }
         EscapeDialogAction::SaveToTitle => {
+            flush_egui_layout();
             save_game_now(game, SaveFeedback::Manual);
             game.escape_dialog_open = false;
             game.quit_to_title_requested = true;
             EscapeDialogResult::Continue
         }
         EscapeDialogAction::QuitDesktop => {
+            flush_egui_layout();
             save_game_now(game, SaveFeedback::Manual);
             EscapeDialogResult::QuitDesktop
         }
@@ -10414,263 +10153,6 @@ fn transition_target_system_id(
         .cloned()
 }
 
-struct ContentBrowserLayout {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    column_y: f32,
-    column_width: f32,
-    column_gap: f32,
-    row_height: f32,
-    viewport_height: f32,
-}
-
-struct ContentColumnRender<'a> {
-    title: &'a str,
-    x: f32,
-    y: f32,
-    width: f32,
-    row_height: f32,
-    viewport_height: f32,
-    scroll: f32,
-    rows: &'a [String],
-    selected_row: Option<usize>,
-}
-
-struct StationDetailRender<'a> {
-    content_registry: &'a content::ContentRegistry,
-    station: &'a StationDestination,
-    selected_service: Option<usize>,
-    in_range: bool,
-    distance: f32,
-    operation_feedback: &'a [OperationFeedback],
-    x: f32,
-    y: f32,
-    width: f32,
-}
-
-struct PlanetDetailRender<'a> {
-    content_registry: &'a content::ContentRegistry,
-    planet: &'a Planet,
-    in_range: bool,
-    is_orbiting: bool,
-    operation_feedback: &'a [OperationFeedback],
-    x: f32,
-    y: f32,
-    width: f32,
-}
-
-struct RecipeTableInput<'a> {
-    content_registry: &'a content::ContentRegistry,
-    recipes: &'a [Recipe],
-    settings: &'a mut [CraftSetting],
-    locked_recipes: &'a [String],
-    completed_research: &'a [String],
-    mouse: Vec2,
-    wheel: f32,
-    scroll: f32,
-    action_rail_width: Option<f32>,
-}
-
-struct PlanetActionRailRender<'a> {
-    content_registry: &'a content::ContentRegistry,
-    planet: &'a Planet,
-    inventory: &'a Inventory,
-    ship_upgrades: &'a [ShipUpgrade; SHIP_UPGRADE_COUNT],
-    action_rail_width: f32,
-    is_orbiting: bool,
-    in_range: bool,
-    scroll: f32,
-    mouse: Vec2,
-}
-
-struct StationActionRailRender<'a> {
-    content_registry: &'a content::ContentRegistry,
-    station: &'a StationDestination,
-    stations: &'a [StationDestination],
-    planets: &'a [Planet],
-    world_elapsed_days: f32,
-    selected_service: Option<usize>,
-    in_range: bool,
-    credits: u32,
-    inventory: &'a Inventory,
-    completed_research: &'a [String],
-    active_contracts: &'a [ActiveContract],
-    faction_reputation: &'a HashMap<String, i32>,
-    action_rail_width: f32,
-}
-
-struct StationTradeTableRender<'a> {
-    station: &'a StationDestination,
-    service: &'a StationService,
-    world_elapsed_days: f32,
-    in_range: bool,
-    credits: u32,
-    inventory: &'a Inventory,
-    action_rail_width: f32,
-    x: f32,
-    width: f32,
-}
-
-struct StationContractTableRender<'a> {
-    station: &'a StationDestination,
-    service: &'a StationService,
-    stations: &'a [StationDestination],
-    planets: &'a [Planet],
-    active_contracts: &'a [ActiveContract],
-    faction_reputation: &'a HashMap<String, i32>,
-    world_elapsed_days: f32,
-    in_range: bool,
-    action_rail_width: f32,
-    x: f32,
-    width: f32,
-}
-
-struct RecipeUnlockTableRender<'a> {
-    content_registry: &'a content::ContentRegistry,
-    station: &'a StationDestination,
-    service: &'a StationService,
-    stations: &'a [StationDestination],
-    planets: &'a [Planet],
-    in_range: bool,
-    credits: u32,
-    completed_research: &'a [String],
-    action_rail_width: f32,
-    x: f32,
-    width: f32,
-}
-
-fn content_browser_layout() -> ContentBrowserLayout {
-    let width = screen_width() * 0.8;
-    let height = screen_height() * 0.8;
-    let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5;
-    let column_gap = 14.0;
-    let column_width = (width - GAME_PANEL_CONTENT_PAD_X - 24.0 - column_gap * 4.0) / 5.0;
-    let column_y = y + 132.0;
-    let row_height = 23.0;
-    let viewport_height = (height - 172.0).max(row_height);
-
-    ContentBrowserLayout {
-        x,
-        y,
-        width,
-        height,
-        column_y,
-        column_width,
-        column_gap,
-        row_height,
-        viewport_height,
-    }
-}
-
-fn content_browser_column_rect(layout: &ContentBrowserLayout, column: usize) -> Rect {
-    Rect::new(
-        layout.x
-            + GAME_PANEL_CONTENT_PAD_X
-            + (layout.column_width + layout.column_gap) * column as f32,
-        layout.column_y + 18.0,
-        layout.column_width,
-        layout.viewport_height,
-    )
-}
-
-fn handle_content_browser_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
-    let layout = content_browser_layout();
-    let selected_pack_id = selected_content_pack_id(game).map(str::to_string);
-    let item_count = filtered_content_item_rows(game, selected_pack_id.as_deref()).len();
-    let recipe_count = filtered_content_recipe_rows(game, selected_pack_id.as_deref()).len();
-    let npc_ship_count = filtered_content_npc_ship_rows(game, selected_pack_id.as_deref()).len();
-    let planet_count = filtered_content_planet_rows(game, selected_pack_id.as_deref()).len();
-
-    if content_browser_column_rect(&layout, 0).contains(mouse) {
-        game.content_browser.packs_scroll = content_scrolled_offset(
-            game.content_browser.packs_scroll,
-            wheel,
-            game.content_registry.packs.len() + 1,
-            layout.row_height,
-            layout.viewport_height,
-        );
-    } else if content_browser_column_rect(&layout, 1).contains(mouse) {
-        game.content_browser.items_scroll = content_scrolled_offset(
-            game.content_browser.items_scroll,
-            wheel,
-            item_count,
-            layout.row_height,
-            layout.viewport_height,
-        );
-    } else if content_browser_column_rect(&layout, 2).contains(mouse) {
-        game.content_browser.recipes_scroll = content_scrolled_offset(
-            game.content_browser.recipes_scroll,
-            wheel,
-            recipe_count,
-            layout.row_height,
-            layout.viewport_height,
-        );
-    } else if content_browser_column_rect(&layout, 3).contains(mouse) {
-        game.content_browser.npc_ships_scroll = content_scrolled_offset(
-            game.content_browser.npc_ships_scroll,
-            wheel,
-            npc_ship_count,
-            layout.row_height,
-            layout.viewport_height,
-        );
-    } else if content_browser_column_rect(&layout, 4).contains(mouse) {
-        game.content_browser.planets_scroll = content_scrolled_offset(
-            game.content_browser.planets_scroll,
-            wheel,
-            planet_count,
-            layout.row_height,
-            layout.viewport_height,
-        );
-    }
-}
-
-fn handle_content_browser_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-
-    let layout = content_browser_layout();
-    let packs_rect = content_browser_column_rect(&layout, 0);
-    if !packs_rect.contains(mouse) {
-        return false;
-    }
-
-    let row = ((mouse.y - packs_rect.y + game.content_browser.packs_scroll) / layout.row_height)
-        .floor() as isize;
-    if row < 0 {
-        return false;
-    }
-
-    let row = row as usize;
-    if row == 0 {
-        game.content_browser.selected_pack_index = None;
-    } else if row - 1 < game.content_registry.packs.len() {
-        game.content_browser.selected_pack_index = Some(row - 1);
-    } else {
-        return false;
-    }
-
-    game.content_browser.items_scroll = 0.0;
-    game.content_browser.recipes_scroll = 0.0;
-    game.content_browser.npc_ships_scroll = 0.0;
-    game.content_browser.planets_scroll = 0.0;
-    true
-}
-
-fn content_scrolled_offset(
-    current: f32,
-    wheel: f32,
-    row_count: usize,
-    row_height: f32,
-    viewport_height: f32,
-) -> f32 {
-    let max_scroll = max_scroll_offset(row_count, row_height, viewport_height);
-    (current - wheel * row_height * 2.0).clamp(0.0, max_scroll)
-}
-
 fn selected_content_pack_id(game: &GameState) -> Option<&str> {
     game.content_browser
         .selected_pack_index
@@ -10817,12 +10299,14 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.context_action_menu = None;
     game.follow_target = None;
     game.approach_target = None;
+    game.navigation_route_active = false;
     game.orbiting_planet = None;
     game.destination_planet = destination_planet_for_system(
         &game.planets,
         &game.system_destinations,
         &game.current_system_id,
     );
+    game.starmap_selected_planet = game.destination_planet;
     game.ship.position = vec2(arrival[0], arrival[1]);
     game.ship.velocity = Vec2::ZERO;
     game.ship.angular_velocity = 0.0;
@@ -10840,6 +10324,195 @@ fn set_destination_planet(game: &mut GameState, destination_planet: Option<usize
     game.selected_npc_ship = None;
     game.selected_station_service = None;
     remember_current_system_destination(game);
+}
+
+fn navigation_stop_planet_index(game: &GameState, stop: &NavigationStop) -> Option<usize> {
+    game.planets
+        .iter()
+        .position(|planet| planet.id == stop.planet && planet.system == stop.system)
+}
+
+fn selected_starmap_navigation_stop(game: &GameState) -> Option<NavigationStop> {
+    game.starmap_selected_planet
+        .and_then(|index| game.planets.get(index))
+        .filter(|planet| planet.system == game.current_system_id)
+        .map(|planet| NavigationStop {
+            system: planet.system.clone(),
+            planet: planet.id.clone(),
+        })
+}
+
+fn fly_to_selected_starmap_planet(game: &mut GameState) -> bool {
+    let Some(stop) = selected_starmap_navigation_stop(game) else {
+        return false;
+    };
+    let Some(planet_index) = navigation_stop_planet_index(game, &stop) else {
+        return false;
+    };
+    pause_navigation_route(game, None);
+    set_destination_planet(game, Some(planet_index));
+    begin_approach(game, ApproachTarget::Planet(planet_index));
+    game.map_open = false;
+    game.save_dirty = true;
+    push_operation_feedback(game, "Route", "Flying to selected destination".to_string());
+    true
+}
+
+fn add_selected_starmap_planet_to_route(game: &mut GameState) -> bool {
+    let Some(stop) = selected_starmap_navigation_stop(game) else {
+        return false;
+    };
+    game.navigation_route.push(stop);
+    game.save_dirty = true;
+    push_operation_feedback(game, "Route", "Destination added to itinerary".to_string());
+    true
+}
+
+fn activate_navigation_route(game: &mut GameState) -> bool {
+    if game.navigation_route.is_empty() {
+        return false;
+    }
+    if game
+        .navigation_route_current
+        .is_none_or(|current| current >= game.navigation_route.len())
+    {
+        game.navigation_route_current = Some(0);
+    }
+    game.navigation_route_active = true;
+    if !start_current_navigation_stop(game) {
+        game.navigation_route_active = false;
+        return false;
+    }
+    game.map_open = false;
+    game.save_dirty = true;
+    true
+}
+
+fn start_current_navigation_stop(game: &mut GameState) -> bool {
+    let Some(current) = game.navigation_route_current else {
+        return false;
+    };
+    let Some(stop) = game.navigation_route.get(current).cloned() else {
+        return false;
+    };
+    if stop.system != game.current_system_id {
+        push_operation_feedback(
+            game,
+            "Route",
+            "Route paused: the next stop is in another system".to_string(),
+        );
+        return false;
+    }
+    let Some(planet_index) = navigation_stop_planet_index(game, &stop) else {
+        push_operation_feedback(
+            game,
+            "Route",
+            "Route paused: the next destination is unavailable".to_string(),
+        );
+        return false;
+    };
+    game.starmap_selected_planet = Some(planet_index);
+    set_destination_planet(game, Some(planet_index));
+    begin_approach(game, ApproachTarget::Planet(planet_index));
+    push_operation_feedback(
+        game,
+        "Route",
+        format!("Approaching itinerary stop {}", current + 1),
+    );
+    true
+}
+
+fn pause_navigation_route(game: &mut GameState, message: Option<&str>) {
+    if !game.navigation_route_active {
+        return;
+    }
+    game.navigation_route_active = false;
+    game.approach_target = None;
+    game.save_dirty = true;
+    if let Some(message) = message {
+        push_operation_feedback(game, "Route", message.to_string());
+    }
+}
+
+fn advance_navigation_route_after_arrival(game: &mut GameState, planet_index: usize) {
+    if !game.navigation_route_active {
+        return;
+    }
+    let Some(current) = game.navigation_route_current else {
+        return;
+    };
+    let Some(stop) = game.navigation_route.get(current) else {
+        game.navigation_route_active = false;
+        return;
+    };
+    let Some(planet) = game.planets.get(planet_index) else {
+        return;
+    };
+    if stop.system != planet.system || stop.planet != planet.id {
+        return;
+    }
+
+    let next = current + 1;
+    game.navigation_route_current = Some(next);
+    game.save_dirty = true;
+    if next >= game.navigation_route.len() {
+        game.navigation_route_active = false;
+        push_operation_feedback(game, "Route", "Itinerary complete".to_string());
+    } else if !start_current_navigation_stop(game) {
+        game.navigation_route_active = false;
+    }
+}
+
+fn clear_navigation_route(game: &mut GameState) {
+    if game.navigation_route_active {
+        game.approach_target = None;
+    }
+    game.navigation_route.clear();
+    game.navigation_route_current = None;
+    game.navigation_route_active = false;
+    game.save_dirty = true;
+}
+
+fn remove_navigation_route_stop(game: &mut GameState, index: usize) -> bool {
+    if game.navigation_route_active || index >= game.navigation_route.len() {
+        return false;
+    }
+    game.navigation_route.remove(index);
+    game.navigation_route_current = game.navigation_route_current.and_then(|current| {
+        if game.navigation_route.is_empty() {
+            None
+        } else if index < current {
+            Some(current - 1)
+        } else if index == current {
+            Some(current.min(game.navigation_route.len() - 1))
+        } else {
+            Some(current.min(game.navigation_route.len()))
+        }
+    });
+    game.save_dirty = true;
+    true
+}
+
+fn move_navigation_route_stop(game: &mut GameState, from: usize, to: usize) -> bool {
+    if game.navigation_route_active
+        || from >= game.navigation_route.len()
+        || to >= game.navigation_route.len()
+        || from == to
+    {
+        return false;
+    }
+    game.navigation_route.swap(from, to);
+    game.navigation_route_current = game.navigation_route_current.map(|current| {
+        if current == from {
+            to
+        } else if current == to {
+            from
+        } else {
+            current
+        }
+    });
+    game.save_dirty = true;
+    true
 }
 
 fn select_nearby_destination(game: &mut GameState) {
@@ -11111,179 +10784,6 @@ fn update_window_size_memory(game: &mut GameState, dt: f32) {
     }
 }
 
-fn handle_research_tree_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-
-    if let Some(research_id) = game.selected_research.clone() {
-        if research_start_button_rect(research_detail_rect()).contains(mouse) {
-            return start_research(game, &research_id);
-        }
-    }
-
-    let Some(research_id) = hovered_research_node_id(game, mouse) else {
-        return false;
-    };
-    game.selected_research = Some(research_id);
-    true
-}
-
-fn handle_ship_upgrades_input(game: &mut GameState, mouse: Vec2) -> bool {
-    let Some(upgrade_index) =
-        hovered_ship_upgrade_plus(mouse, game.ship_upgrades.len(), game.upgrades_scroll)
-    else {
-        return false;
-    };
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-
-    let levels_to_buy = work_setting_step();
-    for _ in 0..levels_to_buy {
-        if !buy_ship_upgrade(game, upgrade_index) {
-            break;
-        }
-    }
-    true
-}
-
-fn handle_ship_upgrades_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
-    let origin = ship_upgrade_table_origin();
-    let (_, _, panel_width, _) = ship_upgrades_panel_rect();
-    let viewport_top = ship_upgrades_table_viewport_top();
-    let viewport_height = ship_upgrades_table_viewport_height();
-    let viewport = Rect::new(origin.x, viewport_top, panel_width - 56.0, viewport_height);
-
-    if viewport.contains(mouse) {
-        game.upgrades_scroll = content_scrolled_offset(
-            game.upgrades_scroll,
-            wheel,
-            game.ship_upgrades.len(),
-            SHIP_UPGRADE_ROW_HEIGHT,
-            viewport_height,
-        );
-    }
-}
-
-fn inventory_turret_ids(
-    content_registry: &content::ContentRegistry,
-    inventory: &Inventory,
-) -> Vec<String> {
-    content_registry
-        .weapon_order
-        .iter()
-        .filter_map(|weapon_id| {
-            let weapon = content_registry.weapons.get(weapon_id)?;
-            if weapon.kind != content::WeaponKind::TurretDefense {
-                return None;
-            }
-            let install_item = registry_item(content_registry, &weapon.install_item)?;
-            (inventory.count(&install_item) > 0).then(|| weapon_id.clone())
-        })
-        .collect()
-}
-
-fn handle_production_table_input(game: &mut GameState, mouse: Vec2, wheel: f32) -> bool {
-    let action_rail_width = selected_action_rail_width(game);
-    if let Some(mode) = clicked_production_mode(mouse, action_rail_width) {
-        if is_mouse_button_pressed(MouseButton::Left) {
-            game.production_mode = mode;
-            game.work_scroll = 0.0;
-            return true;
-        }
-    }
-
-    match game.production_mode {
-        ProductionMode::Smelting => handle_recipe_table_input(RecipeTableInput {
-            content_registry: &game.content_registry,
-            recipes: &game.smelt_recipes,
-            settings: &mut game.smelt_settings,
-            locked_recipes: &game.recipe_vendor_locked_recipes,
-            completed_research: &game.completed_research,
-            mouse,
-            wheel,
-            scroll: game.work_scroll,
-            action_rail_width,
-        }),
-        ProductionMode::Crafting => handle_recipe_table_input(RecipeTableInput {
-            content_registry: &game.content_registry,
-            recipes: &game.craft_recipes,
-            settings: &mut game.craft_settings,
-            locked_recipes: &game.recipe_vendor_locked_recipes,
-            completed_research: &game.completed_research,
-            mouse,
-            wheel,
-            scroll: game.work_scroll,
-            action_rail_width,
-        }),
-        ProductionMode::Processing => handle_recipe_table_input(RecipeTableInput {
-            content_registry: &game.content_registry,
-            recipes: &game.processing_recipes,
-            settings: &mut game.processing_settings,
-            locked_recipes: &game.recipe_vendor_locked_recipes,
-            completed_research: &game.completed_research,
-            mouse,
-            wheel,
-            scroll: game.work_scroll,
-            action_rail_width,
-        }),
-    }
-}
-
-fn handle_recipe_table_input(input: RecipeTableInput<'_>) -> bool {
-    let RecipeTableInput {
-        content_registry,
-        recipes,
-        settings,
-        locked_recipes,
-        completed_research,
-        mouse,
-        wheel,
-        scroll,
-        action_rail_width,
-    } = input;
-    let Some((recipe_index, column)) =
-        hovered_work_cell(mouse, recipes.len(), scroll, action_rail_width)
-    else {
-        return false;
-    };
-    if !recipe_is_unlocked_from_sets(
-        content_registry,
-        &recipes[recipe_index].id,
-        locked_recipes,
-        completed_research,
-    ) {
-        return true;
-    }
-
-    let setting = &mut settings[recipe_index];
-    let step = work_setting_step();
-
-    if wheel > 0.0 {
-        adjust_work_setting(&mut setting.keep, column, step);
-    } else if wheel < 0.0 {
-        adjust_work_setting(&mut setting.keep, column, -step);
-    }
-
-    if is_mouse_button_pressed(MouseButton::Left) {
-        match column {
-            WorkColumn::Item => {
-                setting.queued = setting.queued.saturating_add(1).min(999);
-            }
-            WorkColumn::Keep => adjust_work_setting(&mut setting.keep, column, step),
-        }
-        return true;
-    }
-
-    if is_mouse_button_pressed(MouseButton::Right) {
-        adjust_work_setting(&mut setting.keep, column, -step);
-        return true;
-    }
-
-    false
-}
-
 fn recipe_is_unlocked_from_sets(
     content_registry: &content::ContentRegistry,
     recipe_id: &str,
@@ -11292,95 +10792,6 @@ fn recipe_is_unlocked_from_sets(
 ) -> bool {
     !locked_recipes.iter().any(|locked| locked == recipe_id)
         || completed_research_unlocks_recipe(content_registry, completed_research, recipe_id)
-}
-
-fn handle_planet_scan_input(game: &mut GameState, planet_index: usize, mouse: Vec2) -> bool {
-    let Some(planet) = game.planets.get(planet_index) else {
-        return false;
-    };
-    let rail_width = action_rail_width_with_override(planet_action_rail_width(planet), game);
-    if !is_mouse_button_pressed(MouseButton::Left)
-        || !planet_scan_button_rect(rail_width).contains(mouse)
-    {
-        return false;
-    }
-    if !planet_in_active_system(game, planet_index) {
-        return false;
-    }
-
-    launch_planet_scan(game, planet_index);
-    true
-}
-
-fn handle_planet_orbit_input(game: &mut GameState, planet_index: usize, mouse: Vec2) -> bool {
-    let Some(planet) = game.planets.get(planet_index) else {
-        return false;
-    };
-    let rail_width = action_rail_width_with_override(planet_action_rail_width(planet), game);
-    if !is_mouse_button_pressed(MouseButton::Left)
-        || !planet_orbit_button_rect(rail_width).contains(mouse)
-    {
-        return false;
-    }
-
-    enter_planet_orbit(game, planet_index);
-    true
-}
-
-fn handle_station_service_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
-    if handle_station_contract_input(game, station_index, mouse) {
-        return true;
-    }
-    if handle_station_repair_input(game, station_index, mouse) {
-        return true;
-    }
-    if handle_station_recipe_unlock_input(game, station_index, mouse) {
-        return true;
-    }
-    if handle_station_trade_input(game, station_index, mouse) {
-        return true;
-    }
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(station) = game.stations.get(station_index) else {
-        return false;
-    };
-    if !station_is_in_system(station, &game.current_system_id) {
-        return false;
-    }
-    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    let Some(service_index) = hovered_station_service_index(station, mouse, rail_width) else {
-        return false;
-    };
-
-    select_station_service(game, station_index, service_index)
-}
-
-fn handle_station_repair_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(station) = game.stations.get(station_index) else {
-        return false;
-    };
-    let Some(service_index) = game.selected_station_service else {
-        return false;
-    };
-    let Some(service) = station.services.get(service_index) else {
-        return false;
-    };
-    if !station_service_is_available(game, station, service) {
-        return true;
-    }
-    if service.kind != "garage" {
-        return false;
-    }
-    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    if !repair_button_rect(station, rail_width).contains(mouse) {
-        return false;
-    }
-    repair_ship_at_station(game, station_index)
 }
 
 fn repair_ship_at_station(game: &mut GameState, station_index: usize) -> bool {
@@ -11439,36 +10850,6 @@ fn repair_ship_at_station(game: &mut GameState, station_index: usize) -> bool {
         .and_then(|station| station.faction.clone());
     adjust_faction_reputation(game, station_faction.as_deref(), 1);
     true
-}
-
-fn handle_station_contract_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(service_index) = game.selected_station_service else {
-        return false;
-    };
-    let Some(station) = game.stations.get(station_index) else {
-        return false;
-    };
-    let Some(service) = station.services.get(service_index) else {
-        return false;
-    };
-    if !station_service_is_available(game, station, service) {
-        return true;
-    }
-    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    let Some(contract_index) = hovered_station_contract_index(
-        station,
-        service,
-        &game.stations,
-        &game.planets,
-        mouse,
-        rail_width,
-    ) else {
-        return false;
-    };
-    accept_or_complete_contract(game, station_index, service_index, contract_index)
 }
 
 fn accept_or_complete_contract(
@@ -11598,58 +10979,6 @@ fn contract_progress_text(game: &GameState, contract: &ContractOffer) -> String 
     } else {
         format!("Scan target planet to level {}", contract.amount)
     }
-}
-
-fn handle_npc_ship_interaction_input(
-    game: &mut GameState,
-    npc_ship_index: usize,
-    mouse: Vec2,
-    wheel: f32,
-) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
-        return false;
-    };
-    if !npc_ship_is_in_system(npc_ship, &game.current_system_id) {
-        return false;
-    }
-    if npc_ship.trade_open {
-        return handle_npc_trade_input(game, npc_ship_index, mouse, wheel);
-    }
-    let rows = npc_interaction_rows(&game.content_registry, &game.ship, npc_ship);
-    let rail_width = selected_action_rail_width(game).unwrap_or_else(|| {
-        npc_ship_action_rail_width(&game.content_registry, &game.ship, npc_ship)
-    });
-    let Some(row_index) = hovered_npc_interaction_row_index(mouse, rows.len(), rail_width) else {
-        return false;
-    };
-    let Some(row) = rows.get(row_index) else {
-        return false;
-    };
-    if row.state != NpcInteractionState::Available {
-        return true;
-    }
-    match row.action {
-        NpcInteractionAction::Identify => {
-            identify_selected_npc_ship(game);
-        }
-        NpcInteractionAction::Hail => {
-            if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
-                let rumor = npc_ship_rumor(game, npc_ship);
-                push_operation_feedback(game, "Rumor", rumor);
-            }
-        }
-        NpcInteractionAction::Trade => {
-            if let Some(npc_ship) = game.npc_ships.get_mut(npc_ship_index) {
-                npc_ship.trade_open = true;
-                game.npc_trade_quantity = 1;
-            }
-        }
-        NpcInteractionAction::Dock | NpcInteractionAction::Conflict => {}
-    }
-    true
 }
 
 fn npc_interaction_rows(
@@ -11785,90 +11114,25 @@ fn npc_ship_rumor(game: &GameState, npc_ship: &NpcShip) -> String {
     )
 }
 
-fn npc_trade_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    ui_table_layout_until_bottom(UiTableBottomLayout {
-        x,
-        y,
-        width,
-        row_start_offset: 68.0,
-        viewport_bottom: action_table_bottom(),
-        row_height: 42.0,
-        column_gap: 8.0,
-        columns: &[
-            ui_column_spec_flex(150.0, 1.0),
-            ui_column_spec_fixed(92.0),
-            ui_column_spec_fixed(82.0),
-            ui_column_spec_fixed(82.0),
-        ],
-    })
-}
-
-fn handle_npc_trade_input(
+fn execute_npc_trade(
     game: &mut GameState,
     npc_ship_index: usize,
-    mouse: Vec2,
-    wheel: f32,
+    row: usize,
+    action: NpcTradeAction,
 ) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) && wheel == 0.0 {
-        return false;
-    }
     let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
         return false;
     };
-    let npc_name = npc_ship.name.clone();
     if !npc_ship.identified
         || !npc_ship_in_interaction_range(&game.ship, npc_ship)
         || !npc_ship_can_trade(&game.content_registry, npc_ship)
     {
         return true;
     }
-    let rail_width = selected_action_rail_width(game).unwrap_or_else(|| {
-        npc_ship_action_rail_width(&game.content_registry, &game.ship, npc_ship)
-    });
-    let layout = npc_trade_table_layout(
-        action_rail_rect(rail_width).x + 12.0,
-        action_rail_rect(rail_width).y + 48.0,
-        rail_width - 24.0,
-    );
-    let Some(cell) = ui_hovered_table_cell(mouse, &layout, npc_ship.cargo_defaults.len(), 0.0)
-    else {
-        return true;
+    let Some(stack) = npc_ship.cargo_defaults.get(row).cloned() else {
+        return false;
     };
-    let row = ui_table_row_rect(&layout, cell.row, 0.0);
-    let quantity_column = layout.columns[1];
-    let quantity_rect = Rect::new(quantity_column.x, row.y, quantity_column.w, row.h);
-    let quantity_control_rect = Rect::new(quantity_column.x, row.y + 8.0, quantity_column.w, 22.0);
-    if wheel != 0.0 {
-        let step = work_setting_step() as u32;
-        game.npc_trade_quantity = if wheel > 0.0 {
-            game.npc_trade_quantity.saturating_add(step)
-        } else {
-            game.npc_trade_quantity.saturating_sub(step).max(1)
-        };
-        game.npc_trade_quantity = game.npc_trade_quantity.min(999);
-        return true;
-    }
-    if quantity_rect.contains(mouse) {
-        let step = work_setting_step() as u32;
-        match npc_trade_quantity_control_delta(mouse, quantity_control_rect) {
-            Some(-1) => {
-                game.npc_trade_quantity = game.npc_trade_quantity.saturating_sub(step).max(1);
-            }
-            Some(1) => {
-                game.npc_trade_quantity = game.npc_trade_quantity.saturating_add(step).min(999);
-            }
-            _ => {}
-        }
-        return true;
-    }
-    let action = match cell.column {
-        2 => NpcTradeAction::Buy,
-        3 => NpcTradeAction::Sell,
-        _ => return true,
-    };
-    let Some(stack) = npc_ship.cargo_defaults.get(cell.row) else {
-        return true;
-    };
+    let npc_name = npc_ship.name.clone();
     let item = stack.item.clone();
     let quote = npc_trade_quote(
         npc_ship,
@@ -11881,13 +11145,13 @@ fn handle_npc_trade_input(
             game.credits,
             &game.inventory,
             &game.ship_upgrades,
-            stack,
+            &stack,
             &quote,
             game.npc_trade_quantity,
         ),
         NpcTradeAction::Sell => npc_trade_sell_amount(
             npc_ship,
-            stack,
+            &stack,
             game.inventory.count(&item),
             game.npc_trade_quantity,
         ),
@@ -11902,8 +11166,8 @@ fn handle_npc_trade_input(
                 .saturating_sub(quote.buy_price.saturating_mul(amount));
             game.inventory.add_item(item.clone(), amount);
             if let Some(npc) = game.npc_ships.get_mut(npc_ship_index) {
-                npc.cargo_defaults[cell.row].count =
-                    npc.cargo_defaults[cell.row].count.saturating_sub(amount);
+                npc.cargo_defaults[row].count =
+                    npc.cargo_defaults[row].count.saturating_sub(amount);
             }
             game.save_dirty = true;
             push_operation_feedback(
@@ -11921,7 +11185,7 @@ fn handle_npc_trade_input(
         NpcTradeAction::Sell => {
             game.inventory.remove_item(&item, amount);
             if let Some(npc) = game.npc_ships.get_mut(npc_ship_index) {
-                npc.cargo_defaults[cell.row].count += amount;
+                npc.cargo_defaults[row].count += amount;
             }
             game.credits = game
                 .credits
@@ -11941,20 +11205,6 @@ fn handle_npc_trade_input(
         }
     }
     true
-}
-
-fn npc_trade_quantity_control_delta(mouse: Vec2, rect: Rect) -> Option<i32> {
-    if !rect.contains(mouse) {
-        return None;
-    }
-    let position = (mouse.x - rect.x) / rect.w;
-    if position < 0.35 {
-        Some(-1)
-    } else if position > 0.65 {
-        Some(1)
-    } else {
-        Some(0)
-    }
 }
 
 fn npc_trade_buy_amount(
@@ -12022,49 +11272,6 @@ fn npc_ship_is_hostile(content_registry: &content::ContentRegistry, npc_ship: &N
         })
 }
 
-fn hovered_npc_interaction_row_index(
-    mouse: Vec2,
-    row_count: usize,
-    action_rail_width: f32,
-) -> Option<usize> {
-    let overlay = inventory_overlay_layout(Some(action_rail_width));
-    let rail = overlay.action_rail?;
-    let table = npc_interaction_table_layout(rail.x + 12.0, rail.y + 48.0, rail.w - 24.0);
-    ui_hovered_table_cell(mouse, &table, row_count, 0.0).map(|cell| cell.row)
-}
-
-fn handle_station_recipe_unlock_input(
-    game: &mut GameState,
-    station_index: usize,
-    mouse: Vec2,
-) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(service_index) = game.selected_station_service else {
-        return false;
-    };
-    let Some(station) = game.stations.get(station_index) else {
-        return false;
-    };
-    let Some(service) = station.services.get(service_index) else {
-        return false;
-    };
-    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    let Some(unlock_index) = hovered_recipe_unlock_index(
-        station,
-        service,
-        &game.stations,
-        &game.planets,
-        mouse,
-        rail_width,
-    ) else {
-        return false;
-    };
-
-    purchase_recipe_unlock(game, station_index, service_index, unlock_index)
-}
-
 fn purchase_recipe_unlock(
     game: &mut GameState,
     station_index: usize,
@@ -12116,39 +11323,6 @@ fn purchase_recipe_unlock(
         ),
     );
     true
-}
-
-fn handle_station_trade_input(game: &mut GameState, station_index: usize, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let Some(service_index) = game.selected_station_service else {
-        return false;
-    };
-    let Some(station) = game.stations.get(station_index) else {
-        return false;
-    };
-    if !station_is_in_system(station, &game.current_system_id) {
-        return false;
-    }
-    let Some(service) = station.services.get(service_index) else {
-        return false;
-    };
-    let rail_width = action_rail_width_with_override(station_action_rail_width(station), game);
-    let Some((offer_index, action)) =
-        hovered_station_trade_action(station, service, mouse, rail_width)
-    else {
-        return false;
-    };
-
-    match action {
-        StationTradeAction::Buy => {
-            buy_station_trade_offer(game, station_index, service_index, offer_index)
-        }
-        StationTradeAction::Sell => {
-            sell_station_trade_offer(game, station_index, service_index, offer_index)
-        }
-    }
 }
 
 fn select_station_service(
@@ -12304,95 +11478,6 @@ fn sell_station_trade_offer(
     true
 }
 
-fn hovered_station_service_index(
-    station: &StationDestination,
-    mouse: Vec2,
-    action_rail_width: f32,
-) -> Option<usize> {
-    station
-        .services
-        .iter()
-        .enumerate()
-        .find(|(index, _)| {
-            station_service_button_rect(station, *index, action_rail_width).contains(mouse)
-        })
-        .map(|(index, _)| index)
-}
-
-#[derive(Clone, Copy)]
-enum StationTradeAction {
-    Buy,
-    Sell,
-}
-
-fn hovered_station_trade_action(
-    station: &StationDestination,
-    service: &StationService,
-    mouse: Vec2,
-    action_rail_width: f32,
-) -> Option<(usize, StationTradeAction)> {
-    let layout = station_action_layout(station, action_rail_width);
-    let y = station_trade_table_y(station, action_rail_width);
-
-    if layout.detail.w <= 0.0 {
-        return None;
-    }
-
-    let table = station_trade_table_layout(layout.detail.x, y, layout.detail.w);
-    ui_hovered_table_cell(mouse, &table, service.trade.len(), 0.0).and_then(|cell| {
-        let action = match cell.column {
-            1 => StationTradeAction::Buy,
-            2 => StationTradeAction::Sell,
-            _ => return None,
-        };
-        Some((cell.row, action))
-    })
-}
-
-fn hovered_recipe_unlock_index(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    mouse: Vec2,
-    action_rail_width: f32,
-) -> Option<usize> {
-    let layout = station_action_layout(station, action_rail_width);
-    let y = recipe_unlock_table_y(station, service, stations, planets, action_rail_width);
-    if layout.detail.w <= 0.0 {
-        return None;
-    }
-
-    let table = recipe_unlock_table_layout(layout.detail.x, y, layout.detail.w);
-    ui_hovered_table_cell(mouse, &table, service.recipe_unlocks.len(), 0.0).map(|cell| cell.row)
-}
-
-fn hovered_station_contract_index(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    mouse: Vec2,
-    action_rail_width: f32,
-) -> Option<usize> {
-    service
-        .contracts
-        .iter()
-        .enumerate()
-        .find(|(index, _)| {
-            station_contract_card_rect(
-                station,
-                service,
-                stations,
-                planets,
-                *index,
-                action_rail_width,
-            )
-            .contains(mouse)
-        })
-        .map(|(index, _)| index)
-}
-
 fn launch_planet_scan(game: &mut GameState, planet_index: usize) -> bool {
     let Some(planet) = game.planets.get(planet_index) else {
         return false;
@@ -12451,174 +11536,12 @@ fn launch_planet_scan(game: &mut GameState, planet_index: usize) -> bool {
     false
 }
 
-fn handle_mining_table_input(
-    game: &mut GameState,
-    planet_index: usize,
-    mouse: Vec2,
-    wheel: f32,
-) -> bool {
-    if !planet_in_active_system(game, planet_index) {
-        return false;
-    }
-    let Some(planet) = game.planets.get(planet_index) else {
-        return false;
-    };
-    if !planet_has_composition_scan(planet) {
-        return false;
-    }
-    let rail_width = action_rail_width_with_override(planet_action_rail_width(planet), game);
-    let Some((mineable_index, column)) = hovered_work_cell_with_action_rail(
-        mouse,
-        planet.info.mineables.len(),
-        game.work_scroll,
-        rail_width,
-    ) else {
-        return false;
-    };
-
-    let in_range = planet_in_interaction_range(&game.ship, planet);
-    let Some(planet) = game.planets.get_mut(planet_index) else {
-        return false;
-    };
-    let setting = &mut planet.mining[mineable_index];
-    let step = work_setting_step();
-
-    if wheel > 0.0 {
-        adjust_work_setting(&mut setting.keep, column, step);
-    } else if wheel < 0.0 {
-        adjust_work_setting(&mut setting.keep, column, -step);
-    }
-
-    if is_mouse_button_pressed(MouseButton::Left) {
-        match column {
-            WorkColumn::Item if in_range => {
-                setting.queued = setting.queued.saturating_add(1).min(999);
-            }
-            WorkColumn::Item => {}
-            WorkColumn::Keep => adjust_work_setting(&mut setting.keep, column, step),
-        }
-        return true;
-    }
-
-    if is_mouse_button_pressed(MouseButton::Right) {
-        adjust_work_setting(&mut setting.keep, column, -step);
-        return true;
-    }
-
-    false
-}
-
-fn handle_inventory_overlay_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
-    let layout = inventory_overlay_layout(selected_action_rail_width(game));
-    let table_y = work_table_y();
-    let table_height = work_table_height();
-
-    if let Some(rail) = layout.action_rail.filter(|rail| rail.contains(mouse)) {
-        let row_count = game
-            .selected_planet
-            .and_then(|planet_index| game.planets.get(planet_index))
-            .filter(|planet| planet_has_composition_scan(planet))
-            .map(|planet| planet.info.mineables.len())
-            .unwrap_or(0);
-        if row_count > 0 {
-            game.work_scroll = scrolled_offset(
-                game.work_scroll,
-                wheel,
-                row_count,
-                (rail.h - 252.0).max(WORK_ROW_HEIGHT),
-            );
-        }
-    } else if Rect::new(
-        layout.production_x,
-        table_y,
-        layout.production_width,
-        table_height,
-    )
-    .contains(mouse)
-    {
-        let row_count = active_production_row_count(game);
-        let hovering_keep = hovered_work_cell(
-            mouse,
-            row_count,
-            game.work_scroll,
-            selected_action_rail_width(game),
-        )
-        .is_some_and(|(_, column)| column == WorkColumn::Keep);
-        if !hovering_keep {
-            game.work_scroll = scrolled_offset(game.work_scroll, wheel, row_count, table_height);
-        }
-    } else if Rect::new(
-        layout.inventory_x,
-        table_y,
-        layout.inventory_width,
-        table_height,
-    )
-    .contains(mouse)
-    {
-        let row_count = game
-            .inventory
-            .slots
-            .iter()
-            .filter(|slot| slot.is_some())
-            .count();
-        game.inventory_scroll =
-            scrolled_offset(game.inventory_scroll, wheel, row_count, table_height);
-    }
-}
-
-fn handle_action_rail_resize_input(game: &mut GameState, mouse: Vec2) -> bool {
-    let Some(width) = selected_action_rail_width(game) else {
-        game.action_rail_resize_previous_mouse = None;
-        return false;
-    };
-    let rail = action_rail_rect(width);
-    let handle = action_rail_resize_handle_rect(rail);
-
-    if is_mouse_button_down(MouseButton::Left) {
-        if let Some(previous_mouse) = game.action_rail_resize_previous_mouse {
-            let delta_x = mouse.x - previous_mouse.x;
-            let resized_width = clamp_action_rail_width(width - delta_x);
-            game.action_rail_width_override = Some(resized_width);
-            game.action_rail_resize_previous_mouse = Some(mouse);
-            return true;
-        }
-        if handle.contains(mouse) {
-            game.action_rail_resize_previous_mouse = Some(mouse);
-            return true;
-        }
-    } else {
-        game.action_rail_resize_previous_mouse = None;
-    }
-
-    false
-}
-
-fn action_rail_consumes_pointer_click(game: &GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) && !is_mouse_button_pressed(MouseButton::Right) {
-        return false;
-    }
-    let Some(width) = selected_action_rail_width(game) else {
-        return false;
-    };
-
-    action_rail_blocks_pointer(action_rail_rect(width), mouse)
-}
-
-fn action_rail_blocks_pointer(rail: Rect, mouse: Vec2) -> bool {
-    rail.contains(mouse) || action_rail_resize_handle_rect(rail).contains(mouse)
-}
-
 fn active_production_row_count(game: &GameState) -> usize {
     match game.production_mode {
         ProductionMode::Smelting => game.smelt_recipes.len(),
         ProductionMode::Crafting => game.craft_recipes.len(),
         ProductionMode::Processing => game.processing_recipes.len(),
     }
-}
-
-fn scrolled_offset(current: f32, wheel: f32, row_count: usize, viewport_height: f32) -> f32 {
-    let max_scroll = max_scroll_offset(row_count, WORK_ROW_HEIGHT, viewport_height);
-    (current - wheel * WORK_ROW_HEIGHT * 2.0).clamp(0.0, max_scroll)
 }
 
 fn max_scroll_offset(row_count: usize, row_height: f32, viewport_height: f32) -> f32 {
@@ -14468,6 +13391,28 @@ fn adjust_camera_zoom(game: &mut GameState, direction: i32) {
 }
 
 fn update_starmap_view_input(game: &mut GameState, _dt: f32, wheel: f32) {
+    let mut egui_pointer_captured = false;
+    egui_macroquad::cfg(|ctx| egui_pointer_captured = ctx.wants_pointer_input());
+    let mouse = mouse_vec2();
+    let adjusting_panel =
+        game.starmap_move_previous_mouse.is_some() || game.starmap_resize_previous_mouse.is_some();
+    if egui_pointer_captured && !adjusting_panel {
+        game.starmap_drag_previous_mouse = None;
+        game.starmap_move_previous_mouse = None;
+        game.starmap_resize_previous_mouse = None;
+        return;
+    }
+    if handle_starmap_panel_geometry_input(game, mouse) {
+        game.starmap_drag_previous_mouse = None;
+        return;
+    }
+    let (map_x, map_y, map_width, map_height) = starmap_panel_rect(game);
+    let mouse_over_map = Rect::new(map_x, map_y, map_width, map_height).contains(mouse);
+    if !mouse_over_map {
+        game.starmap_drag_previous_mouse = None;
+        return;
+    }
+
     if wheel > 0.0 {
         game.starmap_zoom = (game.starmap_zoom * STARMAP_ZOOM_STEP).min(STARMAP_ZOOM_MAX);
     } else if wheel < 0.0 {
@@ -14478,7 +13423,6 @@ fn update_starmap_view_input(game: &mut GameState, _dt: f32, wheel: f32) {
         game.starmap_pan = Vec2::ZERO;
     }
 
-    let mouse = mouse_vec2();
     if is_mouse_button_down(MouseButton::Right) {
         if let Some(previous_mouse) = game.starmap_drag_previous_mouse {
             let delta = mouse - previous_mouse;
@@ -14489,6 +13433,55 @@ fn update_starmap_view_input(game: &mut GameState, _dt: f32, wheel: f32) {
     } else {
         game.starmap_drag_previous_mouse = None;
     }
+}
+
+fn handle_starmap_panel_geometry_input(game: &mut GameState, mouse: Vec2) -> bool {
+    if is_mouse_button_down(MouseButton::Left) {
+        if let Some(previous_mouse) = game.starmap_resize_previous_mouse {
+            let (_, _, width, height) = starmap_panel_rect(game);
+            let resized = starmap_panel_size_for(
+                vec2(screen_width(), screen_height()),
+                Some(vec2(width, height) + mouse - previous_mouse),
+            );
+            game.starmap_panel_size = Some(resized);
+            game.starmap_resize_previous_mouse = Some(mouse);
+            return true;
+        }
+        if let Some(previous_mouse) = game.starmap_move_previous_mouse {
+            let (x, y, width, height) = starmap_panel_rect(game);
+            let position = starmap_panel_position_for(
+                vec2(screen_width(), screen_height()),
+                vec2(width, height),
+                Some(vec2(x, y) + mouse - previous_mouse),
+            );
+            game.starmap_panel_position = Some(position);
+            game.starmap_move_previous_mouse = Some(mouse);
+            return true;
+        }
+        if starmap_resize_handle_rect(game).contains(mouse) {
+            let (_, _, width, height) = starmap_panel_rect(game);
+            game.starmap_panel_size = Some(vec2(width, height));
+            game.starmap_resize_previous_mouse = Some(mouse);
+            return true;
+        }
+        if starmap_move_handle_rect(game).contains(mouse) {
+            let (x, y, _, _) = starmap_panel_rect(game);
+            game.starmap_panel_position = Some(vec2(x, y));
+            game.starmap_move_previous_mouse = Some(mouse);
+            return true;
+        }
+    } else if game.starmap_move_previous_mouse.take().is_some()
+        || game.starmap_resize_previous_mouse.take().is_some()
+    {
+        let (x, y, width, height) = starmap_panel_rect(game);
+        let position = vec2(x, y);
+        let size = vec2(width, height);
+        game.starmap_panel_position = Some(position);
+        game.starmap_panel_size = Some(size);
+        save_starmap_panel_geometry(position, size);
+        return true;
+    }
+    false
 }
 
 fn default_camera_zoom() -> f32 {
@@ -14588,12 +13581,7 @@ fn update_ship(ship: &mut Ship, dt: f32, energy_recharge: f32) {
     }
 }
 
-fn draw_scene(
-    game: &GameState,
-    background: &UniverseBackground,
-    logo: Option<&Texture2D>,
-    panel_corner: Option<&Texture2D>,
-) {
+fn draw_scene(game: &GameState, background: &UniverseBackground, panel_corner: Option<&Texture2D>) {
     clear_background(Color::from_rgba(5, 8, 18, 255));
 
     let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
@@ -14725,108 +13713,27 @@ fn draw_scene(
     draw_inventory_hint(game);
     draw_interaction_prompt(game);
 
-    if game.inventory_open {
-        if egui_inventory_active(game) {
-            draw_egui_inventory_shell(panel_corner);
-        } else {
-            draw_inventory_overlay(game, panel_corner);
-        }
-    }
     if game.map_open {
         draw_starmap_overlay(game, panel_corner);
     }
-    if game.research_open {
-        draw_research_overlay(game, panel_corner);
-    }
-    if game.upgrades_open {
-        draw_ship_upgrades_overlay(game, panel_corner);
-    }
-    if game.content_open {
-        draw_content_debug_overlay(game, panel_corner);
-    }
-    if game.contracts_open {
-        draw_contracts_overlay(game, panel_corner);
-    }
-    if game.fleet_open {
-        draw_fleet_overlay(game, panel_corner);
-    }
-    if let Some(menu) = &game.context_action_menu {
-        draw_context_action_menu(game, menu);
-    }
     if game.escape_dialog_open {
-        draw_escape_dialog(game, logo, panel_corner);
+        draw_rectangle(
+            0.0,
+            0.0,
+            screen_width(),
+            screen_height(),
+            Color::from_rgba(0, 0, 0, 145),
+        );
     }
     if game.save_status_timer > 0.0 {
         draw_save_confirmation(game.save_status_timer, game.save_status_manual);
     }
     if game.runtime_flags.debug {
-        draw_debug_console(game);
+        draw_debug_console_hint(game);
     }
     if let Some(transition) = &game.scene_transition {
         draw_scene_transition_overlay(transition);
     }
-}
-
-fn fleet_overlay_rect() -> Rect {
-    let width = (screen_width() * 0.86).clamp(760.0, 1120.0);
-    let height = (screen_height() * 0.84).clamp(560.0, 820.0);
-    Rect::new(
-        (screen_width() - width) * 0.5,
-        (screen_height() - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn fleet_row_rect(panel: Rect, index: usize) -> Rect {
-    Rect::new(
-        panel.x + 42.0,
-        panel.y + 92.0 + index as f32 * (FLEET_ROW_HEIGHT + 8.0),
-        300.0,
-        FLEET_ROW_HEIGHT,
-    )
-}
-
-fn fleet_visible_row_count(panel: Rect) -> usize {
-    ((panel.h - 192.0) / (FLEET_ROW_HEIGHT + 8.0))
-        .floor()
-        .max(1.0) as usize
-}
-
-fn fleet_visible_start(game: &GameState, panel: Rect) -> usize {
-    game.selected_owned_ship_index
-        .saturating_sub(fleet_visible_row_count(panel).saturating_sub(1))
-}
-
-fn fleet_switch_button_rect(panel: Rect) -> Rect {
-    Rect::new(panel.x + 370.0, panel.y + 174.0, 190.0, 40.0)
-}
-
-fn fleet_quantity_button_rect(panel: Rect, increase: bool) -> Rect {
-    Rect::new(
-        panel.x + if increase { 650.0 } else { 570.0 },
-        panel.y + 238.0,
-        34.0,
-        30.0,
-    )
-}
-
-fn fleet_transfer_row_rect(panel: Rect, row: usize, to_target: bool) -> Rect {
-    Rect::new(
-        panel.x + if to_target { 370.0 } else { 650.0 },
-        panel.y + 304.0 + row as f32 * 30.0,
-        250.0,
-        26.0,
-    )
-}
-
-fn fleet_shipyard_button_rect(panel: Rect, index: usize) -> Rect {
-    Rect::new(
-        panel.x + 370.0 + index as f32 * 250.0,
-        panel.y + panel.h - 74.0,
-        230.0,
-        38.0,
-    )
 }
 
 fn nearby_garage_index(game: &GameState) -> Option<usize> {
@@ -14839,616 +13746,33 @@ fn nearby_garage_index(game: &GameState) -> Option<usize> {
     })
 }
 
-fn draw_fleet_button(rect: Rect, label: &str, enabled: bool) {
-    let hovered = enabled && rect.contains(mouse_vec2());
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        if hovered {
-            Color::from_rgba(34, 78, 82, 245)
-        } else {
-            Color::from_rgba(12, 30, 38, 235)
-        },
-    );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        if enabled {
-            Color::from_rgba(150, 221, 226, 210)
-        } else {
-            Color::from_rgba(82, 114, 124, 120)
-        },
-    );
-    draw_text(
-        &fit_debug_text(label, rect.w - 20.0, 16),
-        rect.x + 10.0,
-        rect.y + rect.h * 0.5 + 6.0,
-        16.0,
-        if enabled {
-            Color::from_rgba(235, 242, 226, 255)
-        } else {
-            Color::from_rgba(126, 143, 148, 210)
-        },
-    );
-}
-
-fn draw_fleet_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let panel = fleet_overlay_rect();
-    draw_rectangle(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        Color::from_rgba(5, 12, 18, 246),
-    );
-    draw_rectangle_lines(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        1.0,
-        Color::from_rgba(112, 151, 163, 210),
-    );
-    draw_panel_corner_art(panel, panel_corner);
-    draw_text(
-        "Fleet",
-        panel.x + 42.0,
-        panel.y + 52.0,
-        30.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "F close  ·  arrows select  ·  Enter switches  ·  independent cargo and condition",
-        panel.x + 140.0,
-        panel.y + 50.0,
-        15.0,
-        Color::from_rgba(150, 178, 184, 230),
-    );
-
-    let visible_start = fleet_visible_start(game, panel);
-    for (visible_row, (index, owned)) in game
-        .owned_ships
-        .iter()
-        .enumerate()
-        .skip(visible_start)
-        .take(fleet_visible_row_count(panel))
-        .enumerate()
-    {
-        let row = fleet_row_rect(panel, visible_row);
-        let selected = index == game.selected_owned_ship_index;
-        let active = owned.instance_id == game.active_owned_ship_id;
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if selected {
-                Color::from_rgba(24, 58, 66, 235)
-            } else {
-                Color::from_rgba(8, 20, 27, 225)
-            },
-        );
-        draw_rectangle_lines(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            1.0,
-            if active {
-                Color::from_rgba(150, 221, 226, 230)
-            } else {
-                Color::from_rgba(83, 127, 139, 150)
-            },
-        );
-        let hull_name = game
-            .content_registry
-            .ships
-            .get(&owned.ship_id)
-            .map(|ship| ship.name.as_str())
-            .unwrap_or("Unavailable hull");
-        draw_text(&owned.callsign, row.x + 12.0, row.y + 24.0, 18.0, WHITE);
-        draw_text(
-            &format!("{hull_name}  ·  {}", local_content_id(&owned.system_id)),
-            row.x + 12.0,
-            row.y + 47.0,
-            14.0,
-            Color::from_rgba(150, 178, 184, 235),
-        );
-        draw_text(
-            &format!(
-                "Hull {:.0}/{:.0}  Cargo {:.1} t{}",
-                owned.ship.systems.hull.current,
-                owned.ship.systems.hull.max,
-                owned.inventory.total_mass() / 1000.0,
-                if active { "  ACTIVE" } else { "" }
-            ),
-            row.x + 12.0,
-            row.y + 70.0,
-            14.0,
-            if active {
-                Color::from_rgba(150, 221, 226, 255)
-            } else {
-                Color::from_rgba(178, 197, 203, 230)
-            },
-        );
-    }
-
-    let Some(selected) = game.owned_ships.get(game.selected_owned_ship_index) else {
+fn draw_debug_console_hint(game: &GameState) {
+    if game.debug_console.open {
         return;
-    };
-    let active = selected.instance_id == game.active_owned_ship_id;
-    let resolved = game.content_registry.ships.contains_key(&selected.ship_id);
-    draw_text(
-        &selected.callsign,
-        panel.x + 370.0,
-        panel.y + 112.0,
-        24.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        &format!(
-            "{}  ·  {:.0} units from active ship",
-            local_content_id(&selected.system_id),
-            selected.ship.position.distance(game.ship.position)
-        ),
-        panel.x + 370.0,
-        panel.y + 142.0,
-        15.0,
-        Color::from_rgba(150, 178, 184, 230),
-    );
-    draw_fleet_button(
-        fleet_switch_button_rect(panel),
-        if active {
-            "Currently controlled"
-        } else {
-            "Switch control"
-        },
-        !active && resolved && selected.ship.systems.hull.current > 0.0,
-    );
-
-    let in_range = owned_ship_in_transfer_range(game, game.selected_owned_ship_index);
-    draw_text(
-        if active {
-            "Select another ship to transfer cargo."
-        } else if in_range {
-            "Cargo transfer available"
-        } else {
-            "Cargo transfer requires the ship within 180 units in this system."
-        },
-        panel.x + 370.0,
-        panel.y + 246.0,
-        15.0,
-        if in_range {
-            Color::from_rgba(150, 221, 226, 240)
-        } else {
-            Color::from_rgba(178, 197, 203, 220)
-        },
-    );
-    draw_fleet_button(fleet_quantity_button_rect(panel, false), "-", in_range);
-    draw_text(
-        &game.fleet_transfer_quantity.to_string(),
-        panel.x + 620.0,
-        panel.y + 260.0,
-        17.0,
-        WHITE,
-    );
-    draw_fleet_button(fleet_quantity_button_rect(panel, true), "+", in_range);
-    draw_text(
-        "Active cargo  →",
-        panel.x + 370.0,
-        panel.y + 294.0,
-        16.0,
-        WHITE,
-    );
-    draw_text(
-        "←  Selected cargo",
-        panel.x + 650.0,
-        panel.y + 294.0,
-        16.0,
-        WHITE,
-    );
-    if in_range {
-        for (row, stack) in game
-            .inventory
-            .slots
-            .iter()
-            .flatten()
-            .take(FLEET_TRANSFER_ROWS)
-            .enumerate()
-        {
-            draw_fleet_button(
-                fleet_transfer_row_rect(panel, row, true),
-                &format!("{} x{}  →", stack.item.name, stack.count),
-                true,
-            );
-        }
-        for (row, stack) in selected
-            .inventory
-            .slots
-            .iter()
-            .flatten()
-            .take(FLEET_TRANSFER_ROWS)
-            .enumerate()
-        {
-            draw_fleet_button(
-                fleet_transfer_row_rect(panel, row, false),
-                &format!("←  {} x{}", stack.item.name, stack.count),
-                true,
-            );
-        }
     }
-
-    if let Some(station_index) = nearby_garage_index(game) {
-        let station = &game.stations[station_index];
-        draw_text(
-            &format!("Shipyard · {}", station.name),
-            panel.x + 370.0,
-            panel.y + panel.h - 92.0,
-            17.0,
-            Color::from_rgba(226, 190, 150, 245),
-        );
-        for (index, ship) in game
-            .content_registry
-            .ship_order
-            .iter()
-            .filter_map(|id| game.content_registry.ships.get(id))
-            .filter(|ship| ship.purchase_price.is_some())
-            .take(3)
-            .enumerate()
-        {
-            let price = ship.purchase_price.unwrap_or(0);
-            draw_fleet_button(
-                fleet_shipyard_button_rect(panel, index),
-                &format!("Buy {} · {price} cr", ship.name),
-                game.credits >= price,
-            );
-        }
-    }
-}
-
-fn handle_fleet_overlay_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let panel = fleet_overlay_rect();
-    let visible_start = fleet_visible_start(game, panel);
-    for (visible_row, index) in (visible_start..game.owned_ships.len())
-        .take(fleet_visible_row_count(panel))
-        .enumerate()
-    {
-        if fleet_row_rect(panel, visible_row).contains(mouse) {
-            game.selected_owned_ship_index = index;
-            return true;
-        }
-    }
-    let selected_index = game
-        .selected_owned_ship_index
-        .min(game.owned_ships.len().saturating_sub(1));
-    if fleet_switch_button_rect(panel).contains(mouse) {
-        return switch_active_owned_ship(game, selected_index);
-    }
-    if fleet_quantity_button_rect(panel, false).contains(mouse) {
-        game.fleet_transfer_quantity = game.fleet_transfer_quantity.saturating_sub(1).max(1);
-        return true;
-    }
-    if fleet_quantity_button_rect(panel, true).contains(mouse) {
-        game.fleet_transfer_quantity = game.fleet_transfer_quantity.saturating_add(1).min(999);
-        return true;
-    }
-    let active_items = game
-        .inventory
-        .slots
-        .iter()
-        .flatten()
-        .take(FLEET_TRANSFER_ROWS)
-        .map(|stack| stack.item.id.clone())
-        .collect::<Vec<_>>();
-    for (row, item_id) in active_items.iter().enumerate() {
-        if fleet_transfer_row_rect(panel, row, true).contains(mouse) {
-            transfer_owned_ship_item(
-                game,
-                selected_index,
-                item_id,
-                true,
-                game.fleet_transfer_quantity,
-            );
-            return true;
-        }
-    }
-    let target_items = game
-        .owned_ships
-        .get(selected_index)
-        .map(|owned| {
-            owned
-                .inventory
-                .slots
-                .iter()
-                .flatten()
-                .take(FLEET_TRANSFER_ROWS)
-                .map(|stack| stack.item.id.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for (row, item_id) in target_items.iter().enumerate() {
-        if fleet_transfer_row_rect(panel, row, false).contains(mouse) {
-            transfer_owned_ship_item(
-                game,
-                selected_index,
-                item_id,
-                false,
-                game.fleet_transfer_quantity,
-            );
-            return true;
-        }
-    }
-    if let Some(station_index) = nearby_garage_index(game) {
-        let offers = game
-            .content_registry
-            .ship_order
-            .iter()
-            .filter_map(|id| game.content_registry.ships.get(id))
-            .filter(|ship| ship.purchase_price.is_some())
-            .take(3)
-            .map(|ship| ship.id.clone())
-            .collect::<Vec<_>>();
-        for (index, ship_id) in offers.iter().enumerate() {
-            if fleet_shipyard_button_rect(panel, index).contains(mouse) {
-                return acquire_owned_ship(game, station_index, ship_id);
-            }
-        }
-    }
-    panel.contains(mouse)
-}
-
-fn draw_context_action_menu(game: &GameState, menu: &ContextActionMenu) {
-    let entries = context_action_entries(game, menu.target);
-    let rect = context_action_menu_rect(menu, entries.len());
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        Color::from_rgba(4, 11, 17, 245),
-    );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        1.0,
-        Color::from_rgba(150, 221, 226, 180),
-    );
-    draw_text(
-        "Actions",
-        rect.x + 10.0,
-        rect.y + 13.0,
-        13.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    let mouse = mouse_vec2();
-    for (index, entry) in entries.iter().enumerate() {
-        let row = context_action_entry_rect(rect, index);
-        let hovered = entry.enabled && row.contains(mouse);
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if hovered {
-                Color::from_rgba(24, 58, 66, 230)
-            } else {
-                Color::from_rgba(8, 18, 24, 180)
-            },
-        );
-        draw_rectangle_lines(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            1.0,
-            if entry.enabled {
-                Color::from_rgba(96, 137, 150, 150)
-            } else {
-                Color::from_rgba(82, 114, 124, 80)
-            },
-        );
-        draw_text(
-            entry.label,
-            row.x + 8.0,
-            row.y + 16.0,
-            15.0,
-            if entry.enabled {
-                Color::from_rgba(205, 226, 230, 255)
-            } else {
-                Color::from_rgba(126, 143, 148, 210)
-            },
-        );
-        draw_text(
-            entry.detail,
-            row.x + 8.0,
-            row.y + 30.0,
-            11.0,
-            Color::from_rgba(126, 156, 164, 220),
-        );
-    }
-}
-
-fn draw_debug_console(game: &GameState) {
     let hint_color = Color::from_rgba(150, 221, 226, 210);
-    if !game.debug_console.open {
-        draw_rectangle(
-            18.0,
-            screen_height() - 46.0,
-            210.0,
-            28.0,
-            Color::from_rgba(5, 10, 16, 160),
-        );
-        draw_rectangle_lines(
-            18.0,
-            screen_height() - 46.0,
-            210.0,
-            28.0,
-            1.0,
-            Color::from_rgba(95, 137, 155, 120),
-        );
-        draw_text(
-            "Debug console ` or F12",
-            30.0,
-            screen_height() - 27.0,
-            16.0,
-            hint_color,
-        );
-        return;
-    }
-
-    let console = debug_console_rect(game);
-    let x = console.x;
-    let y = console.y;
-    let width = console.w;
-    let height = console.h;
-    draw_rectangle(x, y, width, height, Color::from_rgba(5, 10, 16, 235));
-    draw_rectangle_lines(
-        x,
-        y,
-        width,
-        height,
-        1.0,
-        Color::from_rgba(150, 221, 226, 180),
-    );
-    draw_text(
-        "Debug Console",
-        x + 14.0,
-        y + 28.0,
-        20.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Esc closes",
-        x + width - 94.0,
-        y + 28.0,
-        15.0,
-        Color::from_rgba(126, 156, 164, 210),
-    );
-    draw_debug_console_resize_handle(console);
-
-    let mut line_y = y + 58.0;
-    let max_history_rows = ((height - 104.0) / 22.0).floor().max(1.0) as usize;
-    if game.debug_console.history.is_empty() {
-        draw_text(
-            debug_console_help(),
-            x + 14.0,
-            line_y,
-            14.0,
-            Color::from_rgba(126, 156, 164, 220),
-        );
-    } else {
-        for line in game
-            .debug_console
-            .history
-            .iter()
-            .rev()
-            .take(max_history_rows)
-        {
-            draw_text(
-                &fit_debug_text(line, width - 28.0, 14),
-                x + 14.0,
-                line_y,
-                14.0,
-                Color::from_rgba(178, 197, 203, 235),
-            );
-            line_y += 22.0;
-        }
-    }
-
-    let input_rect = debug_console_input_rect(console);
-    let input_line = if game.debug_console.input_active {
-        Color::from_rgba(150, 221, 226, 220)
-    } else if input_rect.contains(mouse_vec2()) {
-        Color::from_rgba(150, 221, 226, 150)
-    } else {
-        Color::from_rgba(95, 137, 155, 120)
-    };
     draw_rectangle(
-        input_rect.x,
-        input_rect.y,
-        input_rect.w,
-        input_rect.h,
-        if game.debug_console.input_active {
-            Color::from_rgba(10, 30, 38, 170)
-        } else {
-            Color::from_rgba(5, 10, 16, 90)
-        },
+        18.0,
+        screen_height() - 46.0,
+        210.0,
+        28.0,
+        Color::from_rgba(5, 10, 16, 160),
     );
     draw_rectangle_lines(
-        input_rect.x,
-        input_rect.y,
-        input_rect.w,
-        input_rect.h,
-        1.0,
-        input_line,
-    );
-    let input_y = input_rect.y + 23.0;
-    draw_line(
-        input_rect.x,
-        input_y - 22.0,
-        input_rect.x + input_rect.w,
-        input_y - 22.0,
-        1.0,
-        input_line,
-    );
-    let input_text = if game.debug_console.input_active || !game.debug_console.input.is_empty() {
-        format!("> {}", game.debug_console.input)
-    } else {
-        "> click to type".to_string()
-    };
-    draw_text(
-        &fit_debug_text(&input_text, input_rect.w - 12.0, 18),
-        input_rect.x + 8.0,
-        input_y,
         18.0,
-        if game.debug_console.input_active {
-            Color::from_rgba(150, 221, 226, 255)
-        } else {
-            Color::from_rgba(126, 156, 164, 210)
-        },
-    );
-}
-
-fn draw_debug_console_resize_handle(console: Rect) {
-    let handle = debug_console_resize_handle_rect(console);
-    let hovered = handle.contains(mouse_vec2());
-    let color = if hovered {
-        Color::from_rgba(150, 221, 226, 220)
-    } else {
-        Color::from_rgba(96, 137, 150, 130)
-    };
-    let y = console.y;
-    draw_line(
-        console.x + 18.0,
-        y,
-        console.x + console.w - 18.0,
-        y,
+        screen_height() - 46.0,
+        210.0,
+        28.0,
         1.0,
-        color,
+        Color::from_rgba(95, 137, 155, 120),
     );
-    for index in 0..18 {
-        let x = console.x + console.w * 0.5 - 54.0 + index as f32 * 6.0;
-        draw_line(x, y - 5.0, x + 3.0, y - 5.0, 1.0, color);
-    }
-    if hovered {
-        draw_rectangle(
-            handle.x,
-            handle.y,
-            handle.w,
-            handle.h,
-            Color::from_rgba(150, 221, 226, 24),
-        );
-    }
+    draw_text(
+        "Debug console ` or F12",
+        30.0,
+        screen_height() - 27.0,
+        16.0,
+        hint_color,
+    );
 }
 
 fn draw_scene_transition_overlay(transition: &SceneTransition) {
@@ -15543,15 +13867,6 @@ fn draw_fullscreen_texture_cover(texture: &Texture2D, opacity: f32) {
     );
 }
 
-fn draw_texture_contain(texture: &Texture2D, rect: Rect, opacity: f32) {
-    draw_texture_source_contain(
-        texture,
-        Rect::new(0.0, 0.0, texture.width(), texture.height()),
-        rect,
-        opacity,
-    );
-}
-
 fn draw_texture_source_contain(texture: &Texture2D, source: Rect, rect: Rect, opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
     let dest_size = contained_texture_size(vec2(source.w, source.h), vec2(rect.w, rect.h));
@@ -15596,36 +13911,6 @@ fn draw_rotated_texture_contain(texture: &Texture2D, rect: Rect, tint: Color, ro
         DrawTextureParams {
             dest_size: Some(dest_size),
             rotation,
-            pivot: Some(center),
-            ..Default::default()
-        },
-    );
-}
-
-fn quarter_turned_contained_texture_size(source: Vec2, bounds: Vec2) -> Vec2 {
-    let rotated_size = contained_texture_size(vec2(source.y, source.x), bounds);
-    vec2(rotated_size.y, rotated_size.x)
-}
-
-fn draw_quarter_turned_texture_source_contain(
-    texture: &Texture2D,
-    source: Rect,
-    rect: Rect,
-    opacity: f32,
-) {
-    let dest_size =
-        quarter_turned_contained_texture_size(vec2(source.w, source.h), vec2(rect.w, rect.h));
-    let center = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
-    let position = center - dest_size * 0.5;
-    draw_texture_ex(
-        texture,
-        position.x,
-        position.y,
-        Color::new(1.0, 1.0, 1.0, opacity.clamp(0.0, 1.0)),
-        DrawTextureParams {
-            source: Some(source),
-            dest_size: Some(dest_size),
-            rotation: std::f32::consts::FRAC_PI_2,
             pivot: Some(center),
             ..Default::default()
         },
@@ -15881,11 +14166,11 @@ fn npc_ship_click_radius(npc_ship: &NpcShip, zoom: f32) -> f32 {
 }
 
 fn clicked_starmap_planet_index(mouse: Vec2, game: &GameState) -> Option<usize> {
-    let (x, y, width, height) = starmap_panel_rect();
+    let (x, y, width, height) = starmap_panel_rect(game);
     if mouse.x < x || mouse.x > x + width || mouse.y < y || mouse.y > y + height {
         return None;
     }
-    if known_systems_panel_rect().contains(mouse) {
+    if known_systems_panel_rect(game).contains(mouse) {
         return None;
     }
 
@@ -15960,7 +14245,7 @@ fn selected_starmap_resource_filter(game: &GameState) -> Option<ItemRef> {
 }
 
 fn clicked_known_system_id(mouse: Vec2, game: &GameState) -> Option<String> {
-    if !known_systems_panel_rect().contains(mouse) {
+    if !known_systems_panel_rect(game).contains(mouse) {
         return None;
     }
 
@@ -15968,7 +14253,7 @@ fn clicked_known_system_id(mouse: Vec2, game: &GameState) -> Option<String> {
         .iter()
         .enumerate()
         .find_map(|(index, system_id)| {
-            known_system_row_rect(index)
+            known_system_row_rect(game, index)
                 .contains(mouse)
                 .then_some(system_id.clone())
         })
@@ -16086,18 +14371,18 @@ fn enter_planet_orbit(game: &mut GameState, planet_index: usize) -> bool {
         return false;
     }
 
-    game.orbiting_planet = Some(planet_index);
-    game.approach_target = None;
-    game.follow_target = None;
+    begin_approach(game, ApproachTarget::PlanetOrbit(planet_index));
     game.selected_planet = Some(planet_index);
     game.destination_planet = None;
     remember_current_system_destination(game);
-    update_ship_orbit(game);
-    game.save_dirty = true;
+    push_operation_feedback(game, "Orbit", "Flying to orbital position".to_string());
     true
 }
 
 fn break_planet_orbit(game: &mut GameState) {
+    if matches!(game.approach_target, Some(ApproachTarget::PlanetOrbit(_))) {
+        game.approach_target = None;
+    }
     if game.orbiting_planet.take().is_some() {
         game.save_dirty = true;
     }
@@ -16896,59 +15181,6 @@ fn draw_poi_indicator(
     );
 }
 
-fn wrapped_text_height(text: &str, max_width: f32, font_size: u16) -> f32 {
-    let mut line = String::new();
-    let mut line_count = 1_u32;
-    for word in text.split_whitespace() {
-        let candidate = if line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{line} {word}")
-        };
-        if measure_text(&candidate, None, font_size, 1.0).width <= max_width {
-            line = candidate;
-        } else {
-            line = word.to_string();
-            line_count += 1;
-        }
-    }
-    line_count as f32 * 22.0
-}
-
-fn draw_wrapped_text(
-    text: &str,
-    x: f32,
-    y: f32,
-    max_width: f32,
-    font_size: u16,
-    color: Color,
-) -> f32 {
-    let mut line = String::new();
-    let mut line_y = y;
-
-    for word in text.split_whitespace() {
-        let candidate = if line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{line} {word}")
-        };
-
-        if measure_text(&candidate, None, font_size, 1.0).width <= max_width {
-            line = candidate;
-        } else {
-            draw_text(&line, x, line_y, font_size as f32, color);
-            line = word.to_string();
-            line_y += 22.0;
-        }
-    }
-
-    if !line.is_empty() {
-        draw_text(&line, x, line_y, font_size as f32, color);
-    }
-
-    line_y + 22.0
-}
-
 fn draw_star_trail(screen_pos: Vec2, star: &Star, layer: &StarLayer, screen_velocity: Vec2) {
     if screen_pos.x < -80.0
         || screen_pos.x > screen_width() + 80.0
@@ -17351,218 +15583,8 @@ fn draw_save_confirmation(timer: f32, manual: bool) {
     }
 }
 
-fn escape_dialog_rect() -> Rect {
-    let width = 1100.0;
-    let height = 292.0;
-    Rect::new(
-        (screen_width() - width) * 0.5,
-        (screen_height() - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn escape_dialog_content_x(panel: Rect) -> f32 {
-    panel.x + 524.0
-}
-
-fn escape_dialog_resume_button_rect() -> Rect {
-    let panel = escape_dialog_rect();
-    Rect::new(
-        escape_dialog_content_x(panel),
-        panel.y + panel.h - 76.0,
-        112.0,
-        36.0,
-    )
-}
-
-fn escape_dialog_save_button_rect() -> Rect {
-    let panel = escape_dialog_rect();
-    Rect::new(
-        escape_dialog_content_x(panel) + 128.0,
-        panel.y + panel.h - 76.0,
-        120.0,
-        36.0,
-    )
-}
-
-fn escape_dialog_title_button_rect() -> Rect {
-    let panel = escape_dialog_rect();
-    Rect::new(
-        escape_dialog_content_x(panel) + 264.0,
-        panel.y + panel.h - 76.0,
-        132.0,
-        36.0,
-    )
-}
-
-fn escape_dialog_quit_button_rect() -> Rect {
-    let panel = escape_dialog_rect();
-    Rect::new(
-        escape_dialog_content_x(panel) + 412.0,
-        panel.y + panel.h - 76.0,
-        142.0,
-        36.0,
-    )
-}
-
-fn escape_dialog_logo_rect(panel: Rect) -> Rect {
-    let width = 476.0;
-    let height = 232.0;
-    Rect::new(
-        panel.x + GAME_PANEL_CONTENT_PAD_X,
-        panel.y + (panel.h - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn draw_escape_dialog(
-    game: &GameState,
-    logo: Option<&Texture2D>,
-    panel_corner: Option<&Texture2D>,
-) {
-    draw_rectangle(
-        0.0,
-        0.0,
-        screen_width(),
-        screen_height(),
-        Color::from_rgba(0, 0, 0, 145),
-    );
-
-    let panel = escape_dialog_rect();
-    let text = Color::from_rgba(235, 242, 226, 255);
-    let detail = Color::from_rgba(178, 197, 203, 255);
-    let accent = Color::from_rgba(150, 221, 226, 255);
-    let warning = Color::from_rgba(226, 190, 150, 255);
-
-    draw_rectangle(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        Color::from_rgba(3, 8, 13, 255),
-    );
-    draw_rectangle_lines(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        1.0,
-        Color::from_rgba(112, 151, 163, 220),
-    );
-    draw_panel_corner_art(panel, panel_corner);
-    let content_x = escape_dialog_content_x(panel);
-    draw_text("Game Paused", content_x, panel.y + 82.0, 25.0, text);
-    if let Some(logo) = logo {
-        draw_texture_contain(logo, escape_dialog_logo_rect(panel), 0.95);
-    }
-    draw_text(
-        if game.save_dirty {
-            "Unsaved changes are queued for autosave."
-        } else {
-            "Current game state is saved."
-        },
-        content_x,
-        panel.y + 118.0,
-        18.0,
-        if game.save_dirty { warning } else { detail },
-    );
-
-    draw_escape_dialog_button(escape_dialog_resume_button_rect(), "Resume", accent);
-    draw_escape_dialog_button(escape_dialog_save_button_rect(), "Save Now", accent);
-    draw_escape_dialog_button(escape_dialog_title_button_rect(), "Title Menu", accent);
-    draw_escape_dialog_button(escape_dialog_quit_button_rect(), "Quit Desktop", warning);
-
-    draw_escape_dialog_tooltip();
-}
-
-fn draw_escape_dialog_button(rect: Rect, label: &str, color: Color) {
-    let mouse = vec2(mouse_position().0, mouse_position().1);
-    let hovered = rect.contains(mouse);
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        if hovered {
-            Color::from_rgba(28, 62, 68, 245)
-        } else {
-            Color::from_rgba(13, 32, 40, 235)
-        },
-    );
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, color);
-    let measure = measure_text(label, None, 17, 1.0);
-    draw_text(
-        label,
-        rect.x + (rect.w - measure.width) * 0.5,
-        rect.y + 23.0,
-        17.0,
-        color,
-    );
-}
-
-fn draw_escape_dialog_tooltip() {
-    let mouse = mouse_vec2();
-    let tooltip = if escape_dialog_resume_button_rect().contains(mouse) {
-        Some((
-            "Resume",
-            "Esc",
-            "Close the pause menu and return to gameplay.",
-        ))
-    } else if escape_dialog_save_button_rect().contains(mouse) {
-        Some((
-            "Save Now",
-            "S",
-            "Write the current run to disk without leaving gameplay.",
-        ))
-    } else if escape_dialog_title_button_rect().contains(mouse) {
-        Some((
-            "Title Menu",
-            "T",
-            "Save the current run, leave gameplay, and return to the title menu.",
-        ))
-    } else if escape_dialog_quit_button_rect().contains(mouse) {
-        Some((
-            "Quit Desktop",
-            "Q",
-            "Save the current run, then close Some Frontier.",
-        ))
-    } else {
-        None
-    };
-
-    let Some((title, shortcut, detail)) = tooltip else {
-        return;
-    };
-    draw_ui_tooltip(title, shortcut, detail, mouse);
-}
-
-fn draw_ui_tooltip(title: &str, shortcut: &str, detail: &str, mouse: Vec2) {
-    let width = 330.0;
-    let height = 118.0;
-    let x = (mouse.x + 18.0)
-        .min(screen_width() - width - 18.0)
-        .max(18.0);
-    let y = (mouse.y + 18.0)
-        .min(screen_height() - height - 18.0)
-        .max(18.0);
-    let panel = Color::from_rgba(2, 6, 10, 255);
-    let border = Color::from_rgba(112, 151, 163, 170);
-    let label = Color::from_rgba(126, 156, 164, 220);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let active = Color::from_rgba(150, 221, 226, 255);
-
-    draw_rectangle(x, y, width, height, panel);
-    draw_rectangle_lines(x, y, width, height, 1.0, border);
-    draw_text(title, x + 14.0, y + 28.0, 21.0, text);
-    draw_text("Shortcut", x + 14.0, y + 54.0, 15.0, label);
-    draw_text(shortcut, x + 92.0, y + 54.0, 17.0, active);
-    draw_wrapped_text(detail, x + 14.0, y + 80.0, width - 28.0, 16, text);
-}
-
 fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let (x, y, width, height) = starmap_panel_rect();
+    let (x, y, width, height) = starmap_panel_rect(game);
 
     draw_rectangle(
         0.0,
@@ -17603,6 +15625,7 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
             &game.ship,
             planet,
             game.destination_planet == Some(index),
+            game.starmap_selected_planet == Some(index),
             game.starmap_zoom,
             game.starmap_pan,
         );
@@ -17621,11 +15644,16 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
         28.0,
         Color::from_rgba(235, 242, 226, 255),
     );
+    let help = fit_debug_text(
+        "Drag header move   Wheel zoom   Right-drag pan   Drag corner resize   Click select   F/R filters",
+        (width - 280.0).max(40.0),
+        16,
+    );
     draw_text(
-        "Wheel zoom   Right-drag pan   Home center   Click destination   F/R filters   Esc close",
-        x + width - 720.0,
+        &help,
+        x + 260.0,
         y + 36.0,
-        18.0,
+        16.0,
         Color::from_rgba(126, 156, 164, 220),
     );
     draw_starmap_filter_readout(
@@ -17642,18 +15670,78 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
         game.destination_planet,
     );
     draw_known_systems_panel(game);
+    draw_starmap_resize_handle(game);
 }
 
-fn starmap_panel_rect() -> (f32, f32, f32, f32) {
-    let width = screen_width() * STARMAP_PANEL_SCREEN_FRACTION;
-    let height = screen_height() * STARMAP_PANEL_SCREEN_FRACTION;
-    let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5;
-    (x, y, width, height)
+fn starmap_resize_handle_rect(game: &GameState) -> Rect {
+    let (x, y, width, height) = starmap_panel_rect(game);
+    Rect::new(x + width - 24.0, y + height - 24.0, 24.0, 24.0)
 }
 
-fn known_systems_panel_rect() -> Rect {
-    let (x, y, width, height) = starmap_panel_rect();
+fn starmap_move_handle_rect(game: &GameState) -> Rect {
+    let (x, y, width, _) = starmap_panel_rect(game);
+    Rect::new(x, y, width, 58.0)
+}
+
+fn draw_starmap_resize_handle(game: &GameState) {
+    let handle = starmap_resize_handle_rect(game);
+    let hovered = handle.contains(mouse_vec2()) || game.starmap_resize_previous_mouse.is_some();
+    let color = if hovered {
+        Color::from_rgba(150, 221, 226, 235)
+    } else {
+        Color::from_rgba(112, 151, 163, 170)
+    };
+    for inset in [5.0, 10.0, 15.0] {
+        draw_line(
+            handle.x + handle.w - inset,
+            handle.y + handle.h,
+            handle.x + handle.w,
+            handle.y + handle.h - inset,
+            1.5,
+            color,
+        );
+    }
+}
+
+fn starmap_panel_rect(game: &GameState) -> (f32, f32, f32, f32) {
+    let screen = vec2(screen_width(), screen_height());
+    let size = starmap_panel_size_for(screen, game.starmap_panel_size);
+    let position = starmap_panel_position_for(screen, size, game.starmap_panel_position);
+    (position.x, position.y, size.x, size.y)
+}
+
+fn starmap_panel_size_for(screen: Vec2, requested: Option<Vec2>) -> Vec2 {
+    let margin = 24.0;
+    let destinations_space = 390.0;
+    let default_width = (screen.x - destinations_space - margin * 3.0)
+        .clamp(520.0, 1100.0)
+        .min((screen.x - margin * 2.0).max(320.0));
+    let default_height = (screen.y * 0.82)
+        .clamp(420.0, 820.0)
+        .min((screen.y - margin * 2.0).max(280.0));
+    let maximum = vec2(
+        (screen.x - margin * 2.0).max(320.0),
+        (screen.y - margin * 2.0).max(280.0),
+    );
+    let minimum = vec2(520.0_f32.min(maximum.x), 420.0_f32.min(maximum.y));
+    let requested = requested.unwrap_or_else(|| vec2(default_width, default_height));
+    vec2(
+        requested.x.clamp(minimum.x, maximum.x),
+        requested.y.clamp(minimum.y, maximum.y),
+    )
+}
+
+fn starmap_panel_position_for(screen: Vec2, size: Vec2, requested: Option<Vec2>) -> Vec2 {
+    let requested = requested.unwrap_or_else(|| vec2(24.0, 24.0));
+    let maximum = vec2((screen.x - size.x).max(0.0), (screen.y - size.y).max(0.0));
+    vec2(
+        requested.x.clamp(0.0, maximum.x),
+        requested.y.clamp(0.0, maximum.y),
+    )
+}
+
+fn known_systems_panel_rect(game: &GameState) -> Rect {
+    let (x, y, width, height) = starmap_panel_rect(game);
     Rect::new(
         x + width - KNOWN_SYSTEMS_PANEL_WIDTH - 18.0,
         y + 66.0,
@@ -17662,8 +15750,8 @@ fn known_systems_panel_rect() -> Rect {
     )
 }
 
-fn known_system_row_rect(index: usize) -> Rect {
-    let panel = known_systems_panel_rect();
+fn known_system_row_rect(game: &GameState, index: usize) -> Rect {
+    let panel = known_systems_panel_rect(game);
     Rect::new(
         panel.x + 10.0,
         panel.y + 38.0 + index as f32 * (KNOWN_SYSTEM_ROW_HEIGHT + 8.0),
@@ -17679,6 +15767,7 @@ fn starmap_camera(x: f32, y: f32, width: f32, height: f32) -> Camera3D {
         target: vec3(0.0, 18.0, 0.0),
         up: vec3(0.0, 1.0, 0.0),
         fovy: 46.0_f32.to_radians(),
+        aspect: Some(width / height.max(1.0)),
         viewport: Some((x as i32, y as i32, width as i32, height as i32)),
         z_far: 3000.0,
         ..Default::default()
@@ -17702,8 +15791,15 @@ fn draw_starmap_planet_markers(game: &GameState, camera: &Camera3D) {
         );
         let radius = starmap_planet_hit_radius(planet, game.starmap_zoom);
         let is_destination = game.destination_planet == Some(index);
+        let is_selected = game.starmap_selected_planet == Some(index);
+        let route_position = game
+            .navigation_route
+            .iter()
+            .position(|stop| stop.system == planet.system && stop.planet == planet.id);
         let color = if is_destination {
             Color::from_rgba(113, 235, 138, 220)
+        } else if is_selected {
+            Color::from_rgba(255, 206, 88, 220)
         } else {
             Color::from_rgba(150, 221, 226, 130)
         };
@@ -17720,6 +15816,15 @@ fn draw_starmap_planet_markers(game: &GameState, camera: &Camera3D) {
                 Color::from_rgba(235, 242, 226, 150)
             },
         );
+        if let Some(route_position) = route_position {
+            draw_text(
+                &(route_position + 1).to_string(),
+                screen_pos.x + radius + 5.0,
+                screen_pos.y - radius - 3.0,
+                18.0,
+                Color::from_rgba(235, 242, 226, 235),
+            );
+        }
     }
 }
 
@@ -17759,6 +15864,7 @@ fn draw_starmap_planet_3d(
     ship: &Ship,
     planet: &Planet,
     is_destination: bool,
+    is_selected: bool,
     zoom: f32,
     pan: Vec2,
 ) {
@@ -17768,6 +15874,8 @@ fn draw_starmap_planet_3d(
     let radius = starmap_planet_radius(planet, zoom) * 0.64;
     let color = if is_destination {
         Color::from_rgba(82, 194, 214, 235)
+    } else if is_selected {
+        Color::from_rgba(196, 151, 63, 235)
     } else {
         Color::from_rgba(65, 136, 154, 220)
     };
@@ -17784,6 +15892,8 @@ fn draw_starmap_planet_3d(
 
     if is_destination {
         draw_starmap_ring_at_3d(position, radius + 8.0, Color::from_rgba(235, 242, 226, 170));
+    } else if is_selected {
+        draw_starmap_ring_at_3d(position, radius + 8.0, Color::from_rgba(255, 206, 88, 190));
     }
 }
 
@@ -18012,7 +16122,7 @@ fn draw_starmap_filter_readout(game: &GameState, x: f32, y: f32) {
 }
 
 fn draw_known_systems_panel(game: &GameState) {
-    let panel = known_systems_panel_rect();
+    let panel = known_systems_panel_rect(game);
     draw_rectangle(
         panel.x,
         panel.y,
@@ -18045,7 +16155,7 @@ fn draw_known_systems_panel(game: &GameState) {
         let Some(system) = game.content_registry.systems.get(system_id) else {
             continue;
         };
-        let row = known_system_row_rect(index);
+        let row = known_system_row_rect(game, index);
         let is_current = system_id == &game.current_system_id;
         let is_charging = game
             .pending_warp
@@ -18137,26 +16247,6 @@ fn draw_known_systems_panel(game: &GameState) {
     }
 }
 
-fn inventory_panel_rect(action_rail_width: Option<f32>) -> (f32, f32, f32, f32) {
-    let sidecar_space = action_rail_width
-        .map(|width| width + OBJECT_ACTION_RAIL_GAP)
-        .unwrap_or(0.0);
-    let available_width =
-        (screen_width() - INVENTORY_OVERLAY_SCREEN_MARGIN * 2.0 - sidecar_space).max(640.0);
-    let panel_width = available_width.min(1280.0);
-    let panel_height = inventory_panel_height();
-    let total_width = panel_width + sidecar_space;
-    let panel_x = (screen_width() - total_width) * 0.5 + sidecar_space;
-    let panel_y = (screen_height() - panel_height) * 0.5 + 18.0;
-
-    (
-        panel_x.max(INVENTORY_OVERLAY_SCREEN_MARGIN + sidecar_space),
-        panel_y,
-        panel_width,
-        panel_height,
-    )
-}
-
 fn inventory_panel_height() -> f32 {
     inventory_panel_height_for(screen_height())
 }
@@ -18166,228 +16256,6 @@ fn inventory_panel_height_for(screen_height: f32) -> f32 {
     (screen_height * 0.8).clamp(260.0, maximum)
 }
 
-struct InventoryOverlayLayout {
-    panel_x: f32,
-    panel_y: f32,
-    panel_width: f32,
-    panel_height: f32,
-    detail_x: f32,
-    detail_width: f32,
-    production_x: f32,
-    production_width: f32,
-    inventory_x: f32,
-    inventory_width: f32,
-    action_rail: Option<Rect>,
-}
-
-struct StationActionLayout {
-    services: Rect,
-    detail: Rect,
-}
-
-fn inventory_overlay_layout(action_rail_width: Option<f32>) -> InventoryOverlayLayout {
-    let (panel_x, panel_y, panel_width, panel_height) = inventory_panel_rect(action_rail_width);
-    let gap = GAME_PANEL_CONTENT_PAD_X;
-    let inner_width = panel_width - gap * 2.0;
-    let pane_width = (inner_width - gap * 2.0).max(0.0);
-    let (detail_share, production_share, inventory_share) =
-        inventory_pane_shares(action_rail_width.is_some());
-    let detail_width = pane_width * detail_share;
-    let production_width = pane_width * production_share;
-    let inventory_width = pane_width * inventory_share;
-    let detail_x = panel_x + gap;
-    let production_x = detail_x + detail_width + gap;
-    let inventory_x = production_x + production_width + gap;
-    let action_rail = action_rail_width.map(|action_rail_width| {
-        let height = (panel_height * 0.62).clamp(260.0, panel_height - 120.0);
-        Rect::new(
-            panel_x - action_rail_width - OBJECT_ACTION_RAIL_GAP,
-            panel_y + 66.0,
-            action_rail_width,
-            height,
-        )
-    });
-
-    InventoryOverlayLayout {
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
-        detail_x,
-        detail_width,
-        production_x,
-        production_width,
-        inventory_x,
-        inventory_width,
-        action_rail,
-    }
-}
-
-fn inventory_pane_shares(has_action_rail: bool) -> (f32, f32, f32) {
-    if has_action_rail {
-        (0.28, 0.34, 0.38)
-    } else {
-        (0.28, 0.38, 0.34)
-    }
-}
-
-fn selected_action_rail_width(game: &GameState) -> Option<f32> {
-    if let Some(planet_index) = game.selected_planet {
-        return game
-            .planets
-            .get(planet_index)
-            .map(|planet| action_rail_width_with_override(planet_action_rail_width(planet), game));
-    }
-    if let Some(station_index) = game.selected_station {
-        return game.stations.get(station_index).map(|station| {
-            action_rail_width_with_override(station_action_rail_width(station), game)
-        });
-    }
-    if let Some(npc_ship_index) = game.selected_npc_ship {
-        return game.npc_ships.get(npc_ship_index).map(|npc_ship| {
-            action_rail_width_with_override(
-                npc_ship_action_rail_width(&game.content_registry, &game.ship, npc_ship),
-                game,
-            )
-        });
-    }
-
-    Some(action_rail_width_with_override(
-        ship_defense_action_rail_width(game),
-        game,
-    ))
-}
-
-fn action_rail_width_with_override(auto_width: f32, game: &GameState) -> f32 {
-    action_rail_width_from_override(auto_width, game.action_rail_width_override)
-}
-
-fn action_rail_width_from_override(auto_width: f32, override_width: Option<f32>) -> f32 {
-    let width = action_rail_override_candidate(auto_width, override_width);
-    clamp_action_rail_width(width)
-}
-
-fn action_rail_override_candidate(auto_width: f32, override_width: Option<f32>) -> f32 {
-    override_width.map_or(auto_width, |width| width.max(auto_width))
-}
-
-fn clamp_action_rail_width(width: f32) -> f32 {
-    width
-        .max(OBJECT_ACTION_RAIL_MIN_WIDTH)
-        .min(action_rail_max_width())
-}
-
-fn action_rail_max_width() -> f32 {
-    let max_width = (screen_width() * OBJECT_ACTION_RAIL_MAX_SCREEN_FRACTION)
-        .clamp(OBJECT_ACTION_RAIL_MIN_WIDTH, 590.0);
-    max_width.min((screen_width() - 672.0).max(OBJECT_ACTION_RAIL_MIN_WIDTH))
-}
-
-fn planet_action_rail_width(planet: &Planet) -> f32 {
-    let mineable_width = planet
-        .info
-        .mineables
-        .iter()
-        .map(|mineable| measure_text(&mineable.item.name, None, 20, 1.0).width)
-        .fold(measure_text("Item", None, 16, 1.0).width, f32::max);
-    let active_width = measure_text("Active", None, 16, 1.0).width.max(50.0);
-    let table_width = mineable_width.max(132.0) + 42.0 + 68.0 + 42.0 + active_width + 12.0 * 4.0;
-
-    clamp_action_rail_width(table_width + 34.0)
-}
-
-fn station_action_rail_width(station: &StationDestination) -> f32 {
-    let service_button_width = station_service_button_width(station);
-    let trade_width = station
-        .services
-        .iter()
-        .flat_map(|service| service.trade.iter())
-        .map(|offer| measure_text(&offer.item.name, None, 15, 1.0).width)
-        .fold(measure_text("Trade stock", None, 14, 1.0).width, f32::max);
-    let unlock_width = station
-        .services
-        .iter()
-        .flat_map(|service| service.recipe_unlocks.iter())
-        .map(|unlock| measure_text(&unlock.recipe, None, 15, 1.0).width)
-        .fold(
-            measure_text("Recipe unlocks", None, 14, 1.0).width,
-            f32::max,
-        );
-    let research_width = station
-        .services
-        .iter()
-        .flat_map(|service| service.research.iter())
-        .map(|lead| measure_text(&lead.research, None, 15, 1.0).width)
-        .fold(
-            measure_text("Research leads", None, 14, 1.0).width,
-            f32::max,
-        );
-    let trade_table_width = trade_width.max(116.0) + 54.0 + 58.0 + 8.0 * 2.0;
-    let unlock_table_width = unlock_width.max(160.0) + 72.0 + 12.0;
-    let research_table_width = research_width.max(160.0) + 82.0 + 12.0;
-    let detail_width = trade_table_width
-        .max(unlock_table_width)
-        .max(research_table_width)
-        .max(240.0);
-
-    clamp_action_rail_width(service_button_width + 16.0 + detail_width + 34.0)
-}
-
-fn station_service_button_width(station: &StationDestination) -> f32 {
-    let service_width = station
-        .services
-        .iter()
-        .map(|service| measure_text(&service.name, None, 16, 1.0).width)
-        .fold(measure_text("Service", None, 14, 1.0).width, f32::max);
-
-    (service_width + 24.0).clamp(132.0, 210.0)
-}
-
-fn npc_ship_action_rail_width(
-    content_registry: &content::ContentRegistry,
-    ship: &Ship,
-    npc_ship: &NpcShip,
-) -> f32 {
-    let rows = npc_interaction_rows(content_registry, ship, npc_ship);
-    let action_width = rows
-        .iter()
-        .map(|row| measure_text(row.action.label(), None, 16, 1.0).width)
-        .fold(measure_text("Action", None, 14, 1.0).width, f32::max);
-    let status_width = rows
-        .iter()
-        .map(|row| measure_text(row.status, None, 15, 1.0).width)
-        .fold(measure_text("Status", None, 14, 1.0).width, f32::max);
-
-    clamp_action_rail_width(action_width.max(150.0) + status_width.max(78.0) + 12.0 + 34.0)
-}
-
-fn ship_defense_action_rail_width(game: &GameState) -> f32 {
-    let slot_width = (0..weapon_slot_capacity(game))
-        .map(|slot_index| {
-            game.equipped_weapons
-                .get(slot_index)
-                .filter(|weapon| weapon.resolved)
-                .map(|weapon| measure_text(&weapon.name, None, 17, 1.0).width)
-                .unwrap_or_else(|| measure_text("Empty weapon slot", None, 17, 1.0).width)
-        })
-        .fold(
-            measure_text("Installed weapon", None, 17, 1.0).width,
-            f32::max,
-        );
-    let candidate_width = game
-        .content_registry
-        .weapon_order
-        .iter()
-        .filter_map(|weapon_id| game.content_registry.weapons.get(weapon_id))
-        .map(|weapon| measure_text(&format!("Turret List: {}", weapon.name), None, 16, 1.0).width)
-        .fold(
-            measure_text("No crafted weapons", None, 16, 1.0).width,
-            f32::max,
-        );
-
-    clamp_action_rail_width(slot_width.max(candidate_width).max(240.0) + 64.0)
-}
-
 fn egui_inventory_active(game: &GameState) -> bool {
     game.inventory_open
         && game.selected_planet.is_none()
@@ -18395,30 +16263,51 @@ fn egui_inventory_active(game: &GameState) -> bool {
         && game.selected_npc_ship.is_none()
 }
 
-fn draw_egui_inventory_shell(panel_corner: Option<&Texture2D>) {
-    let rect = egui_inventory::overlay_rect([screen_width(), screen_height()]);
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        Color::from_rgba(6, 12, 18, 228),
-    );
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        1.0,
-        Color::from_rgba(112, 151, 163, 150),
-    );
-    draw_panel_corner_art(
-        Rect::new(rect.x, rect.y, rect.width, rect.height),
-        panel_corner,
-    );
+fn egui_inventory_windows_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.inventory_open || pins.ship || pins.production || pins.inventory
 }
 
-fn inventory_overlay_view(game: &GameState) -> egui_inventory::InventoryOverlayView {
+fn egui_planet_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.selected_planet.is_some() && (game.inventory_open || pins.planet)
+}
+
+fn egui_station_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.selected_station.is_some() && (game.inventory_open || pins.station)
+}
+
+fn egui_npc_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.selected_npc_ship.is_some() && (game.inventory_open || pins.contact)
+}
+
+fn egui_fleet_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.fleet_open || pins.fleet
+}
+
+fn egui_content_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.content_open || pins.content
+}
+
+fn egui_contracts_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.contracts_open || pins.contracts
+}
+
+fn egui_upgrades_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.upgrades_open || pins.upgrades
+}
+
+fn egui_research_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.research_open || pins.research
+}
+
+fn egui_destinations_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.map_open || pins.destinations
+}
+
+fn inventory_overlay_view(
+    game: &GameState,
+    keep_click_step: i32,
+) -> egui_inventory::InventoryOverlayView {
+    let pins = egui_pin_snapshot();
     let (recipes, settings) = active_production_rows(game);
     let active_row = next_recipe_bill_index(game, recipes, settings);
     let production = recipes
@@ -18477,10 +16366,2130 @@ fn inventory_overlay_view(game: &GameState) -> egui_inventory::InventoryOverlayV
 
     egui_inventory::InventoryOverlayView {
         credits: game.credits,
+        keep_click_step,
         production_tab: production_tab_for_mode(game.production_mode),
         production,
         inventory,
         ship: ship_pane_view(game),
+        show_ship: egui_inventory_active(game) || pins.ship,
+        show_production: game.inventory_open || pins.production,
+        show_inventory: game.inventory_open || pins.inventory,
+        ship_pinned: pins.ship,
+        production_pinned: pins.production,
+        inventory_pinned: pins.inventory,
+    }
+}
+
+fn planet_pane_view(game: &GameState, keep_click_step: i32) -> egui_planet::PlanetPaneView {
+    let planet_index = game.selected_planet.unwrap_or(usize::MAX);
+    let Some(planet) = game.planets.get(planet_index) else {
+        return egui_planet::PlanetPaneView {
+            pinned: egui_pane_pinned(EguiPane::Planet),
+            title: "Planet unavailable".to_string(),
+            artwork: None,
+            content_id: String::new(),
+            summary: "The selected planet is no longer available.".to_string(),
+            ownership: None,
+            scan_level: 0,
+            max_scan_level: MAX_SCAN_LEVEL,
+            mineables: Vec::new(),
+            hazards: Vec::new(),
+            hazard_effects: None,
+            richness: "Unknown".to_string(),
+            proximity: "Unavailable".to_string(),
+            in_range: false,
+            is_orbiting: false,
+            orbit_pending: false,
+            scan_enabled: false,
+            scan_label: "No scan available".to_string(),
+            basic_drones: 0,
+            improved_drones: 0,
+            drone_return: "Unknown".to_string(),
+            latest_operation: None,
+            keep_click_step,
+            mining: Vec::new(),
+            mining_revealed: false,
+        };
+    };
+
+    let surface_scanned = planet_has_surface_scan(planet);
+    let composition_scanned = planet_has_composition_scan(planet);
+    let richness_scanned = planet_has_richness_scan(planet);
+    let in_range = planet_in_interaction_range(&game.ship, planet);
+    let is_orbiting = game.orbiting_planet == Some(planet_index);
+    let orbit_pending = game.approach_target == Some(ApproachTarget::PlanetOrbit(planet_index));
+    let basic_drones = core_item(&game.content_registry, "survey_drone")
+        .map(|item| game.inventory.count(&item))
+        .unwrap_or(0);
+    let improved_drones = core_item(&game.content_registry, "improved_survey_drone")
+        .map(|item| game.inventory.count(&item))
+        .unwrap_or(0);
+    let has_drone = basic_drones > 0 || improved_drones > 0;
+    let ownership = surface_scanned.then(|| {
+        planet
+            .faction
+            .as_deref()
+            .map(|faction| {
+                format!(
+                    "{} / {}",
+                    faction_name(&game.content_registry, faction),
+                    faction_disposition_label(&game.content_registry, faction)
+                )
+            })
+            .unwrap_or_else(|| "Unclaimed".to_string())
+    });
+    let hazard_effects = surface_scanned.then(|| {
+        format!(
+            "Mining: {:.0}% speed / {:.1} shield/s",
+            100.0 / planet_hazard_mining_slowdown(planet),
+            planet_hazard_shield_drain_per_second(planet)
+        )
+    });
+    let richness = if richness_scanned {
+        let minimum = planet
+            .info
+            .mineables
+            .iter()
+            .enumerate()
+            .map(|(index, _)| mineable_richness_multiplier(planet, index))
+            .fold(f32::INFINITY, f32::min);
+        format!(
+            "{:.0}-{:.0}% extraction by resource",
+            minimum * 100.0,
+            planet_richness_multiplier(planet) * 100.0
+        )
+    } else {
+        "Unknown until deep scan".to_string()
+    };
+    let active_row = in_range
+        .then(|| next_mining_bill_index(&game.inventory, planet))
+        .flatten();
+    let mining = if composition_scanned {
+        planet
+            .info
+            .mineables
+            .iter()
+            .zip(&planet.mining)
+            .enumerate()
+            .map(|(index, (mineable, setting))| {
+                let current = game.inventory.count(&mineable.item);
+                egui_planet::MiningRow {
+                    item: mineable.item.name.clone(),
+                    keep: setting.keep,
+                    status: work_row_status(current, setting.keep, setting.queued),
+                    richness: if richness_scanned {
+                        format!(
+                            "{:.0}%",
+                            mineable_richness_multiplier(planet, index) * 100.0
+                        )
+                    } else {
+                        String::new()
+                    },
+                    active: active_row == Some(index),
+                    enabled: in_range,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    egui_planet::PlanetPaneView {
+        pinned: egui_pane_pinned(EguiPane::Planet),
+        title: if surface_scanned {
+            planet.info.classification.clone()
+        } else {
+            "Unscanned body".to_string()
+        },
+        artwork: game
+            .content_registry
+            .planets
+            .get(&planet.id)
+            .and_then(|definition| definition.texture.clone()),
+        content_id: planet.id.clone(),
+        summary: if surface_scanned {
+            planet.info.summary.clone()
+        } else {
+            "Classification, hazards, composition, and landing profiles are unknown. Send survey drones while in range to build the planet record."
+                .to_string()
+        },
+        ownership,
+        scan_level: planet.scan_level,
+        max_scan_level: MAX_SCAN_LEVEL,
+        mineables: if composition_scanned {
+            planet
+                .info
+                .mineables
+                .iter()
+                .map(|mineable| mineable.item.name.clone())
+                .collect()
+        } else {
+            Vec::new()
+        },
+        hazards: if surface_scanned {
+            planet.info.hazards.clone()
+        } else {
+            Vec::new()
+        },
+        hazard_effects,
+        richness,
+        proximity: if is_orbiting {
+            "Stable orbit locked".to_string()
+        } else if orbit_pending {
+            "Flying to orbital position".to_string()
+        } else if in_range {
+            "Interaction range reached".to_string()
+        } else {
+            "Approach required for mining".to_string()
+        },
+        in_range,
+        is_orbiting,
+        orbit_pending,
+        scan_enabled: in_range && has_drone && planet.scan_level < MAX_SCAN_LEVEL,
+        scan_label: if planet.scan_level >= MAX_SCAN_LEVEL {
+            "Survey complete".to_string()
+        } else if !in_range {
+            "Approach to scan".to_string()
+        } else if !has_drone {
+            "No survey drones".to_string()
+        } else {
+            "Send survey drone".to_string()
+        },
+        basic_drones,
+        improved_drones,
+        drone_return: format!(
+            "{:.0}%",
+            survey_drone_return_chance(&game.ship_upgrades) * 100.0
+        ),
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| {
+                entry.category == "Survey"
+                    || entry.category == "Mining"
+                    || entry.category == "Orbit"
+            })
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
+        keep_click_step,
+        mining,
+        mining_revealed: composition_scanned,
+    }
+}
+
+fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
+    let station_index = game.selected_station.unwrap_or(usize::MAX);
+    let Some(station) = game.stations.get(station_index) else {
+        return egui_station::StationPaneView {
+            pinned: egui_pane_pinned(EguiPane::Station),
+            name: "Station unavailable".to_string(),
+            artwork: None,
+            content_id: String::new(),
+            summary: "The selected station is no longer available.".to_string(),
+            ownership: "Unknown".to_string(),
+            proximity: "Unavailable".to_string(),
+            credits: game.credits,
+            services: Vec::new(),
+            selected_service: None,
+            service_description: None,
+            service_status: None,
+            trade: Vec::new(),
+            garage: false,
+            repair_label: String::new(),
+            repair_enabled: false,
+            contracts: Vec::new(),
+            recipes: Vec::new(),
+            research: Vec::new(),
+            latest_operation: None,
+        };
+    };
+
+    let in_range = station_in_interaction_range(&game.ship, station);
+    let distance = game.ship.position.distance(station.position);
+    let ownership = match (&station.faction, &station.culture) {
+        (Some(faction), Some(culture)) => format!(
+            "{} / {} / {}",
+            faction_name(&game.content_registry, faction),
+            faction_name(&game.content_registry, culture),
+            faction_disposition_label(&game.content_registry, faction)
+        ),
+        (Some(faction), None) => format!(
+            "{} / {}",
+            faction_name(&game.content_registry, faction),
+            faction_disposition_label(&game.content_registry, faction)
+        ),
+        (None, Some(culture)) => faction_name(&game.content_registry, culture).to_string(),
+        (None, None) => "Independent".to_string(),
+    };
+    let services = station
+        .services
+        .iter()
+        .map(|service| {
+            let context = service
+                .vendor
+                .as_ref()
+                .map(|vendor| {
+                    let specialties = vendor.specialties.join(", ");
+                    if specialties.is_empty() {
+                        vendor.name.clone()
+                    } else {
+                        format!("{} · {}", vendor.name, specialties)
+                    }
+                })
+                .unwrap_or_else(|| service.kind.clone());
+            let context = service
+                .reputation_required
+                .map_or(context.clone(), |required| {
+                    let standing =
+                        faction_reputation(game, service_reputation_faction(station, service));
+                    format!("{context} · reputation {standing}/{required}")
+                });
+            egui_station::ServiceRow {
+                name: service.name.clone(),
+                context,
+                available: true,
+            }
+        })
+        .collect();
+
+    let selected_service = game
+        .selected_station_service
+        .filter(|index| *index < station.services.len());
+    let service = selected_service.and_then(|index| station.services.get(index));
+    let service_available =
+        service.is_some_and(|service| station_service_is_available(game, station, service));
+    let service_status = service.map(|_| {
+        if !service_available {
+            "Locked by faction standing".to_string()
+        } else if in_range {
+            "Dock range reached · service ready".to_string()
+        } else {
+            "Approach within dock range to use this service".to_string()
+        }
+    });
+    let trade = service
+        .map(|service| {
+            service
+                .trade
+                .iter()
+                .map(|offer| {
+                    let cargo = game.inventory.count(&offer.item);
+                    egui_station::TradeRow {
+                        item: offer.item.name.clone(),
+                        stock: format_trade_stock(offer, game.world_elapsed_days),
+                        cargo,
+                        buy_price: offer.buy_price,
+                        sell_price: offer.sell_price,
+                        can_buy: in_range
+                            && service_available
+                            && !offer.unavailable
+                            && offer.stock != Some(0)
+                            && game.credits >= offer.buy_price,
+                        can_sell: in_range && service_available && cargo > 0,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).ceil();
+    let missing_shields =
+        (game.ship.systems.shields.max - game.ship.systems.shields.current).ceil();
+    let repair_cost = (missing_hull * 3.0) as u32 + missing_shields as u32;
+    let garage = service.is_some_and(|service| service.kind == "garage");
+    let repair_label = if !in_range {
+        "Approach to repair".to_string()
+    } else if repair_cost == 0 {
+        "Ship systems nominal".to_string()
+    } else if game.credits < repair_cost {
+        format!("Need {} cr", repair_cost.saturating_sub(game.credits))
+    } else {
+        format!("Repair hull + shields · {repair_cost} cr")
+    };
+
+    let contracts = service
+        .map(|service| {
+            service
+                .contracts
+                .iter()
+                .map(|contract| {
+                    let active = game.active_contracts.iter().find(|active| {
+                        active.id == contract.id
+                            && active.origin_station == contract.origin_station
+                            && active.origin_service == contract.origin_service
+                    });
+                    let standing = faction_reputation(game, contract.reputation_faction.as_deref());
+                    let status = if standing < contract.reputation_required {
+                        "Need reputation"
+                    } else if let Some(active) = active {
+                        if game.world_elapsed_days > active.expires_day {
+                            "Expired"
+                        } else if contract_is_complete(game, contract) {
+                            "Complete"
+                        } else {
+                            "Active"
+                        }
+                    } else {
+                        "Accept"
+                    };
+                    let destination = contract_target_name_from_station_data(
+                        station,
+                        contract,
+                        &game.stations,
+                        &game.planets,
+                    );
+                    let objective = if contract.kind == "hauling" {
+                        format!(
+                            "Deliver {} × {} to {}",
+                            contract
+                                .item
+                                .as_ref()
+                                .map(|item| item.name.as_str())
+                                .unwrap_or("cargo"),
+                            contract.amount,
+                            destination
+                        )
+                    } else {
+                        format!("Scan {} to level {}", destination, contract.amount)
+                    };
+                    egui_station::ContractRow {
+                        name: contract.name.clone(),
+                        description: contract
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| match contract.kind.as_str() {
+                                "hauling" => "Deliver cargo to the listed station".to_string(),
+                                _ => "Complete the requested survey".to_string(),
+                            }),
+                        objective,
+                        reward: contract.reward,
+                        duration_days: contract.duration_days,
+                        status: status.to_string(),
+                        actionable: in_range,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let recipes = service
+        .map(|service| {
+            service
+                .recipe_unlocks
+                .iter()
+                .map(|unlock| {
+                    let purchased =
+                        research_id_that_unlocks_recipe(&game.content_registry, &unlock.recipe)
+                            .is_some_and(|research_id| {
+                                game.completed_research
+                                    .iter()
+                                    .any(|done| done == research_id)
+                            });
+                    let (status, purchasable) = if purchased {
+                        ("Owned".to_string(), false)
+                    } else if unlock.unavailable {
+                        ("Unavailable".to_string(), false)
+                    } else if !in_range {
+                        ("Approach".to_string(), false)
+                    } else if game.credits < unlock.price {
+                        (
+                            format!("Need {} cr", unlock.price.saturating_sub(game.credits)),
+                            false,
+                        )
+                    } else {
+                        (format!("Unlock · {} cr", unlock.price), true)
+                    };
+                    egui_station::RecipeRow {
+                        name: recipe_display_name(&game.content_registry, &unlock.recipe),
+                        status,
+                        purchasable,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let research = service
+        .map(|service| {
+            service
+                .research
+                .iter()
+                .map(|lead| {
+                    let complete = game
+                        .completed_research
+                        .iter()
+                        .any(|done| done == &lead.research);
+                    egui_station::ResearchRow {
+                        name: research_display_name(&game.content_registry, &lead.research),
+                        status: if complete {
+                            "Complete"
+                        } else if lead.unavailable {
+                            "Unavailable"
+                        } else if !in_range {
+                            "Approach"
+                        } else {
+                            "Available"
+                        }
+                        .to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    egui_station::StationPaneView {
+        pinned: egui_pane_pinned(EguiPane::Station),
+        name: station.name.clone(),
+        artwork: game
+            .content_registry
+            .stations
+            .get(&station.id)
+            .and_then(|definition| definition.texture.clone()),
+        content_id: station.id.clone(),
+        summary: station.summary.clone(),
+        ownership,
+        proximity: if in_range {
+            format!("Dock range reached · {distance:.0}u")
+        } else {
+            format!("Approach required · {distance:.0}u")
+        },
+        credits: game.credits,
+        services,
+        selected_service,
+        service_description: service.and_then(|service| service.description.clone()),
+        service_status,
+        trade,
+        garage,
+        repair_label,
+        repair_enabled: garage && in_range && service_available,
+        contracts,
+        recipes,
+        research,
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.category.as_str(),
+                    "Station" | "Trade" | "Repair" | "Contract" | "Unlock" | "Route"
+                )
+            })
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
+    }
+}
+
+fn fleet_cargo_rows(inventory: &Inventory) -> Vec<egui_fleet::CargoRow> {
+    inventory
+        .slots
+        .iter()
+        .flatten()
+        .map(|stack| egui_fleet::CargoRow {
+            item_id: stack.item.id.clone(),
+            name: stack.item.name.clone(),
+            count: stack.count,
+        })
+        .collect()
+}
+
+fn research_view(game: &GameState) -> egui_research::ResearchView {
+    let registry = &game.content_registry;
+    let nodes = registry
+        .research_order
+        .iter()
+        .filter_map(|research_id| registry.research.get(research_id))
+        .map(|research| {
+            let state = research_node_state(
+                research,
+                game.active_research.as_ref(),
+                &game.completed_research,
+                game.credits,
+            );
+            let progress = game
+                .active_research
+                .as_ref()
+                .filter(|active| active.research == research.id)
+                .map(|active| {
+                    1.0 - (active.remaining_seconds / research.duration_seconds).clamp(0.0, 1.0)
+                });
+            egui_research::ResearchNode {
+                id: research.id.clone(),
+                name: research.name.clone(),
+                tier: research.tier,
+                column: research.column,
+                row: research.row,
+                state: egui_research_state(state),
+                progress,
+            }
+        })
+        .collect();
+    let mut seen_edges = HashSet::new();
+    let mut edges = Vec::new();
+    for research_id in &registry.research_order {
+        let Some(research) = registry.research.get(research_id) else {
+            continue;
+        };
+        for required in research.requires.iter().chain(&research.revealed_by) {
+            if seen_edges.insert((required.clone(), research.id.clone())) {
+                edges.push(egui_research::ResearchEdge {
+                    from: required.clone(),
+                    to: research.id.clone(),
+                });
+            }
+        }
+    }
+    let selected = game
+        .selected_research
+        .clone()
+        .filter(|id| registry.research.contains_key(id));
+    let detail = selected.as_ref().and_then(|research_id| {
+        let research = registry.research.get(research_id)?;
+        let state = research_node_state(
+            research,
+            game.active_research.as_ref(),
+            &game.completed_research,
+            game.credits,
+        );
+        let active = game
+            .active_research
+            .as_ref()
+            .filter(|active| active.research == research.id);
+        let progress = active.map(|active| {
+            1.0 - (active.remaining_seconds / research.duration_seconds).clamp(0.0, 1.0)
+        });
+        Some(egui_research::ResearchDetail {
+            id: research.id.clone(),
+            name: research.name.clone(),
+            summary: research
+                .summary
+                .clone()
+                .unwrap_or_else(|| "No research summary provided.".to_string()),
+            state: egui_research_state(state),
+            price: research.price,
+            duration: format_seconds(research.duration_seconds),
+            requirements: research_requirement_labels(registry, research),
+            rewards: research
+                .rewards
+                .iter()
+                .map(|reward| research_reward_label(registry, reward))
+                .collect(),
+            progress,
+            remaining: active
+                .map(|active| format!("{} remaining", format_seconds(active.remaining_seconds))),
+            start_enabled: state == ResearchNodeState::Affordable,
+            action_label: match state {
+                ResearchNodeState::Affordable => "Start research",
+                ResearchNodeState::Available => "Need credits",
+                ResearchNodeState::Researching => "Researching",
+                ResearchNodeState::Completed => "Completed",
+                ResearchNodeState::Locked => "Locked",
+            }
+            .to_string(),
+        })
+    });
+
+    egui_research::ResearchView {
+        pinned: egui_pane_pinned(EguiPane::Research),
+        credits: game.credits,
+        nodes,
+        edges,
+        selected,
+        detail,
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| entry.category == "Research")
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
+    }
+}
+
+fn destinations_view(game: &GameState) -> egui_destinations::DestinationsView {
+    let selected = game
+        .starmap_selected_planet
+        .and_then(|index| game.planets.get(index))
+        .filter(|planet| planet.system == game.current_system_id)
+        .map(|planet| {
+            let scanned = planet_has_surface_scan(planet);
+            egui_destinations::DestinationCandidate {
+                name: if scanned {
+                    planet.info.classification.clone()
+                } else {
+                    "Unscanned body".to_string()
+                },
+                artwork: game
+                    .content_registry
+                    .planets
+                    .get(&planet.id)
+                    .and_then(|definition| definition.texture.clone()),
+                content_id: planet.id.clone(),
+                system: system_display_name(&game.content_registry, &planet.system).to_string(),
+                summary: if scanned {
+                    planet.info.summary.clone()
+                } else {
+                    "Survey data is unavailable. Approach the body to investigate it.".to_string()
+                },
+                distance: format!("{:.0}u", game.ship.position.distance(planet.position)),
+                scan_status: format!("{}/{}", planet.scan_level, MAX_SCAN_LEVEL),
+            }
+        });
+    let route = game
+        .navigation_route
+        .iter()
+        .enumerate()
+        .map(|(index, stop)| {
+            let current = game.navigation_route_current;
+            let state = if current.is_some_and(|current| index < current) {
+                egui_destinations::RouteStopState::Completed
+            } else if current == Some(index) && game.navigation_route_active {
+                egui_destinations::RouteStopState::Active
+            } else if current == Some(index) {
+                egui_destinations::RouteStopState::Paused
+            } else {
+                egui_destinations::RouteStopState::Pending
+            };
+            let planet = navigation_stop_planet_index(game, stop)
+                .and_then(|planet_index| game.planets.get(planet_index));
+            egui_destinations::RouteStopView {
+                name: planet
+                    .map(|planet| {
+                        if planet_has_surface_scan(planet) {
+                            planet.info.classification.clone()
+                        } else {
+                            "Unscanned body".to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| stop.planet.clone()),
+                system: system_display_name(&game.content_registry, &stop.system).to_string(),
+                distance: planet
+                    .filter(|planet| planet.system == game.current_system_id)
+                    .map(|planet| format!("{:.0}u", game.ship.position.distance(planet.position)))
+                    .unwrap_or_else(|| "Other system".to_string()),
+                state,
+            }
+        })
+        .collect();
+
+    egui_destinations::DestinationsView {
+        pinned: egui_pane_pinned(EguiPane::Destinations),
+        map_open: game.map_open,
+        selected,
+        route,
+        route_active: game.navigation_route_active,
+        route_started: game
+            .navigation_route_current
+            .is_some_and(|current| current < game.navigation_route.len()),
+    }
+}
+
+fn egui_research_state(state: ResearchNodeState) -> egui_research::ResearchState {
+    match state {
+        ResearchNodeState::Completed => egui_research::ResearchState::Completed,
+        ResearchNodeState::Researching => egui_research::ResearchState::Researching,
+        ResearchNodeState::Affordable => egui_research::ResearchState::Affordable,
+        ResearchNodeState::Available => egui_research::ResearchState::Available,
+        ResearchNodeState::Locked => egui_research::ResearchState::Locked,
+    }
+}
+
+fn upgrades_view(game: &GameState, purchase_count: u32) -> egui_upgrades::UpgradesView {
+    egui_upgrades::UpgradesView {
+        pinned: egui_pane_pinned(EguiPane::Upgrades),
+        ship_name: game
+            .content_registry
+            .ships
+            .get(&game.ship_id)
+            .map(|ship| ship.name.clone())
+            .unwrap_or_else(|| local_content_id(&game.ship_id).replace('_', " ")),
+        artwork: game
+            .content_registry
+            .ships
+            .get(&game.ship_id)
+            .and_then(|definition| definition.texture.clone()),
+        purchase_count: purchase_count.max(1),
+        rows: game
+            .ship_upgrades
+            .iter()
+            .map(|upgrade| {
+                let cost = upgrade.next_cost(&game.content_registry);
+                egui_upgrades::UpgradeRow {
+                    name: upgrade.kind.name().to_string(),
+                    level: upgrade.level,
+                    effect: upgrade.kind.effect_text().to_string(),
+                    affordable: can_afford_cost(&game.inventory, &cost),
+                    cost: cost
+                        .iter()
+                        .map(|stack| egui_upgrades::CostRow {
+                            item: stack.item.name.clone(),
+                            required: stack.count,
+                            available: game.inventory.count(&stack.item),
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| entry.category == "Upgrade")
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
+    }
+}
+
+fn contracts_view(game: &GameState) -> egui_contracts::ContractsView {
+    let entries = active_contract_menu_entries(game);
+    let selected = game
+        .selected_contract_index
+        .filter(|index| *index < entries.len());
+    let detail = selected.map(|index| {
+        let entry = &entries[index];
+        let origin_station = game
+            .stations
+            .iter()
+            .find(|station| station.id == entry.contract.origin_station);
+        let focus_enabled =
+            origin_station.is_some_and(|station| station.system == game.current_system_id);
+        let focus_status = match origin_station {
+            None => "Origin station is unavailable".to_string(),
+            Some(station) if station.system != game.current_system_id => {
+                format!(
+                    "Origin is in {}",
+                    system_display_name(&game.content_registry, &station.system)
+                )
+            }
+            Some(_) => "Origin station is in the current system".to_string(),
+        };
+        egui_contracts::ContractDetail {
+            name: entry.contract.name.clone(),
+            description: entry
+                .contract
+                .description
+                .clone()
+                .unwrap_or_else(|| "No description provided.".to_string()),
+            status: entry.status.clone(),
+            deadline: entry.deadline.clone(),
+            progress: entry.progress.clone(),
+            origin: entry.origin_name.clone(),
+            destination: entry.target_name.clone(),
+            reward: format!(
+                "{} credits · +{} reputation",
+                entry.contract.reward, entry.contract.reputation_reward
+            ),
+            requirement: format!("{} reputation", entry.contract.reputation_required),
+            focus_enabled,
+            focus_status,
+        }
+    });
+
+    egui_contracts::ContractsView {
+        pinned: egui_pane_pinned(EguiPane::Contracts),
+        rows: entries
+            .iter()
+            .map(|entry| egui_contracts::ContractRow {
+                name: entry.contract.name.clone(),
+                route: format!("{} → {}", entry.origin_name, entry.target_name),
+                status: entry.status.clone(),
+                deadline: entry.deadline.clone(),
+            })
+            .collect(),
+        selected,
+        detail,
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| entry.category == "Contract" || entry.category == "Contracts")
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
+    }
+}
+
+fn content_browser_view(game: &GameState) -> egui_content::ContentBrowserView {
+    let registry = &game.content_registry;
+    let selected_pack_id = selected_content_pack_id(game);
+    let transition_pixels = game
+        .transition_assets
+        .iter()
+        .map(|asset| asset.texture.width() * asset.texture.height())
+        .sum::<f32>();
+    let transition_summary = game.transition_assets.first().map(|asset| {
+        if game.transition_assets.len() == 1 {
+            format!(
+                "Transition asset: {} ({:.0} kp)",
+                asset.path,
+                transition_pixels / 1000.0
+            )
+        } else {
+            format!(
+                "Transition assets: {} (+{} more, {:.0} kp)",
+                asset.path,
+                game.transition_assets.len() - 1,
+                transition_pixels / 1000.0
+            )
+        }
+    });
+
+    egui_content::ContentBrowserView {
+        pinned: egui_pane_pinned(EguiPane::Content),
+        summary: format!(
+            "{} packs · {} items · {} recipes · {} factions · {} NPC ships · {} shields · {} weapons · {} systems · {} stars · {} planets · {} stations · {} upgrades · {} transition images",
+            registry.packs.len(),
+            registry.items.len(),
+            registry.recipes.len(),
+            registry.factions.len(),
+            registry.npc_ships.len(),
+            registry.shields.len(),
+            registry.weapons.len(),
+            registry.systems.len(),
+            registry.stars.len(),
+            registry.planets.len(),
+            registry.stations.len(),
+            registry.upgrades.len(),
+            game.transition_assets.len()
+        ),
+        transition_summary,
+        filter_label: selected_pack_id
+            .map(|pack_id| format!("Showing pack: {pack_id}"))
+            .unwrap_or_else(|| "Showing all packs".to_string()),
+        packs: registry
+            .packs
+            .iter()
+            .map(|pack| egui_content::PackRow {
+                name: pack.name.clone(),
+                detail: format!("{} · {}", pack.id, pack.version),
+            })
+            .collect(),
+        selected_pack: game
+            .content_browser
+            .selected_pack_index
+            .filter(|index| *index < registry.packs.len()),
+        selected_detail: game
+            .content_browser
+            .selected_pack_index
+            .and_then(|index| registry.packs.get(index))
+            .map(|pack| egui_content::PackDetail {
+                name: pack.name.clone(),
+                id: pack.id.clone(),
+                version: pack.version.clone(),
+                description: pack
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| "No pack description provided.".to_string()),
+                path: pack.path.display().to_string(),
+                dependencies: pack.depends_on.clone(),
+                optional_dependencies: pack.optional_depends_on.clone(),
+                options: pack
+                    .options
+                    .iter()
+                    .map(|option| {
+                        let mut label = format!(
+                            "{} · default {} · {}",
+                            option.label,
+                            option.default.as_save_string(),
+                            option.id
+                        );
+                        if let Some(description) = &option.description {
+                            label.push_str(&format!("\n{description}"));
+                        }
+                        label
+                    })
+                    .collect(),
+            }),
+        object_groups: content_object_groups(registry, selected_pack_id),
+        selected_object: game.content_browser.selected_object.clone(),
+        object_detail: game
+            .content_browser
+            .selected_object
+            .as_ref()
+            .and_then(|key| content_object_detail(registry, key)),
+        can_go_back: !game.content_browser.object_history.is_empty(),
+    }
+}
+
+fn content_object_groups(
+    registry: &content::ContentRegistry,
+    selected_pack_id: Option<&str>,
+) -> Vec<egui_content::ObjectGroup> {
+    use egui_content::ObjectKind;
+
+    let visible = |id: &str| {
+        selected_pack_id
+            .map(|pack_id| content_id_belongs_to_pack(id, pack_id))
+            .unwrap_or(true)
+    };
+    let mut groups = Vec::new();
+    macro_rules! group {
+        ($title:literal, $kind:expr, $order:expr, $map:expr, $name:expr, $detail:expr) => {{
+            let rows = $order
+                .iter()
+                .filter(|id| visible(id))
+                .filter_map(|id| $map.get(id).map(|value| (id, value)))
+                .map(|(id, value)| egui_content::ObjectRow {
+                    key: egui_content::ObjectKey {
+                        kind: $kind,
+                        id: id.clone(),
+                    },
+                    name: ($name)(value),
+                    detail: ($detail)(value),
+                })
+                .collect::<Vec<_>>();
+            if !rows.is_empty() {
+                groups.push(egui_content::ObjectGroup {
+                    title: $title.to_string(),
+                    rows,
+                });
+            }
+        }};
+    }
+
+    group!(
+        "Items",
+        ObjectKind::Item,
+        registry.item_order,
+        registry.items,
+        |v: &content::ItemDef| v.name.clone(),
+        |v: &content::ItemDef| format!("{} · {} kg", v.tier, v.unit_mass)
+    );
+    group!(
+        "Recipes",
+        ObjectKind::Recipe,
+        registry.recipe_order,
+        registry.recipes,
+        |v: &content::RecipeDef| registry
+            .items
+            .get(&v.output.item)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| local_content_id(&v.output.item).to_string()),
+        |v: &content::RecipeDef| format!("{} x{}", v.station, v.output.count)
+    );
+    group!(
+        "Ships",
+        ObjectKind::Ship,
+        registry.ship_order,
+        registry.ships,
+        |v: &content::ShipDef| v.name.clone(),
+        |v: &content::ShipDef| format!("{} weapon slot(s)", v.weapon_slots.len())
+    );
+    group!(
+        "NPC Ships",
+        ObjectKind::NpcShip,
+        registry.npc_ship_order,
+        registry.npc_ships,
+        |v: &content::NpcShipDef| v.name.clone(),
+        |v: &content::NpcShipDef| format!("{} · {}", v.archetype, v.role)
+    );
+    group!(
+        "Shields",
+        ObjectKind::Shield,
+        registry.shield_order,
+        registry.shields,
+        |v: &content::ShieldDef| v.name.clone(),
+        |v: &content::ShieldDef| format!("{:.0} capacity", v.capacity)
+    );
+    group!(
+        "Weapons",
+        ObjectKind::Weapon,
+        registry.weapon_order,
+        registry.weapons,
+        |v: &content::WeaponDef| v.name.clone(),
+        |v: &content::WeaponDef| format!("{:.0} damage · {:.0}u", v.damage, v.range)
+    );
+    group!(
+        "Power Modules",
+        ObjectKind::PowerModule,
+        registry.power_module_order,
+        registry.power_modules,
+        |v: &content::PowerModuleDef| v.name.clone(),
+        |v: &content::PowerModuleDef| format!("+{:.1}/s", v.generation)
+    );
+    group!(
+        "Research",
+        ObjectKind::Research,
+        registry.research_order,
+        registry.research,
+        |v: &content::ResearchDef| v.name.clone(),
+        |v: &content::ResearchDef| format!("Tier {} · {} cr", v.tier, v.price)
+    );
+    group!(
+        "Factions",
+        ObjectKind::Faction,
+        registry.faction_order,
+        registry.factions,
+        |v: &content::FactionDef| v.name.clone(),
+        |v: &content::FactionDef| v.kind.clone()
+    );
+    group!(
+        "Universes",
+        ObjectKind::Universe,
+        registry.universe_order,
+        registry.universes,
+        |v: &content::UniverseDef| v.name.clone(),
+        |_v: &content::UniverseDef| "Universe".to_string()
+    );
+    group!(
+        "Galaxy Groups",
+        ObjectKind::GalaxyGroup,
+        registry.galaxy_group_order,
+        registry.galaxy_groups,
+        |v: &content::GalaxyGroupDef| v.name.clone(),
+        |_v: &content::GalaxyGroupDef| "Galaxy group".to_string()
+    );
+    group!(
+        "Galaxy Clusters",
+        ObjectKind::GalaxyCluster,
+        registry.galaxy_cluster_order,
+        registry.galaxy_clusters,
+        |v: &content::GalaxyClusterDef| v.name.clone(),
+        |_v: &content::GalaxyClusterDef| "Galaxy cluster".to_string()
+    );
+    group!(
+        "Galaxies",
+        ObjectKind::Galaxy,
+        registry.galaxy_order,
+        registry.galaxies,
+        |v: &content::GalaxyDef| v.name.clone(),
+        |_v: &content::GalaxyDef| "Galaxy".to_string()
+    );
+    group!(
+        "Regions",
+        ObjectKind::Region,
+        registry.region_order,
+        registry.regions,
+        |v: &content::RegionDef| v.name.clone(),
+        |_v: &content::RegionDef| "Region".to_string()
+    );
+    group!(
+        "Systems",
+        ObjectKind::System,
+        registry.system_order,
+        registry.systems,
+        |v: &content::SystemDef| v.name.clone(),
+        |v: &content::SystemDef| format!("{} tag(s)", v.tags.len())
+    );
+    group!(
+        "Stars",
+        ObjectKind::Star,
+        registry.star_order,
+        registry.stars,
+        |v: &content::StarDef| v.name.clone(),
+        |v: &content::StarDef| v.classification.clone()
+    );
+    group!(
+        "Planets",
+        ObjectKind::Planet,
+        registry.planet_order,
+        registry.planets,
+        |v: &content::PlanetDef| local_content_id(&v.id).to_string(),
+        |v: &content::PlanetDef| format!(
+            "{} · {} resource(s)",
+            v.classification,
+            v.mineables.len()
+        )
+    );
+    group!(
+        "Stations",
+        ObjectKind::Station,
+        registry.station_order,
+        registry.stations,
+        |v: &content::StationDef| v.name.clone(),
+        |v: &content::StationDef| format!("{} service(s)", v.services.len())
+    );
+    group!(
+        "Vendors",
+        ObjectKind::Vendor,
+        registry.vendor_order,
+        registry.vendors,
+        |v: &content::VendorDef| v.name.clone(),
+        |v: &content::VendorDef| format!("{} offer(s)", v.offers.len())
+    );
+    group!(
+        "Upgrades",
+        ObjectKind::Upgrade,
+        registry.upgrade_order,
+        registry.upgrades,
+        |v: &content::UpgradeDef| local_content_id(&v.id).to_string(),
+        |v: &content::UpgradeDef| format!("{} cost(s)", v.costs.len())
+    );
+    groups
+}
+
+fn content_object_detail(
+    registry: &content::ContentRegistry,
+    key: &egui_content::ObjectKey,
+) -> Option<egui_content::ObjectDetail> {
+    use egui_content::ObjectKind;
+
+    let field = |label: &str, value: String| egui_content::DetailField {
+        label: label.to_string(),
+        value,
+    };
+    let reference = |label: &str, kind, id: &str| egui_content::DetailReference {
+        label: label.to_string(),
+        target: egui_content::ObjectKey {
+            kind,
+            id: id.to_string(),
+        },
+    };
+    let joined = |values: &[String]| {
+        if values.is_empty() {
+            "None".to_string()
+        } else {
+            values.join(", ")
+        }
+    };
+    let position = |value: [f32; 2]| format!("{:.0}, {:.0}", value[0], value[1]);
+
+    let (name, summary, fields, references) = match key.kind {
+        ObjectKind::Item => {
+            let value = registry.items.get(&key.id)?;
+            (
+                value.name.clone(),
+                None,
+                vec![
+                    field("Tier", value.tier.clone()),
+                    field("Unit mass", format!("{} kg", value.unit_mass)),
+                ],
+                vec![],
+            )
+        }
+        ObjectKind::Recipe => {
+            let value = registry.recipes.get(&key.id)?;
+            let mut references = vec![reference(
+                "Output item",
+                ObjectKind::Item,
+                &value.output.item,
+            )];
+            references.extend(value.ingredients.iter().map(|ingredient| {
+                reference(
+                    &format!("Ingredient x{}", ingredient.count),
+                    ObjectKind::Item,
+                    &ingredient.item,
+                )
+            }));
+            (
+                registry
+                    .items
+                    .get(&value.output.item)
+                    .map(|item| format!("{} recipe", item.name))
+                    .unwrap_or_else(|| local_content_id(&key.id).to_string()),
+                value.purpose.clone(),
+                vec![
+                    field("Station", value.station.clone()),
+                    field("Output count", value.output.count.to_string()),
+                    field("Ingredients", value.ingredients.len().to_string()),
+                    field("Duplicate output", value.allow_duplicate_output.to_string()),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Ship => {
+            let value = registry.ships.get(&key.id)?;
+            let mut references = Vec::new();
+            references.extend(
+                value
+                    .power_modules
+                    .iter()
+                    .map(|id| reference("Power module", ObjectKind::PowerModule, id)),
+            );
+            references.extend(
+                value
+                    .shield_slots
+                    .iter()
+                    .map(|id| reference("Shield", ObjectKind::Shield, id)),
+            );
+            references.extend(
+                value
+                    .weapon_slots
+                    .iter()
+                    .map(|id| reference("Weapon", ObjectKind::Weapon, id)),
+            );
+            (
+                value.name.clone(),
+                None,
+                vec![
+                    field("Mass", format!("{} t", value.mass)),
+                    field("Hull", value.hull_capacity.to_string()),
+                    field("Shield", value.shield_capacity.to_string()),
+                    field(
+                        "Energy",
+                        format!("{} · +{}/s", value.energy_capacity, value.energy_recharge),
+                    ),
+                    field(
+                        "Acceleration",
+                        format!(
+                            "{} / {} reverse",
+                            value.forward_acceleration, value.reverse_acceleration
+                        ),
+                    ),
+                    field("Turn", value.turn_acceleration.to_string()),
+                    field(
+                        "Purchase price",
+                        value
+                            .purchase_price
+                            .map(|price| format!("{price} cr"))
+                            .unwrap_or_else(|| "Not sold".to_string()),
+                    ),
+                    field(
+                        "Texture",
+                        value.texture.clone().unwrap_or_else(|| "None".to_string()),
+                    ),
+                ],
+                references,
+            )
+        }
+        ObjectKind::NpcShip => {
+            let value = registry.npc_ships.get(&key.id)?;
+            let mut references = vec![reference("System", ObjectKind::System, &value.system)];
+            if let Some(id) = &value.faction {
+                references.push(reference("Faction", ObjectKind::Faction, id));
+            }
+            references.extend(value.cargo_defaults.iter().map(|stack| {
+                reference(
+                    &format!("Cargo x{}", stack.count),
+                    ObjectKind::Item,
+                    &stack.item,
+                )
+            }));
+            references.extend(
+                value
+                    .shield_slots
+                    .iter()
+                    .map(|id| reference("Shield", ObjectKind::Shield, id)),
+            );
+            references.extend(
+                value
+                    .weapon_slots
+                    .iter()
+                    .map(|id| reference("Weapon", ObjectKind::Weapon, id)),
+            );
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field(
+                        "Archetype / role",
+                        format!("{} / {}", value.archetype, value.role),
+                    ),
+                    field("Position", position(value.position)),
+                    field("Radius", value.radius.to_string()),
+                    field(
+                        "Spawn",
+                        format!("{} x{}", value.spawn_weight, value.spawn_count),
+                    ),
+                    field(
+                        "Mass / cargo",
+                        format!("{} t / {} t", value.mass, value.cargo_capacity),
+                    ),
+                    field(
+                        "Hull / shield / energy",
+                        format!(
+                            "{} / {} / {}",
+                            value.hull_capacity, value.shield_capacity, value.energy_capacity
+                        ),
+                    ),
+                    field("Behavior tags", joined(&value.behavior_tags)),
+                    field(
+                        "Credit reward",
+                        format!("{}–{}", value.credit_reward_min, value.credit_reward_max),
+                    ),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Shield => {
+            let value = registry.shields.get(&key.id)?;
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field("Capacity", value.capacity.to_string()),
+                    field(
+                        "Recharge",
+                        format!("{}/s after {}s", value.recharge_rate, value.recharge_delay),
+                    ),
+                    field(
+                        "Damage resistance",
+                        format!("{:.0}%", value.damage_resistance * 100.0),
+                    ),
+                    field(
+                        "Hazard resistance",
+                        format!("{:.0}%", value.hazard_resistance * 100.0),
+                    ),
+                ],
+                vec![reference(
+                    "Install item",
+                    ObjectKind::Item,
+                    &value.install_item,
+                )],
+            )
+        }
+        ObjectKind::Weapon => {
+            let value = registry.weapons.get(&key.id)?;
+            let mut references = vec![reference(
+                "Install item",
+                ObjectKind::Item,
+                &value.install_item,
+            )];
+            if let Some(id) = &value.ammo_item {
+                references.push(reference("Ammunition", ObjectKind::Item, id));
+            }
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field("Range", format!("{}u", value.range)),
+                    field("Damage", value.damage.to_string()),
+                    field("Cooldown", format!("{}s", value.cooldown_seconds)),
+                    field(
+                        "Energy / ammo",
+                        format!("{} / {}", value.energy_cost, value.ammo_per_shot),
+                    ),
+                    field("Targeting", format!("{:?}", value.targeting)),
+                    field("Path effect", format!("{:?}", value.effect)),
+                    field("Impact", format!("{:?}", value.impact)),
+                    field(
+                        "Splash",
+                        format!("{}u · {:?}", value.splash_radius, value.splash_falloff),
+                    ),
+                    field(
+                        "Chain",
+                        format!("{} target(s) · {}u", value.chain_targets, value.chain_range),
+                    ),
+                    field("Friendly fire", format!("{:?}", value.friendly_fire)),
+                    field(
+                        "Projectile",
+                        value
+                            .projectile_texture
+                            .clone()
+                            .unwrap_or_else(|| "Beam".to_string()),
+                    ),
+                ],
+                references,
+            )
+        }
+        ObjectKind::PowerModule => {
+            let value = registry.power_modules.get(&key.id)?;
+            let mut references = vec![reference(
+                "Install item",
+                ObjectKind::Item,
+                &value.install_item,
+            )];
+            if let Some(id) = &value.fuel_item {
+                references.push(reference("Fuel", ObjectKind::Item, id));
+            }
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field("Family", value.family.clone()),
+                    field("Generation", format!("+{}/s", value.generation)),
+                    field("Mass", format!("{} t", value.mass)),
+                    field("Fuel rate", format!("{}/min", value.fuel_per_minute)),
+                    field("Heat / risk", format!("{} / {}", value.heat, value.risk)),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Research => {
+            let value = registry.research.get(&key.id)?;
+            let mut references = Vec::new();
+            references.extend(
+                value
+                    .requires
+                    .iter()
+                    .map(|id| reference("Requires", ObjectKind::Research, id)),
+            );
+            references.extend(
+                value
+                    .revealed_by
+                    .iter()
+                    .map(|id| reference("Revealed by", ObjectKind::Research, id)),
+            );
+            for reward in &value.rewards {
+                if let Some(id) = &reward.target {
+                    let kind = match reward.kind.as_str() {
+                        "recipe" => ObjectKind::Recipe,
+                        "item" => ObjectKind::Item,
+                        _ => continue,
+                    };
+                    references.push(reference(&format!("Reward: {}", reward.kind), kind, id));
+                }
+            }
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field("Tier", value.tier.to_string()),
+                    field("Grid", format!("{}, {}", value.column, value.row)),
+                    field("Price", format!("{} cr", value.price)),
+                    field("Duration", format!("{}s", value.duration_seconds)),
+                    field("Rewards", value.rewards.len().to_string()),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Faction => {
+            let value = registry.factions.get(&key.id)?;
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field("Kind", value.kind.clone()),
+                    field("Disposition", value.default_disposition.id().to_string()),
+                    field("Starting reputation", value.reputation_start.to_string()),
+                    field(
+                        "Reputation range",
+                        format!("{} to {}", value.reputation_min, value.reputation_max),
+                    ),
+                    field("Tags", joined(&value.tags)),
+                ],
+                vec![],
+            )
+        }
+        ObjectKind::Universe => {
+            let value = registry.universes.get(&key.id)?;
+            (
+                value.name.clone(),
+                value.description.clone(),
+                vec![],
+                vec![],
+            )
+        }
+        ObjectKind::GalaxyGroup => {
+            let value = registry.galaxy_groups.get(&key.id)?;
+            let references = value
+                .universe
+                .as_ref()
+                .map(|id| reference("Universe", ObjectKind::Universe, id))
+                .into_iter()
+                .collect();
+            (
+                value.name.clone(),
+                value.description.clone(),
+                vec![],
+                references,
+            )
+        }
+        ObjectKind::GalaxyCluster => {
+            let value = registry.galaxy_clusters.get(&key.id)?;
+            let mut references = Vec::new();
+            if let Some(id) = &value.galaxy_group {
+                references.push(reference("Galaxy group", ObjectKind::GalaxyGroup, id));
+            }
+            if let Some(id) = &value.universe {
+                references.push(reference("Universe", ObjectKind::Universe, id));
+            }
+            (
+                value.name.clone(),
+                value.description.clone(),
+                vec![],
+                references,
+            )
+        }
+        ObjectKind::Galaxy => {
+            let value = registry.galaxies.get(&key.id)?;
+            let mut references = Vec::new();
+            if let Some(id) = &value.galaxy_cluster {
+                references.push(reference("Galaxy cluster", ObjectKind::GalaxyCluster, id));
+            }
+            if let Some(id) = &value.galaxy_group {
+                references.push(reference("Galaxy group", ObjectKind::GalaxyGroup, id));
+            }
+            if let Some(id) = &value.universe {
+                references.push(reference("Universe", ObjectKind::Universe, id));
+            }
+            (
+                value.name.clone(),
+                value.description.clone(),
+                vec![],
+                references,
+            )
+        }
+        ObjectKind::Region => {
+            let value = registry.regions.get(&key.id)?;
+            let mut references = Vec::new();
+            if let Some(id) = &value.galaxy {
+                references.push(reference("Galaxy", ObjectKind::Galaxy, id));
+            }
+            if let Some(id) = &value.galaxy_cluster {
+                references.push(reference("Galaxy cluster", ObjectKind::GalaxyCluster, id));
+            }
+            if let Some(id) = &value.galaxy_group {
+                references.push(reference("Galaxy group", ObjectKind::GalaxyGroup, id));
+            }
+            if let Some(id) = &value.universe {
+                references.push(reference("Universe", ObjectKind::Universe, id));
+            }
+            (
+                value.name.clone(),
+                value.description.clone(),
+                vec![],
+                references,
+            )
+        }
+        ObjectKind::System => {
+            let value = registry.systems.get(&key.id)?;
+            let mut references = Vec::new();
+            if let Some(id) = &value.region {
+                references.push(reference("Region", ObjectKind::Region, id));
+            }
+            if let Some(id) = &value.galaxy {
+                references.push(reference("Galaxy", ObjectKind::Galaxy, id));
+            }
+            if let Some(id) = &value.universe {
+                references.push(reference("Universe", ObjectKind::Universe, id));
+            }
+            if let Some(id) = &value.primary_star {
+                references.push(reference("Primary star", ObjectKind::Star, id));
+            }
+            if let Some(id) = &value.faction {
+                references.push(reference("Faction", ObjectKind::Faction, id));
+            }
+            (
+                value.name.clone(),
+                value.description.clone(),
+                vec![
+                    field("Arrival", position(value.arrival)),
+                    field("Tags", joined(&value.tags)),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Star => {
+            let value = registry.stars.get(&key.id)?;
+            (
+                value.name.clone(),
+                None,
+                vec![
+                    field("Classification", value.classification.clone()),
+                    field("Position", position(value.position)),
+                    field("Radius", value.radius.to_string()),
+                ],
+                vec![reference("System", ObjectKind::System, &value.system)],
+            )
+        }
+        ObjectKind::Planet => {
+            let value = registry.planets.get(&key.id)?;
+            let mut references = vec![reference("System", ObjectKind::System, &value.system)];
+            if let Some(id) = &value.faction {
+                references.push(reference("Faction", ObjectKind::Faction, id));
+            }
+            references.extend(
+                value
+                    .mineables
+                    .iter()
+                    .map(|id| reference("Mineable", ObjectKind::Item, id)),
+            );
+            if let Some(id) = value.orbit.as_ref().and_then(|orbit| orbit.around.as_ref()) {
+                references.push(reference("Orbits", ObjectKind::Planet, id));
+            }
+            (
+                local_content_id(&value.id).to_string(),
+                Some(value.summary.clone()),
+                vec![
+                    field("Classification", value.classification.clone()),
+                    field("Position", position(value.position)),
+                    field("Radius", value.radius.to_string()),
+                    field("Point of interest", value.is_poi.to_string()),
+                    field("Hazards", joined(&value.hazards)),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Station => {
+            let value = registry.stations.get(&key.id)?;
+            let mut references = Vec::new();
+            if let Some(id) = &value.system {
+                references.push(reference("System", ObjectKind::System, id));
+            }
+            if let Some(id) = &value.faction {
+                references.push(reference("Faction", ObjectKind::Faction, id));
+            }
+            (
+                value.name.clone(),
+                value.summary.clone(),
+                vec![
+                    field(
+                        "Position",
+                        value
+                            .position
+                            .map(position)
+                            .unwrap_or_else(|| "Generated".to_string()),
+                    ),
+                    field("Radius", value.radius.to_string()),
+                    field("Icon", value.icon.clone()),
+                    field(
+                        "Culture",
+                        value.culture.clone().unwrap_or_else(|| "None".to_string()),
+                    ),
+                    field(
+                        "Services",
+                        value
+                            .services
+                            .iter()
+                            .map(|service| service.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Vendor => {
+            let value = registry.vendors.get(&key.id)?;
+            let mut references = vec![reference("Station", ObjectKind::Station, &value.station)];
+            if let Some(id) = &value.faction {
+                references.push(reference("Faction", ObjectKind::Faction, id));
+            }
+            references.extend(
+                value
+                    .offers
+                    .iter()
+                    .map(|offer| reference("Offered item", ObjectKind::Item, &offer.item)),
+            );
+            (
+                value.name.clone(),
+                None,
+                vec![
+                    field("Service", value.service.clone()),
+                    field("Specialties", joined(&value.specialties)),
+                    field("Rotation", format!("{} day(s)", value.rotation_days)),
+                    field("Slots", value.slots.to_string()),
+                    field("Price variance", value.price_variance.to_string()),
+                    field("Reputation required", value.reputation_required.to_string()),
+                ],
+                references,
+            )
+        }
+        ObjectKind::Upgrade => {
+            let value = registry.upgrades.get(&key.id)?;
+            let references = value
+                .costs
+                .iter()
+                .map(|cost| {
+                    reference(
+                        &format!(
+                            "Cost {} +{}/{} levels",
+                            cost.base_count, cost.per_level, cost.per_levels
+                        ),
+                        ObjectKind::Item,
+                        &cost.item,
+                    )
+                })
+                .collect();
+            (
+                local_content_id(&value.id).to_string(),
+                None,
+                vec![field("Cost entries", value.costs.len().to_string())],
+                references,
+            )
+        }
+    };
+
+    Some(egui_content::ObjectDetail {
+        key: key.clone(),
+        name,
+        artwork: content_object_artwork(registry, key),
+        summary,
+        fields,
+        references,
+    })
+}
+
+fn content_object_artwork(
+    registry: &content::ContentRegistry,
+    key: &egui_content::ObjectKey,
+) -> Option<String> {
+    use egui_content::ObjectKind;
+
+    match key.kind {
+        ObjectKind::Ship => registry
+            .ships
+            .get(&key.id)
+            .and_then(|value| value.texture.clone()),
+        ObjectKind::NpcShip => registry
+            .npc_ships
+            .get(&key.id)
+            .and_then(|value| value.texture.clone()),
+        ObjectKind::Weapon => registry
+            .weapons
+            .get(&key.id)
+            .and_then(|value| value.projectile_texture.clone()),
+        ObjectKind::Planet => registry
+            .planets
+            .get(&key.id)
+            .and_then(|value| value.texture.clone()),
+        ObjectKind::Station => registry
+            .stations
+            .get(&key.id)
+            .and_then(|value| value.texture.clone()),
+        _ => None,
+    }
+}
+
+fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPaneView {
+    let ships = game
+        .owned_ships
+        .iter()
+        .map(|owned| {
+            let active = owned.instance_id == game.active_owned_ship_id;
+            let ship = if active { &game.ship } else { &owned.ship };
+            let inventory = if active {
+                &game.inventory
+            } else {
+                &owned.inventory
+            };
+            let hull_name = game
+                .content_registry
+                .ships
+                .get(&owned.ship_id)
+                .map(|definition| definition.name.clone())
+                .unwrap_or_else(|| "Unavailable hull".to_string());
+            egui_fleet::ShipRow {
+                callsign: owned.callsign.clone(),
+                hull_name,
+                system: local_content_id(&owned.system_id).to_string(),
+                condition: format!(
+                    "Hull {:.0}/{:.0} · Cargo {}",
+                    ship.systems.hull.current,
+                    ship.systems.hull.max,
+                    format_mass(inventory.total_mass())
+                ),
+                active,
+                resolved: game.content_registry.ships.contains_key(&owned.ship_id),
+            }
+        })
+        .collect();
+
+    let selected_index = game
+        .selected_owned_ship_index
+        .min(game.owned_ships.len().saturating_sub(1));
+    let selected_ship = game.owned_ships.get(selected_index).map(|owned| {
+        let active = owned.instance_id == game.active_owned_ship_id;
+        let ship = if active { &game.ship } else { &owned.ship };
+        let inventory = if active {
+            &game.inventory
+        } else {
+            &owned.inventory
+        };
+        let upgrades = if active {
+            &game.ship_upgrades
+        } else {
+            &owned.upgrades
+        };
+        let weapons = if active {
+            &game.equipped_weapons
+        } else {
+            &owned.equipped_weapons
+        };
+        let resolved = game.content_registry.ships.contains_key(&owned.ship_id);
+        let transfer_available = owned_ship_in_transfer_range(game, selected_index);
+        let distance = if owned.system_id == game.current_system_id {
+            format!(
+                "{:.0} units from active ship",
+                ship.position.distance(game.ship.position)
+            )
+        } else {
+            format!("Remote · {}", local_content_id(&owned.system_id))
+        };
+        egui_fleet::SelectedShip {
+            callsign: owned.callsign.clone(),
+            hull_name: game
+                .content_registry
+                .ships
+                .get(&owned.ship_id)
+                .map(|definition| definition.name.clone())
+                .unwrap_or_else(|| "Unavailable hull".to_string()),
+            artwork: game
+                .content_registry
+                .ships
+                .get(&owned.ship_id)
+                .and_then(|definition| definition.texture.clone()),
+            system: local_content_id(&owned.system_id).to_string(),
+            distance,
+            hull: format!(
+                "{:.0}/{:.0}",
+                ship.systems.hull.current, ship.systems.hull.max
+            ),
+            shields: format!(
+                "{:.0}/{:.0}",
+                ship.systems.shields.current, ship.systems.shields.max
+            ),
+            energy: format!(
+                "{:.0}/{:.0}",
+                ship.systems.energy.current, ship.systems.energy.max
+            ),
+            cargo: format!(
+                "{} / {}",
+                format_mass(inventory.total_mass()),
+                format_mass(cargo_rating_kg(upgrades))
+            ),
+            turrets: weapons.len(),
+            active,
+            switch_enabled: !active && resolved && ship.systems.hull.current > 0.0,
+            transfer_available,
+            transfer_status: if active {
+                "Select another ship to transfer cargo.".to_string()
+            } else if transfer_available {
+                "Cargo transfer available.".to_string()
+            } else if owned.system_id != game.current_system_id {
+                "Cargo transfer requires both ships in the same system.".to_string()
+            } else {
+                format!(
+                    "Move within {:.0} units to transfer cargo.",
+                    OWNED_SHIP_TRANSFER_RANGE
+                )
+            },
+            cargo_rows: fleet_cargo_rows(inventory),
+        }
+    });
+
+    let shipyard = nearby_garage_index(game).map(|station_index| {
+        let station = &game.stations[station_index];
+        let offers = game
+            .content_registry
+            .ship_order
+            .iter()
+            .filter_map(|ship_id| game.content_registry.ships.get(ship_id))
+            .filter_map(|ship| {
+                let price = ship.purchase_price?;
+                Some(egui_fleet::ShipOffer {
+                    ship_id: ship.id.clone(),
+                    name: ship.name.clone(),
+                    price,
+                    affordable: game.credits >= price,
+                })
+            })
+            .collect();
+        egui_fleet::ShipyardView {
+            station_name: station.name.clone(),
+            offers,
+        }
+    });
+
+    egui_fleet::FleetPaneView {
+        pinned: egui_pane_pinned(EguiPane::Fleet),
+        ships,
+        selected: (!game.owned_ships.is_empty()).then_some(selected_index),
+        selected_ship,
+        active_cargo: fleet_cargo_rows(&game.inventory),
+        transfer_quantity: game.fleet_transfer_quantity,
+        quantity_step,
+        credits: game.credits,
+        shipyard,
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| matches!(entry.category.as_str(), "Fleet" | "Shipyard"))
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
+    }
+}
+
+fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView {
+    let npc_index = game.selected_npc_ship.unwrap_or(usize::MAX);
+    let Some(npc) = game.npc_ships.get(npc_index) else {
+        return egui_npc::NpcPaneView {
+            pinned: egui_pane_pinned(EguiPane::Contact),
+            name: "Contact unavailable".to_string(),
+            artwork: None,
+            content_id: String::new(),
+            proximity: "Unavailable".to_string(),
+            identified: false,
+            hostile: false,
+            identity: "Unknown".to_string(),
+            disposition: "Unknown".to_string(),
+            systems: "Unknown".to_string(),
+            loadout: "Unknown".to_string(),
+            defenses: Vec::new(),
+            cargo_summary: "Unknown".to_string(),
+            summary: "The selected contact is no longer available.".to_string(),
+            interactions: Vec::new(),
+            trade_open: false,
+            trade_available: false,
+            trade_quantity: game.npc_trade_quantity,
+            quantity_step,
+            credits: game.credits,
+            trade: Vec::new(),
+            latest_operation: None,
+        };
+    };
+
+    let identified = npc.identified;
+    let hostile = npc_ship_is_hostile(&game.content_registry, npc);
+    let in_range = npc_ship_in_interaction_range(&game.ship, npc);
+    let trade_available =
+        identified && in_range && !hostile && npc_ship_can_trade(&game.content_registry, npc);
+    let interactions = npc_interaction_rows(&game.content_registry, &game.ship, npc)
+        .into_iter()
+        .map(|row| egui_npc::InteractionRow {
+            label: row.action.label().to_string(),
+            status: row.status.to_string(),
+            enabled: row.state == NpcInteractionState::Available,
+            complete: row.state == NpcInteractionState::Complete,
+        })
+        .collect();
+    let day = game.world_elapsed_days.floor().max(0.0) as u64;
+    let trade = npc
+        .cargo_defaults
+        .iter()
+        .map(|stack| {
+            let quote = npc_trade_quote(npc, &stack.item, game.world_seed, day);
+            let cargo = game.inventory.count(&stack.item);
+            egui_npc::TradeRow {
+                item: stack.item.name.clone(),
+                stock: stack.count,
+                cargo,
+                buy_price: quote.buy_price,
+                sell_price: quote.sell_price,
+                buy_amount: if trade_available {
+                    npc_trade_buy_amount(
+                        game.credits,
+                        &game.inventory,
+                        &game.ship_upgrades,
+                        stack,
+                        &quote,
+                        game.npc_trade_quantity,
+                    )
+                } else {
+                    0
+                },
+                sell_amount: if trade_available {
+                    npc_trade_sell_amount(npc, stack, cargo, game.npc_trade_quantity)
+                } else {
+                    0
+                },
+            }
+        })
+        .collect();
+
+    let defenses = if identified {
+        npc.equipped_weapons
+            .iter()
+            .map(|weapon| {
+                let mut defense = format!(
+                    "{} · {} · range {:.0} · damage {:.0}",
+                    weapon.name,
+                    weapon.readiness_label(),
+                    weapon.range,
+                    weapon.damage
+                );
+                if let Some(ammo) = npc_weapon_ammo_count(npc, weapon) {
+                    defense.push_str(&format!(" · ammo {ammo}"));
+                }
+                defense
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let cargo_units = npc
+        .cargo_defaults
+        .iter()
+        .map(|stack| stack.count)
+        .sum::<u32>();
+
+    egui_npc::NpcPaneView {
+        pinned: egui_pane_pinned(EguiPane::Contact),
+        name: if identified {
+            npc.name.clone()
+        } else {
+            "Unidentified transponder".to_string()
+        },
+        artwork: game
+            .content_registry
+            .npc_ships
+            .get(&npc.id)
+            .and_then(|definition| definition.texture.clone()),
+        content_id: if identified {
+            npc.id.clone()
+        } else {
+            "Identity scan required".to_string()
+        },
+        proximity: format!(
+            "{} · {:.0}u · {}",
+            if in_range {
+                "Interaction range"
+            } else {
+                "Approach"
+            },
+            npc_ship_surface_distance(&game.ship, npc),
+            npc.behavior.label()
+        ),
+        identified,
+        hostile,
+        identity: if identified {
+            format!(
+                "{} / {} / {}",
+                local_content_id(&npc.id),
+                npc.archetype,
+                npc.role
+            )
+        } else {
+            "Run identification scan from interaction range".to_string()
+        },
+        disposition: if identified {
+            npc.faction
+                .as_deref()
+                .map(|faction| {
+                    format!(
+                        "{} / {}",
+                        faction_name(&game.content_registry, faction),
+                        faction_disposition_label(&game.content_registry, faction)
+                    )
+                })
+                .unwrap_or_else(|| "Independent / unknown".to_string())
+        } else {
+            "Unknown".to_string()
+        },
+        systems: if identified {
+            format!(
+                "Hull {:.0}/{:.0} · Shield {:.0}/{:.0} · Energy {:.0}/{:.0}",
+                npc.hull.current,
+                npc.hull.max,
+                npc.shields.current,
+                npc.shields.max,
+                npc.energy.current,
+                npc.energy.max
+            )
+        } else {
+            "Unscanned".to_string()
+        },
+        loadout: if identified {
+            format!(
+                "{} shield · {} turret · cargo {}",
+                npc.shield_slots.len(),
+                npc.equipped_weapons.len(),
+                format_mass(npc.cargo_capacity)
+            )
+        } else {
+            "Unknown".to_string()
+        },
+        defenses,
+        cargo_summary: if identified {
+            format!(
+                "{} manifest item(s) · {} unit(s)",
+                npc.cargo_defaults.len(),
+                cargo_units
+            )
+        } else {
+            "Unknown".to_string()
+        },
+        summary: if identified {
+            npc.summary.clone()
+        } else {
+            "Contact details are unavailable until identification completes.".to_string()
+        },
+        interactions,
+        trade_open: npc.trade_open,
+        trade_available,
+        trade_quantity: game.npc_trade_quantity,
+        quantity_step,
+        credits: game.credits,
+        trade,
+        latest_operation: game
+            .operation_feedback
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.category.as_str(),
+                    "Contact" | "Rumor" | "Trade" | "Follow"
+                )
+            })
+            .map(|entry| format!("{} / {}", entry.category, entry.message)),
     }
 }
 
@@ -18578,6 +18587,11 @@ fn ship_pane_view(game: &GameState) -> egui_inventory::ShipPane {
 
     egui_inventory::ShipPane {
         ship_name,
+        artwork: game
+            .content_registry
+            .ships
+            .get(&game.ship_id)
+            .and_then(|definition| definition.texture.clone()),
         cargo: format!(
             "Cargo {} / {}",
             format_mass(game.inventory.total_mass()),
@@ -18723,681 +18737,479 @@ fn apply_inventory_ui_actions(
                 game.inventory_open = false;
                 game.audio.play(audio::AudioCue::Select);
             }
+            egui_inventory::InventoryUiAction::ToggleShipPin => {
+                toggle_egui_pane_pin(EguiPane::Ship);
+            }
+            egui_inventory::InventoryUiAction::ToggleProductionPin => {
+                toggle_egui_pane_pin(EguiPane::Production);
+            }
+            egui_inventory::InventoryUiAction::ToggleInventoryPin => {
+                toggle_egui_pane_pin(EguiPane::Inventory);
+            }
         }
     }
 }
 
-fn draw_inventory_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let action_rail_width = selected_action_rail_width(game);
-    let layout = inventory_overlay_layout(action_rail_width);
-
-    draw_rectangle(
-        layout.panel_x,
-        layout.panel_y,
-        layout.panel_width,
-        layout.panel_height,
-        Color::from_rgba(6, 12, 18, 228),
-    );
-    draw_rectangle_lines(
-        layout.panel_x,
-        layout.panel_y,
-        layout.panel_width,
-        layout.panel_height,
-        1.0,
-        Color::from_rgba(112, 151, 163, 150),
-    );
-    draw_panel_corner_art(
-        Rect::new(
-            layout.panel_x,
-            layout.panel_y,
-            layout.panel_width,
-            layout.panel_height,
-        ),
-        panel_corner,
-    );
-    draw_inventory_pane_separators(&layout);
-
-    let detail_title = if game.selected_planet.is_some() {
-        "Planet Pane"
-    } else if game.selected_station.is_some() {
-        "Station Pane"
-    } else if game.selected_npc_ship.is_some() {
-        "Contact Pane"
-    } else {
-        "Ship Pane"
-    };
-    draw_text(
-        detail_title,
-        layout.detail_x,
-        layout.panel_y + GAME_PANEL_HEADER_BASELINE,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Production",
-        layout.production_x,
-        layout.panel_y + GAME_PANEL_HEADER_BASELINE,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_production_mode_tabs(
-        game.production_mode,
-        layout.production_x + layout.production_width - 204.0,
-        layout.panel_y + GAME_PANEL_HEADER_BASELINE - 19.0,
-    );
-    draw_text(
-        "Inventory",
-        layout.inventory_x,
-        layout.panel_y + GAME_PANEL_HEADER_BASELINE,
-        26.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        &format!("Credits {}", game.credits),
-        layout.inventory_x + 128.0,
-        layout.panel_y + GAME_PANEL_HEADER_BASELINE - 2.0,
-        17.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
-
-    let mouse = vec2(mouse_position().0, mouse_position().1);
-    draw_production_text_table(
-        game,
-        layout.production_x,
-        work_table_y(),
-        layout.production_width,
-        game.work_scroll,
-        mouse,
-    );
-
-    draw_inventory_text_list(
-        &game.inventory,
-        layout.inventory_x,
-        layout.panel_y + GAME_PANEL_BODY_TOP,
-        layout.inventory_width,
-        game.inventory_scroll,
-    );
-    draw_detail_panel(
-        game,
-        layout.detail_x,
-        layout.panel_y + GAME_PANEL_BODY_TOP,
-        layout.detail_width,
-    );
-    if action_rail_width.is_some() {
-        draw_object_action_rail(game, &layout, mouse);
-    }
-    if let Some(recipe) = hovered_production_recipe(game, mouse, game.work_scroll) {
-        draw_recipe_tooltip(recipe, &game.inventory, mouse);
-    }
-}
-
-fn draw_inventory_pane_separators(layout: &InventoryOverlayLayout) {
-    let top = layout.panel_y + GAME_PANEL_BODY_TOP - 14.0;
-    let bottom = layout.panel_y + layout.panel_height - 34.0;
-    let first_x = pane_leading_separator_x(layout.production_x);
-    let second_x = pane_leading_separator_x(layout.inventory_x);
-    let color = Color::from_rgba(96, 137, 150, 115);
-
-    draw_vertical_dotted_line(first_x, top, bottom, 1.0, 7.0, 7.0, color);
-    draw_vertical_dotted_line(second_x, top, bottom, 1.0, 7.0, 7.0, color);
-}
-
-fn pane_leading_separator_x(table_x: f32) -> f32 {
-    table_x - 8.0
-}
-
-fn draw_vertical_dotted_line(
-    x: f32,
-    y1: f32,
-    y2: f32,
-    thickness: f32,
-    dash: f32,
-    gap: f32,
-    color: Color,
+fn apply_planet_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_planet::PlanetUiAction>,
+    keep_click_step: i32,
 ) {
-    let mut y = y1;
-    while y < y2 {
-        let end_y = (y + dash).min(y2);
-        draw_line(x, y, x, end_y, thickness, color);
-        y += dash + gap;
-    }
-}
-
-fn draw_object_action_rail(game: &GameState, layout: &InventoryOverlayLayout, mouse: Vec2) {
-    let Some(rail) = layout.action_rail else {
+    let Some(planet_index) = game.selected_planet else {
         return;
     };
 
-    if let Some(planet_index) = game.selected_planet {
-        if let Some(planet) = game.planets.get(planet_index) {
-            draw_planet_action_rail(PlanetActionRailRender {
-                content_registry: &game.content_registry,
-                planet,
-                inventory: &game.inventory,
-                ship_upgrades: &game.ship_upgrades,
-                action_rail_width: rail.w,
-                is_orbiting: game.orbiting_planet == Some(planet_index),
-                in_range: planet_in_interaction_range(&game.ship, planet),
-                scroll: game.work_scroll,
-                mouse,
-            });
-        }
-    } else if let Some(station_index) = game.selected_station {
-        if let Some(station) = game.stations.get(station_index) {
-            draw_action_rail_frame(rail, "Actions");
-            draw_station_service_list(StationActionRailRender {
-                content_registry: &game.content_registry,
-                station,
-                stations: &game.stations,
-                planets: &game.planets,
-                world_elapsed_days: game.world_elapsed_days,
-                selected_service: game.selected_station_service,
-                in_range: station_in_interaction_range(&game.ship, station),
-                credits: game.credits,
-                inventory: &game.inventory,
-                completed_research: &game.completed_research,
-                active_contracts: &game.active_contracts,
-                faction_reputation: &game.faction_reputation,
-                action_rail_width: rail.w,
-            });
-        }
-    } else if let Some(npc_ship_index) = game.selected_npc_ship {
-        if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
-            draw_action_rail_frame(rail, "Actions");
-            let rect = Rect::new(rail.x + 12.0, rail.y + 48.0, rail.w - 24.0, rail.h - 60.0);
-            if npc_ship.trade_open {
-                draw_npc_ship_trade_list(NpcTradeRender {
-                    ship: &game.ship,
-                    ship_upgrades: &game.ship_upgrades,
-                    npc_ship,
-                    world_seed: game.world_seed,
-                    world_elapsed_days: game.world_elapsed_days,
-                    credits: game.credits,
-                    inventory: &game.inventory,
-                    quantity: game.npc_trade_quantity,
-                    rect,
-                });
-            } else {
-                draw_npc_ship_interaction_list(&game.content_registry, &game.ship, npc_ship, rect);
+    for action in actions {
+        match action {
+            egui_planet::PlanetUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Planet);
             }
-        }
-    } else {
-        draw_ship_defense_action_rail(game, rail, mouse);
-    }
-}
-
-fn draw_ship_defense_action_rail(game: &GameState, rail: Rect, mouse: Vec2) {
-    draw_action_rail_frame(rail, "Defense");
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let accent = Color::from_rgba(150, 221, 226, 255);
-    let unavailable = Color::from_rgba(126, 143, 148, 210);
-    let slot_count = weapon_slot_capacity(game);
-    let hostile_count = game
-        .defense_threats
-        .iter()
-        .filter(|threat| {
-            threat.system == game.current_system_id
-                && threat.disposition == ThreatDisposition::Hostile
-                && threat.hull.current > 0.0
-        })
-        .count();
-
-    draw_text(
-        &format!("{} slot(s) / {} hostile", slot_count, hostile_count),
-        rail.x + 12.0,
-        rail.y + 52.0,
-        16.0,
-        text,
-    );
-    draw_text(
-        "Choose a turret from each bank's Turret List.",
-        rail.x + 12.0,
-        rail.y + 76.0,
-        14.0,
-        label,
-    );
-
-    if slot_count == 0 {
-        draw_text(
-            "No weapon slots configured",
-            rail.x + 12.0,
-            rail.y + 116.0,
-            16.0,
-            unavailable,
-        );
-        return;
-    }
-
-    for slot_index in 0..slot_count.min(5) {
-        let rect = ship_weapon_slot_rect_for_rail(rail, slot_index);
-        let hovered = rect.contains(mouse);
-        draw_rectangle(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
-            if hovered {
-                Color::from_rgba(13, 32, 40, 220)
-            } else if slot_index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 128)
-            } else {
-                Color::from_rgba(6, 12, 18, 88)
-            },
-        );
-        draw_rectangle_lines(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
-            1.0,
-            if hovered {
-                Color::from_rgba(150, 221, 226, 155)
-            } else {
-                Color::from_rgba(82, 114, 124, 90)
-            },
-        );
-        draw_text(
-            &format!("Turret Bank #{}", slot_index + 1),
-            rect.x + 8.0,
-            rect.y + 18.0,
-            15.0,
-            label,
-        );
-        let resolved_weapon = game
-            .equipped_weapons
-            .get(slot_index)
-            .filter(|weapon| weapon.resolved);
-        let selection_label = if let Some(weapon) = resolved_weapon {
-            weapon.name.clone()
-        } else if let Some(missing) = game
-            .equipped_weapons
-            .get(slot_index)
-            .filter(|weapon| !weapon.id.is_empty())
-        {
-            format!("Missing: {}", missing.id)
-        } else {
-            "Select turret".to_string()
-        };
-        let status = if let Some(weapon) = resolved_weapon {
-            let mut status = format!(
-                "{}  rng {:.0}  dmg {:.0}  e {:.0}",
-                weapon.readiness_label(),
-                weapon.range,
-                weapon.damage,
-                weapon.energy_cost
-            );
-            if let Some(ammo) = player_weapon_ammo_count(&game.inventory, weapon) {
-                status.push_str(&format!("  ammo {ammo}"));
-            }
-            status
-        } else {
-            "Ready for install".to_string()
-        };
-        let button = turret_bank_button_rect(rail, slot_index);
-        let button_hovered = button.contains(mouse);
-        draw_rectangle(
-            button.x,
-            button.y,
-            button.w,
-            button.h,
-            if button_hovered {
-                Color::from_rgba(18, 48, 58, 245)
-            } else {
-                Color::from_rgba(10, 27, 35, 235)
-            },
-        );
-        draw_rectangle_lines(button.x, button.y, button.w, button.h, 1.0, accent);
-        draw_text(
-            &fit_debug_text(
-                &format!("Turret List: {}  ▾", selection_label),
-                button.w - 12.0,
-                15,
-            ),
-            button.x + 6.0,
-            button.y + 18.0,
-            15.0,
-            if resolved_weapon.is_some() {
-                accent
-            } else {
-                text
-            },
-        );
-        draw_text(
-            &fit_debug_text(&status, rect.w - 16.0, 12),
-            rect.x + 8.0,
-            rect.y + 64.0,
-            12.0,
-            resolved_weapon.map_or(unavailable, |weapon| {
-                if matches!(
-                    weapon.status,
-                    WeaponStatus::InsufficientEnergy | WeaponStatus::OutOfAmmo
-                ) {
-                    Color::from_rgba(226, 190, 150, 245)
+            egui_planet::PlanetUiAction::EnterOrbit => {
+                if enter_planet_orbit(game, planet_index) {
+                    game.audio.play(audio::AudioCue::Confirm);
                 } else {
-                    text
+                    game.audio.play(audio::AudioCue::Warning);
                 }
-            }),
-        );
-    }
-
-    if slot_count > 5 {
-        draw_text(
-            &format!("{} more weapon slot(s)", slot_count - 5),
-            rail.x + 12.0,
-            rail.y + 112.0 + 5.0 * 76.0,
-            15.0,
-            accent,
-        );
-    }
-
-    if let Some(slot_index) = game.open_turret_bank.filter(|slot| *slot < slot_count) {
-        let turret_ids = inventory_turret_ids(&game.content_registry, &game.inventory);
-        let dropdown = turret_bank_dropdown_rect(rail, slot_index, turret_ids.len());
-        draw_rectangle(
-            dropdown.x,
-            dropdown.y,
-            dropdown.w,
-            dropdown.h,
-            Color::from_rgba(5, 16, 22, 252),
-        );
-        draw_rectangle_lines(dropdown.x, dropdown.y, dropdown.w, dropdown.h, 1.0, accent);
-        if turret_ids.is_empty() {
-            draw_text(
-                "No turrets in inventory",
-                dropdown.x + 8.0,
-                dropdown.y + 20.0,
-                14.0,
-                unavailable,
-            );
-        }
-        for (row_index, weapon_id) in turret_ids.iter().enumerate() {
-            let row = turret_bank_dropdown_row_rect(dropdown, row_index);
-            if row.contains(mouse) {
-                draw_rectangle(
-                    row.x + 1.0,
-                    row.y + 1.0,
-                    row.w - 2.0,
-                    row.h - 2.0,
-                    Color::from_rgba(20, 55, 65, 245),
-                );
             }
-            let Some(weapon) = game.content_registry.weapons.get(weapon_id) else {
-                continue;
-            };
-            let count = registry_item(&game.content_registry, &weapon.install_item)
-                .map(|item| game.inventory.count(&item))
-                .unwrap_or(0);
-            draw_text(
-                &fit_debug_text(&format!("{}  x{}", weapon.name, count), row.w - 16.0, 15),
-                row.x + 8.0,
-                row.y + 20.0,
-                15.0,
-                accent,
-            );
+            egui_planet::PlanetUiAction::LaunchScan => {
+                let scanned = launch_planet_scan(game, planet_index);
+                game.audio.play(if scanned {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+                if scanned {
+                    game.save_dirty = true;
+                }
+            }
+            egui_planet::PlanetUiAction::AdjustMiningKeep { row, direction } => {
+                let available = game.planets.get(planet_index).is_some_and(|planet| {
+                    planet_has_composition_scan(planet)
+                        && planet_in_interaction_range(&game.ship, planet)
+                });
+                if available {
+                    if let Some(setting) = game
+                        .planets
+                        .get_mut(planet_index)
+                        .and_then(|planet| planet.mining.get_mut(row))
+                    {
+                        adjust_work_setting(
+                            &mut setting.keep,
+                            WorkColumn::Keep,
+                            direction.signum() * keep_click_step,
+                        );
+                        game.save_dirty = true;
+                    }
+                }
+            }
+            egui_planet::PlanetUiAction::QueueMining { row } => {
+                let available = game.planets.get(planet_index).is_some_and(|planet| {
+                    planet_has_composition_scan(planet)
+                        && planet_in_interaction_range(&game.ship, planet)
+                });
+                if available {
+                    if let Some(setting) = game
+                        .planets
+                        .get_mut(planet_index)
+                        .and_then(|planet| planet.mining.get_mut(row))
+                    {
+                        setting.queued = setting.queued.saturating_add(1).min(999);
+                        game.save_dirty = true;
+                    }
+                }
+            }
         }
     }
 }
 
-fn draw_action_rail_frame(rail: Rect, title: &str) {
-    draw_rectangle(
-        rail.x,
-        rail.y,
-        rail.w,
-        rail.h,
-        Color::from_rgba(8, 18, 24, 204),
-    );
-    draw_rectangle_lines(
-        rail.x,
-        rail.y,
-        rail.w,
-        rail.h,
-        1.0,
-        Color::from_rgba(112, 151, 163, 125),
-    );
-    draw_text(
-        title,
-        rail.x + 10.0,
-        rail.y + 24.0,
-        16.0,
-        Color::from_rgba(88, 116, 126, 180),
-    );
-    draw_action_rail_resize_handle(rail);
-}
-
-fn action_rail_resize_handle_rect(rail: Rect) -> Rect {
-    Rect::new(
-        rail.x - ACTION_RAIL_RESIZE_HITBOX_WIDTH * 0.5,
-        rail.y + 6.0,
-        ACTION_RAIL_RESIZE_HITBOX_WIDTH,
-        rail.h - 12.0,
-    )
-}
-
-fn draw_action_rail_resize_handle(rail: Rect) {
-    let handle = action_rail_resize_handle_rect(rail);
-    let hovered = handle.contains(mouse_vec2());
-    let color = if hovered {
-        Color::from_rgba(150, 221, 226, 210)
-    } else {
-        Color::from_rgba(96, 137, 150, 125)
+fn apply_station_ui_actions(game: &mut GameState, actions: Vec<egui_station::StationUiAction>) {
+    let Some(station_index) = game.selected_station else {
+        return;
     };
-    let x = rail.x;
 
-    draw_vertical_dotted_line(
-        x,
-        handle.y + 8.0,
-        handle.y + handle.h - 8.0,
-        1.0,
-        4.0,
-        5.0,
-        color,
-    );
-    if hovered {
-        draw_rectangle(
-            x - 2.0,
-            handle.y + 10.0,
-            4.0,
-            handle.h - 20.0,
-            Color::from_rgba(150, 221, 226, 28),
-        );
+    for action in actions {
+        let handled = match action {
+            egui_station::StationUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Station);
+                true
+            }
+            egui_station::StationUiAction::SelectService(service_index) => {
+                select_station_service(game, station_index, service_index)
+            }
+            egui_station::StationUiAction::Buy(offer_index) => {
+                game.selected_station_service.is_some_and(|service_index| {
+                    buy_station_trade_offer(game, station_index, service_index, offer_index)
+                })
+            }
+            egui_station::StationUiAction::Sell(offer_index) => {
+                game.selected_station_service.is_some_and(|service_index| {
+                    sell_station_trade_offer(game, station_index, service_index, offer_index)
+                })
+            }
+            egui_station::StationUiAction::Repair => repair_ship_at_station(game, station_index),
+            egui_station::StationUiAction::Contract(contract_index) => {
+                game.selected_station_service.is_some_and(|service_index| {
+                    accept_or_complete_contract(game, station_index, service_index, contract_index)
+                })
+            }
+            egui_station::StationUiAction::PurchaseRecipe(unlock_index) => {
+                game.selected_station_service.is_some_and(|service_index| {
+                    purchase_recipe_unlock(game, station_index, service_index, unlock_index)
+                })
+            }
+        };
+        game.audio.play(if handled {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
     }
 }
 
-fn ship_detail_preview_rect(action_rail_width: Option<f32>) -> Rect {
-    let layout = inventory_overlay_layout(action_rail_width);
-    let detail_width = layout.detail_width;
-    let detail_x = layout.detail_x;
-    let detail_y = layout.panel_y + GAME_PANEL_BODY_TOP;
-    let image_size = 190.0;
-    let center = vec2(detail_x + detail_width * 0.5, detail_y + 74.0);
-
-    Rect::new(
-        center.x - image_size * 0.5,
-        center.y - image_size * 0.5,
-        image_size,
-        image_size,
-    )
-}
-
-fn ship_weapon_slot_rect_for_rail(rail: Rect, slot_index: usize) -> Rect {
-    Rect::new(
-        rail.x + 12.0,
-        rail.y + 100.0 + slot_index as f32 * 76.0,
-        rail.w - 24.0,
-        68.0,
-    )
-}
-
-fn turret_bank_button_rect(rail: Rect, slot_index: usize) -> Rect {
-    let slot = ship_weapon_slot_rect_for_rail(rail, slot_index);
-    Rect::new(slot.x + 8.0, slot.y + 25.0, slot.w - 16.0, 25.0)
-}
-
-fn turret_bank_dropdown_rect(rail: Rect, slot_index: usize, item_count: usize) -> Rect {
-    let button = turret_bank_button_rect(rail, slot_index);
-    let height = item_count.max(1) as f32 * 30.0;
-    let below_y = button.y + button.h + 3.0;
-    let y = if below_y + height <= rail.y + rail.h - 8.0 {
-        below_y
-    } else {
-        button.y - height - 3.0
-    };
-    Rect::new(button.x, y, button.w, height)
-}
-
-fn turret_bank_dropdown_row_rect(dropdown: Rect, row_index: usize) -> Rect {
-    Rect::new(
-        dropdown.x,
-        dropdown.y + row_index as f32 * 30.0,
-        dropdown.w,
-        30.0,
-    )
-}
-
-fn planet_scan_button_rect(action_rail_width: f32) -> Rect {
-    let rail = action_rail_rect(action_rail_width);
-    Rect::new(rail.x + 12.0, rail.y + 118.0, rail.w - 24.0, 36.0)
-}
-
-fn planet_orbit_button_rect(action_rail_width: f32) -> Rect {
-    let rail = action_rail_rect(action_rail_width);
-    Rect::new(rail.x + 12.0, rail.y + 74.0, rail.w - 24.0, 36.0)
-}
-
-fn action_rail_rect(action_rail_width: f32) -> Rect {
-    inventory_overlay_layout(Some(action_rail_width))
-        .action_rail
-        .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0))
-}
-
-fn station_action_layout(
-    station: &StationDestination,
-    action_rail_width: f32,
-) -> StationActionLayout {
-    let rail = action_rail_rect(action_rail_width);
-    let inner = Rect::new(rail.x + 12.0, rail.y + 48.0, rail.w - 24.0, rail.h - 60.0);
-    let gap = 16.0;
-    let services_width = station_service_button_width(station).min(inner.w * 0.42);
-    let detail_x = inner.x + services_width + gap;
-
-    StationActionLayout {
-        services: Rect::new(inner.x, inner.y, services_width, inner.h),
-        detail: Rect::new(
-            detail_x,
-            inner.y,
-            (inner.x + inner.w - detail_x).max(0.0),
-            inner.h,
-        ),
+fn apply_fleet_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_fleet::FleetUiAction>,
+    quantity_step: u32,
+) {
+    for action in actions {
+        let handled = match action {
+            egui_fleet::FleetUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Fleet);
+                true
+            }
+            egui_fleet::FleetUiAction::SelectShip(index) => {
+                if index < game.owned_ships.len() {
+                    game.selected_owned_ship_index = index;
+                    true
+                } else {
+                    false
+                }
+            }
+            egui_fleet::FleetUiAction::SwitchControl => {
+                switch_active_owned_ship(game, game.selected_owned_ship_index)
+            }
+            egui_fleet::FleetUiAction::AdjustTransferQuantity(direction) => {
+                if !owned_ship_in_transfer_range(game, game.selected_owned_ship_index)
+                    || direction == 0
+                {
+                    false
+                } else {
+                    let amount = quantity_step.max(1);
+                    game.fleet_transfer_quantity = if direction < 0 {
+                        game.fleet_transfer_quantity.saturating_sub(amount).max(1)
+                    } else {
+                        game.fleet_transfer_quantity.saturating_add(amount).min(999)
+                    };
+                    true
+                }
+            }
+            egui_fleet::FleetUiAction::TransferToSelected(item_id) => {
+                transfer_owned_ship_item(
+                    game,
+                    game.selected_owned_ship_index,
+                    &item_id,
+                    true,
+                    game.fleet_transfer_quantity,
+                ) > 0
+            }
+            egui_fleet::FleetUiAction::TransferToActive(item_id) => {
+                transfer_owned_ship_item(
+                    game,
+                    game.selected_owned_ship_index,
+                    &item_id,
+                    false,
+                    game.fleet_transfer_quantity,
+                ) > 0
+            }
+            egui_fleet::FleetUiAction::BuyShip(ship_id) => nearby_garage_index(game)
+                .is_some_and(|station_index| acquire_owned_ship(game, station_index, &ship_id)),
+        };
+        game.audio.play(if handled {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
     }
 }
 
-fn station_service_button_rect(
-    station: &StationDestination,
-    index: usize,
-    action_rail_width: f32,
-) -> Rect {
-    let layout = station_action_layout(station, action_rail_width);
-    Rect::new(
-        layout.services.x,
-        layout.services.y + 28.0 + index as f32 * 40.0,
-        layout.services.w,
-        34.0,
-    )
+fn apply_content_ui_actions(game: &mut GameState, actions: Vec<egui_content::ContentUiAction>) {
+    for action in actions {
+        match action {
+            egui_content::ContentUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Content);
+            }
+            egui_content::ContentUiAction::SelectPack(index) => {
+                if index.is_none_or(|index| index < game.content_registry.packs.len()) {
+                    game.content_browser.selected_pack_index = index;
+                    game.content_browser.selected_object = None;
+                    game.content_browser.object_history.clear();
+                    game.content_browser.items_scroll = 0.0;
+                    game.content_browser.recipes_scroll = 0.0;
+                    game.content_browser.npc_ships_scroll = 0.0;
+                    game.content_browser.planets_scroll = 0.0;
+                    game.audio.play(audio::AudioCue::Select);
+                } else {
+                    game.audio.play(audio::AudioCue::Warning);
+                }
+            }
+            egui_content::ContentUiAction::SelectObject(key) => {
+                if content_object_detail(&game.content_registry, &key).is_some() {
+                    if game.content_browser.selected_object.as_ref() != Some(&key) {
+                        if let Some(previous) = game.content_browser.selected_object.take() {
+                            game.content_browser.object_history.push(previous);
+                        }
+                        game.content_browser.selected_pack_index =
+                            key.id.split_once(':').and_then(|(pack_id, _)| {
+                                game.content_registry
+                                    .packs
+                                    .iter()
+                                    .position(|pack| pack.id == pack_id)
+                            });
+                        game.content_browser.selected_object = Some(key);
+                    }
+                    game.audio.play(audio::AudioCue::Select);
+                } else {
+                    game.audio.play(audio::AudioCue::Warning);
+                }
+            }
+            egui_content::ContentUiAction::BackObject => {
+                if let Some(previous) = game.content_browser.object_history.pop() {
+                    game.content_browser.selected_pack_index =
+                        previous.id.split_once(':').and_then(|(pack_id, _)| {
+                            game.content_registry
+                                .packs
+                                .iter()
+                                .position(|pack| pack.id == pack_id)
+                        });
+                    game.content_browser.selected_object = Some(previous);
+                    game.audio.play(audio::AudioCue::Select);
+                } else {
+                    game.audio.play(audio::AudioCue::Warning);
+                }
+            }
+        }
+    }
 }
 
-fn draw_research_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let (panel_x, panel_y, panel_width, panel_height) = research_panel_rect();
-    let mouse = vec2(mouse_position().0, mouse_position().1);
-
-    draw_rectangle(
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
-        Color::from_rgba(6, 12, 18, 232),
-    );
-    draw_rectangle_lines(
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
-        1.0,
-        Color::from_rgba(112, 151, 163, 150),
-    );
-    draw_panel_corner_art(
-        Rect::new(panel_x, panel_y, panel_width, panel_height),
-        panel_corner,
-    );
-
-    draw_text(
-        "Research",
-        panel_x + GAME_PANEL_HEADER_PAD_X,
-        panel_y + GAME_PANEL_HEADER_BASELINE,
-        28.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        &format!("Credits {}", game.credits),
-        panel_x + panel_width - 180.0,
-        panel_y + 36.0,
-        18.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
-
-    draw_research_tree(game, research_tree_rect(), mouse);
+fn apply_contracts_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_contracts::ContractsUiAction>,
+) {
+    for action in actions {
+        match action {
+            egui_contracts::ContractsUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Contracts);
+            }
+            egui_contracts::ContractsUiAction::Select(index) => {
+                if index < active_contract_menu_entries(game).len() {
+                    game.selected_contract_index = Some(index);
+                    game.audio.play(audio::AudioCue::Select);
+                } else {
+                    game.audio.play(audio::AudioCue::Warning);
+                }
+            }
+            egui_contracts::ContractsUiAction::FocusOrigin(index) => {
+                let entry = active_contract_menu_entries(game).get(index).cloned();
+                if let Some(entry) = entry {
+                    game.selected_contract_index = Some(index);
+                    let contracts_were_open = game.contracts_open;
+                    focus_active_contract(game, &entry);
+                    game.audio
+                        .play(if contracts_were_open && !game.contracts_open {
+                            audio::AudioCue::Confirm
+                        } else {
+                            audio::AudioCue::Warning
+                        });
+                } else {
+                    game.audio.play(audio::AudioCue::Warning);
+                }
+            }
+        }
+    }
 }
 
-fn draw_ship_upgrades_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let (panel_x, panel_y, panel_width, panel_height) = ship_upgrades_panel_rect();
-    let mouse = vec2(mouse_position().0, mouse_position().1);
+fn apply_upgrades_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_upgrades::UpgradesUiAction>,
+    purchase_count: u32,
+) {
+    for action in actions {
+        let handled = match action {
+            egui_upgrades::UpgradesUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Upgrades);
+                true
+            }
+            egui_upgrades::UpgradesUiAction::Purchase(index) => {
+                let mut purchased = false;
+                for _ in 0..purchase_count.max(1) {
+                    if !buy_ship_upgrade(game, index) {
+                        break;
+                    }
+                    purchased = true;
+                }
+                purchased
+            }
+        };
+        game.audio.play(if handled {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
+    }
+}
 
-    draw_rectangle(
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
-        Color::from_rgba(6, 12, 18, 234),
-    );
-    draw_rectangle_lines(
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
-        1.0,
-        Color::from_rgba(112, 151, 163, 150),
-    );
-    draw_panel_corner_art(
-        Rect::new(panel_x, panel_y, panel_width, panel_height),
-        panel_corner,
-    );
+fn apply_research_ui_actions(game: &mut GameState, actions: Vec<egui_research::ResearchUiAction>) {
+    for action in actions {
+        let handled = match action {
+            egui_research::ResearchUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Research);
+                true
+            }
+            egui_research::ResearchUiAction::Select(research_id) => {
+                if game.content_registry.research.contains_key(&research_id) {
+                    game.selected_research = Some(research_id);
+                    true
+                } else {
+                    false
+                }
+            }
+            egui_research::ResearchUiAction::Start(research_id) => {
+                start_research(game, &research_id)
+            }
+        };
+        game.audio.play(if handled {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
+    }
+}
 
-    draw_text(
-        "Ship Upgrades",
-        panel_x + GAME_PANEL_HEADER_PAD_X,
-        panel_y + GAME_PANEL_HEADER_BASELINE,
-        28.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "Esc close",
-        panel_x + panel_width - 100.0,
-        panel_y + 36.0,
-        18.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
+fn apply_destinations_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_destinations::DestinationsUiAction>,
+) {
+    for action in actions {
+        let handled = match action {
+            egui_destinations::DestinationsUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Destinations);
+                true
+            }
+            egui_destinations::DestinationsUiAction::FlySelected => {
+                fly_to_selected_starmap_planet(game)
+            }
+            egui_destinations::DestinationsUiAction::AddSelected => {
+                add_selected_starmap_planet_to_route(game)
+            }
+            egui_destinations::DestinationsUiAction::Remove(index) => {
+                remove_navigation_route_stop(game, index)
+            }
+            egui_destinations::DestinationsUiAction::MoveUp(index) => {
+                move_navigation_route_stop(game, index, index.saturating_sub(1))
+            }
+            egui_destinations::DestinationsUiAction::MoveDown(index) => {
+                move_navigation_route_stop(game, index, index.saturating_add(1))
+            }
+            egui_destinations::DestinationsUiAction::Activate => activate_navigation_route(game),
+            egui_destinations::DestinationsUiAction::Pause => {
+                let was_active = game.navigation_route_active;
+                pause_navigation_route(game, Some("Itinerary paused"));
+                was_active
+            }
+            egui_destinations::DestinationsUiAction::Clear => {
+                let had_route = !game.navigation_route.is_empty();
+                clear_navigation_route(game);
+                had_route
+            }
+        };
+        game.audio.play(if handled {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
+    }
+}
 
-    draw_ship_upgrades_table(ShipUpgradeTableRender {
-        content_registry: &game.content_registry,
-        upgrades: &game.ship_upgrades,
-        inventory: &game.inventory,
-        x: panel_x + GAME_PANEL_CONTENT_PAD_X,
-        y: panel_y + GAME_PANEL_BODY_TOP,
-        width: panel_width - GAME_PANEL_CONTENT_PAD_X - 28.0,
-        scroll: game.upgrades_scroll,
-        viewport_height: ship_upgrades_table_viewport_height(),
-        mouse,
-    });
+fn apply_npc_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_npc::NpcUiAction>,
+    quantity_step: u32,
+) {
+    let Some(npc_index) = game.selected_npc_ship else {
+        return;
+    };
+
+    for action in actions {
+        let handled = match action {
+            egui_npc::NpcUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Contact);
+                true
+            }
+            egui_npc::NpcUiAction::Interaction(row_index) => {
+                let action = game.npc_ships.get(npc_index).and_then(|npc| {
+                    npc_interaction_rows(&game.content_registry, &game.ship, npc)
+                        .get(row_index)
+                        .filter(|row| row.state == NpcInteractionState::Available)
+                        .map(|row| row.action)
+                });
+                match action {
+                    Some(NpcInteractionAction::Identify) => identify_selected_npc_ship(game),
+                    Some(NpcInteractionAction::Hail) => {
+                        let rumor = game
+                            .npc_ships
+                            .get(npc_index)
+                            .map(|npc| npc_ship_rumor(game, npc));
+                        if let Some(rumor) = rumor {
+                            push_operation_feedback(game, "Rumor", rumor);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Some(NpcInteractionAction::Trade) => {
+                        if let Some(npc) = game.npc_ships.get_mut(npc_index) {
+                            npc.trade_open = true;
+                            game.npc_trade_quantity = 1;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Some(NpcInteractionAction::Dock | NpcInteractionAction::Conflict) | None => {
+                        false
+                    }
+                }
+            }
+            egui_npc::NpcUiAction::CloseTrade => {
+                if let Some(npc) = game.npc_ships.get_mut(npc_index) {
+                    npc.trade_open = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            egui_npc::NpcUiAction::AdjustTradeQuantity(direction) => {
+                let amount = quantity_step.max(1);
+                game.npc_trade_quantity = if direction < 0 {
+                    game.npc_trade_quantity.saturating_sub(amount).max(1)
+                } else {
+                    game.npc_trade_quantity.saturating_add(amount).min(999)
+                };
+                true
+            }
+            egui_npc::NpcUiAction::Buy(row) => {
+                execute_npc_trade(game, npc_index, row, NpcTradeAction::Buy)
+            }
+            egui_npc::NpcUiAction::Sell(row) => {
+                execute_npc_trade(game, npc_index, row, NpcTradeAction::Sell)
+            }
+        };
+        game.audio.play(if handled {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -19408,62 +19220,6 @@ struct ContractMenuEntry {
     status: String,
     progress: String,
     deadline: String,
-}
-
-fn contracts_panel_rect() -> Rect {
-    let width = (screen_width() - 48.0).min(1080.0);
-    let height = (screen_height() - 72.0)
-        .max(360.0)
-        .min(screen_height() * 0.84);
-    Rect::new(
-        (screen_width() - width) * 0.5,
-        (screen_height() - height) * 0.5,
-        width,
-        height,
-    )
-}
-
-fn contracts_menu_viewport(panel: Rect) -> Rect {
-    Rect::new(
-        panel.x + GAME_PANEL_CONTENT_PAD_X,
-        panel.y + GAME_PANEL_BODY_TOP + 12.0,
-        (panel.w * 0.42).max(260.0),
-        panel.h - GAME_PANEL_BODY_TOP - 38.0,
-    )
-}
-
-fn contracts_menu_card_height(entry: &ContractMenuEntry, width: f32) -> f32 {
-    (69.0
-        + wrapped_text_height(&entry.contract.name, width - 18.0, 21)
-        + wrapped_text_height(
-            &format!("{} → {}", entry.origin_name, entry.target_name),
-            width - 18.0,
-            15,
-        ))
-    .max(98.0)
-}
-
-fn contracts_menu_card_rect(
-    panel: Rect,
-    entries: &[ContractMenuEntry],
-    index: usize,
-    scroll: f32,
-) -> Rect {
-    let viewport = contracts_menu_viewport(panel);
-    let y_offset = entries
-        .iter()
-        .take(index)
-        .map(|entry| contracts_menu_card_height(entry, viewport.w) + CONTRACT_CARD_GAP)
-        .sum::<f32>();
-    Rect::new(
-        viewport.x,
-        viewport.y + y_offset - scroll,
-        viewport.w,
-        entries
-            .get(index)
-            .map(|entry| contracts_menu_card_height(entry, viewport.w))
-            .unwrap_or(0.0),
-    )
 }
 
 fn active_contract_menu_entries(game: &GameState) -> Vec<ContractMenuEntry> {
@@ -19559,38 +19315,6 @@ fn contract_target_name(game: &GameState, contract: &ContractOffer) -> String {
     }
 }
 
-fn handle_contracts_overlay_scroll(game: &mut GameState, mouse: Vec2, wheel: f32) {
-    let panel = contracts_panel_rect();
-    let viewport = contracts_menu_viewport(panel);
-    if !viewport.contains(mouse) {
-        return;
-    }
-    let entries = active_contract_menu_entries(game);
-    let content_height = entries
-        .iter()
-        .map(|entry| contracts_menu_card_height(entry, viewport.w) + CONTRACT_CARD_GAP)
-        .sum::<f32>()
-        - CONTRACT_CARD_GAP;
-    let max_scroll = (content_height - viewport.h).max(0.0);
-    game.contract_menu_scroll = (game.contract_menu_scroll - wheel * 44.0).clamp(0.0, max_scroll);
-}
-
-fn handle_contracts_overlay_input(game: &mut GameState, mouse: Vec2) -> bool {
-    if !is_mouse_button_pressed(MouseButton::Left) {
-        return false;
-    }
-    let panel = contracts_panel_rect();
-    let entries = active_contract_menu_entries(game);
-    let Some(index) = entries.iter().enumerate().position(|(index, _)| {
-        contracts_menu_card_rect(panel, &entries, index, game.contract_menu_scroll).contains(mouse)
-    }) else {
-        return false;
-    };
-    game.selected_contract_index = Some(index);
-    focus_active_contract(game, &entries[index]);
-    true
-}
-
 fn focus_active_contract(game: &mut GameState, entry: &ContractMenuEntry) {
     let Some(station_index) = game
         .stations
@@ -19629,603 +19353,6 @@ fn focus_active_contract(game: &mut GameState, entry: &ContractMenuEntry) {
     );
 }
 
-fn draw_contracts_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let panel = contracts_panel_rect();
-    let viewport = contracts_menu_viewport(panel);
-    let entries = active_contract_menu_entries(game);
-    let mouse = mouse_vec2();
-    let text = Color::from_rgba(235, 242, 226, 255);
-    let detail = Color::from_rgba(178, 197, 203, 255);
-    let accent = Color::from_rgba(150, 221, 226, 255);
-    let warning = Color::from_rgba(226, 190, 150, 255);
-
-    draw_rectangle(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        Color::from_rgba(6, 12, 18, 238),
-    );
-    draw_rectangle_lines(
-        panel.x,
-        panel.y,
-        panel.w,
-        panel.h,
-        1.0,
-        Color::from_rgba(112, 151, 163, 180),
-    );
-    draw_panel_corner_art(panel, panel_corner);
-    draw_text(
-        "Contracts",
-        panel.x + GAME_PANEL_HEADER_PAD_X,
-        panel.y + GAME_PANEL_HEADER_BASELINE,
-        28.0,
-        text,
-    );
-    draw_text(
-        "J / Esc close",
-        panel.x + panel.w - 132.0,
-        panel.y + 36.0,
-        17.0,
-        detail,
-    );
-    draw_text(
-        &format!("{}/3 active", entries.len()),
-        panel.x + panel.w - 132.0,
-        panel.y + 62.0,
-        15.0,
-        accent,
-    );
-    draw_vertical_dotted_line(
-        viewport.x + viewport.w + 22.0,
-        viewport.y,
-        viewport.y + viewport.h,
-        0.5,
-        5.0,
-        6.0,
-        Color::from_rgba(96, 137, 150, 100),
-    );
-
-    if entries.is_empty() {
-        draw_text(
-            "No active contracts",
-            viewport.x,
-            viewport.y + 30.0,
-            19.0,
-            detail,
-        );
-        draw_text(
-            "Accept work from a station contract desk.",
-            viewport.x,
-            viewport.y + 58.0,
-            15.0,
-            detail,
-        );
-        return;
-    }
-
-    for (index, entry) in entries.iter().enumerate() {
-        let card = contracts_menu_card_rect(panel, &entries, index, game.contract_menu_scroll);
-        if card.y + card.h < viewport.y || card.y > viewport.y + viewport.h {
-            continue;
-        }
-        let selected = game.selected_contract_index == Some(index);
-        let hovered = card.contains(mouse);
-        draw_rectangle(
-            card.x,
-            card.y,
-            card.w,
-            card.h,
-            if selected {
-                Color::from_rgba(24, 58, 66, 235)
-            } else if hovered {
-                Color::from_rgba(13, 32, 40, 220)
-            } else {
-                Color::from_rgba(8, 18, 24, 150)
-            },
-        );
-        draw_rectangle_lines(
-            card.x,
-            card.y,
-            card.w,
-            card.h,
-            1.0,
-            if selected {
-                accent
-            } else {
-                Color::from_rgba(82, 114, 124, 110)
-            },
-        );
-        let title_bottom = draw_wrapped_text(
-            &entry.contract.name,
-            card.x + 9.0,
-            card.y + 25.0,
-            card.w - 18.0,
-            21,
-            text,
-        );
-        let status_y = title_bottom + 4.0;
-        draw_text(
-            &fit_debug_text(
-                &format!("{} · {}", entry.status, entry.deadline),
-                card.w - 18.0,
-                16,
-            ),
-            card.x + 9.0,
-            status_y,
-            16.0,
-            if entry.status == "Expired" {
-                warning
-            } else {
-                accent
-            },
-        );
-        draw_wrapped_text(
-            &format!("{} → {}", entry.origin_name, entry.target_name),
-            card.x + 9.0,
-            status_y + 28.0,
-            card.w - 18.0,
-            15,
-            detail,
-        );
-    }
-
-    let detail_x = viewport.x + viewport.w + 48.0;
-    let detail_width = panel.x + panel.w - detail_x - 28.0;
-    if let Some(index) = game
-        .selected_contract_index
-        .filter(|index| *index < entries.len())
-    {
-        let entry = &entries[index];
-        draw_text(
-            &fit_debug_text(&entry.contract.name, detail_width, 23),
-            detail_x,
-            viewport.y + 28.0,
-            23.0,
-            text,
-        );
-        draw_text(
-            &format!("{} · {}", entry.status, entry.deadline),
-            detail_x,
-            viewport.y + 54.0,
-            16.0,
-            if entry.status == "Expired" {
-                warning
-            } else {
-                accent
-            },
-        );
-        let mut y = draw_wrapped_text(
-            entry
-                .contract
-                .description
-                .as_deref()
-                .unwrap_or("No description provided."),
-            detail_x,
-            viewport.y + 86.0,
-            detail_width,
-            16,
-            detail,
-        );
-        y += 8.0;
-        draw_text(
-            &format!("Objective: {}", entry.progress),
-            detail_x,
-            y,
-            16.0,
-            text,
-        );
-        y += 28.0;
-        draw_text(
-            &format!("Origin: {}", entry.origin_name),
-            detail_x,
-            y,
-            16.0,
-            detail,
-        );
-        y += 24.0;
-        draw_text(
-            &format!("Destination: {}", entry.target_name),
-            detail_x,
-            y,
-            16.0,
-            detail,
-        );
-        y += 24.0;
-        draw_text(
-            &format!(
-                "Reward: {} credits · +{} reputation",
-                entry.contract.reward, entry.contract.reputation_reward
-            ),
-            detail_x,
-            y,
-            16.0,
-            accent,
-        );
-        y += 24.0;
-        draw_text(
-            &format!(
-                "Requirement: {} reputation",
-                entry.contract.reputation_required
-            ),
-            detail_x,
-            y,
-            15.0,
-            detail,
-        );
-        y += 36.0;
-        draw_text(
-            "Click the card to focus its origin station when nearby.",
-            detail_x,
-            y,
-            14.0,
-            detail,
-        );
-    } else {
-        draw_text(
-            "Select a contract",
-            detail_x,
-            viewport.y + 30.0,
-            19.0,
-            detail,
-        );
-        draw_text(
-            "Click a card to focus its origin station.",
-            detail_x,
-            viewport.y + 58.0,
-            15.0,
-            detail,
-        );
-    }
-}
-
-fn draw_content_debug_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
-    let layout = content_browser_layout();
-    let width = layout.width;
-    let height = layout.height;
-    let x = layout.x;
-    let y = layout.y;
-    let registry = &game.content_registry;
-
-    draw_rectangle(x, y, width, height, Color::from_rgba(6, 12, 18, 236));
-    draw_rectangle_lines(
-        x,
-        y,
-        width,
-        height,
-        1.0,
-        Color::from_rgba(112, 151, 163, 150),
-    );
-    draw_panel_corner_art(Rect::new(x, y, width, height), panel_corner);
-    draw_text(
-        "Content Browser",
-        x + GAME_PANEL_HEADER_PAD_X,
-        y + GAME_PANEL_HEADER_BASELINE,
-        28.0,
-        Color::from_rgba(235, 242, 226, 255),
-    );
-    draw_text(
-        "C close",
-        x + width - 86.0,
-        y + 36.0,
-        18.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
-
-    let transition_pixels = game
-        .transition_assets
-        .iter()
-        .map(|asset| asset.texture.width() * asset.texture.height())
-        .sum::<f32>();
-    let summary = format!(
-        "{} pack(s) / {} item(s) / {} recipe(s) / {} faction(s) / {} NPC ship(s) / {} shield(s) / {} weapon(s) / {} system(s) / {} star(s) / {} planet(s) / {} station(s) / {} upgrade(s) / {} transition image(s)",
-        registry.packs.len(),
-        registry.items.len(),
-        registry.recipes.len(),
-        registry.factions.len(),
-        registry.npc_ships.len(),
-        registry.shields.len(),
-        registry.weapons.len(),
-        registry.systems.len(),
-        registry.stars.len(),
-        registry.planets.len(),
-        registry.stations.len(),
-        registry.upgrades.len(),
-        game.transition_assets.len()
-    );
-    draw_text(
-        &fit_debug_text(&summary, width - 48.0, 17),
-        x + GAME_PANEL_HEADER_PAD_X,
-        y + GAME_PANEL_BODY_TOP - 28.0,
-        17.0,
-        Color::from_rgba(150, 221, 226, 235),
-    );
-
-    if let Some(asset) = game.transition_assets.first() {
-        let transition_summary = if game.transition_assets.len() == 1 {
-            format!(
-                "Transition asset: {} ({:.0} kp)",
-                asset.path,
-                transition_pixels / 1000.0
-            )
-        } else {
-            format!(
-                "Transition assets: {} (+{} more, {:.0} kp)",
-                asset.path,
-                game.transition_assets.len() - 1,
-                transition_pixels / 1000.0
-            )
-        };
-        draw_text(
-            &fit_debug_text(&transition_summary, width - 48.0, 15),
-            x + GAME_PANEL_HEADER_PAD_X,
-            y + GAME_PANEL_BODY_TOP - 6.0,
-            15.0,
-            Color::from_rgba(126, 156, 164, 220),
-        );
-    }
-
-    let selected_pack_id = selected_content_pack_id(game);
-    let filter_label = selected_pack_id
-        .map(|pack_id| format!("Showing pack: {pack_id}"))
-        .unwrap_or_else(|| "Showing all packs".to_string());
-    draw_text(
-        &fit_debug_text(&filter_label, width - 48.0, 15),
-        x + GAME_PANEL_HEADER_PAD_X,
-        y + GAME_PANEL_BODY_TOP + 14.0,
-        15.0,
-        Color::from_rgba(226, 190, 150, 235),
-    );
-
-    draw_content_pack_column(
-        game,
-        &layout,
-        x + GAME_PANEL_CONTENT_PAD_X,
-        layout.column_y,
-        layout.column_width,
-    );
-
-    let item_rows = filtered_content_item_rows(game, selected_pack_id);
-    draw_content_debug_column(ContentColumnRender {
-        title: "Items",
-        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap),
-        y: layout.column_y,
-        width: layout.column_width,
-        row_height: layout.row_height,
-        viewport_height: layout.viewport_height,
-        scroll: game.content_browser.items_scroll,
-        rows: &item_rows,
-        selected_row: None,
-    });
-
-    let recipe_rows = filtered_content_recipe_rows(game, selected_pack_id);
-    draw_content_debug_column(ContentColumnRender {
-        title: "Recipes",
-        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap) * 2.0,
-        y: layout.column_y,
-        width: layout.column_width,
-        row_height: layout.row_height,
-        viewport_height: layout.viewport_height,
-        scroll: game.content_browser.recipes_scroll,
-        rows: &recipe_rows,
-        selected_row: None,
-    });
-
-    let npc_ship_rows = filtered_content_npc_ship_rows(game, selected_pack_id);
-    let planet_rows = filtered_content_planet_rows(game, selected_pack_id);
-    draw_content_debug_column(ContentColumnRender {
-        title: "NPC Ships",
-        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap) * 3.0,
-        y: layout.column_y,
-        width: layout.column_width,
-        row_height: layout.row_height,
-        viewport_height: layout.viewport_height,
-        scroll: game.content_browser.npc_ships_scroll,
-        rows: &npc_ship_rows,
-        selected_row: None,
-    });
-
-    draw_content_debug_column(ContentColumnRender {
-        title: "Planets",
-        x: x + GAME_PANEL_CONTENT_PAD_X + (layout.column_width + layout.column_gap) * 4.0,
-        y: layout.column_y,
-        width: layout.column_width,
-        row_height: layout.row_height,
-        viewport_height: layout.viewport_height,
-        scroll: game.content_browser.planets_scroll,
-        rows: &planet_rows,
-        selected_row: None,
-    });
-}
-
-fn filtered_content_item_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
-    let registry = &game.content_registry;
-    registry
-        .item_order
-        .iter()
-        .filter(|item_id| {
-            selected_pack_id
-                .map(|pack_id| content_id_belongs_to_pack(item_id, pack_id))
-                .unwrap_or(true)
-        })
-        .filter_map(|item_id| registry.items.get(item_id))
-        .map(|item| format!("{}  {}", item.name, item.tier))
-        .collect()
-}
-
-fn filtered_content_recipe_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
-    let registry = &game.content_registry;
-    registry
-        .recipe_order
-        .iter()
-        .filter(|recipe_id| {
-            selected_pack_id
-                .map(|pack_id| content_id_belongs_to_pack(recipe_id, pack_id))
-                .unwrap_or(true)
-        })
-        .filter_map(|recipe_id| registry.recipes.get(recipe_id))
-        .map(|recipe| {
-            let output_name = registry
-                .items
-                .get(&recipe.output.item)
-                .map(|item| item.name.as_str())
-                .unwrap_or(recipe.output.item.as_str());
-            format!(
-                "{} x{}  {}",
-                output_name, recipe.output.count, recipe.station
-            )
-        })
-        .collect()
-}
-
-fn filtered_content_npc_ship_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
-    let registry = &game.content_registry;
-    registry
-        .npc_ship_order
-        .iter()
-        .filter(|npc_ship_id| {
-            selected_pack_id
-                .map(|pack_id| content_id_belongs_to_pack(npc_ship_id, pack_id))
-                .unwrap_or(true)
-        })
-        .filter_map(|npc_ship_id| registry.npc_ships.get(npc_ship_id))
-        .map(|npc_ship| {
-            let faction = npc_ship
-                .faction
-                .as_deref()
-                .map(|faction| faction_name(registry, faction))
-                .unwrap_or("unclaimed");
-            format!(
-                "{}  {}  {}  {}",
-                npc_ship.name, faction, npc_ship.archetype, npc_ship.role
-            )
-        })
-        .collect()
-}
-
-fn filtered_content_planet_rows(game: &GameState, selected_pack_id: Option<&str>) -> Vec<String> {
-    let registry = &game.content_registry;
-    registry
-        .planet_order
-        .iter()
-        .filter(|planet_id| {
-            selected_pack_id
-                .map(|pack_id| content_id_belongs_to_pack(planet_id, pack_id))
-                .unwrap_or(true)
-        })
-        .filter_map(|planet_id| registry.planets.get(planet_id))
-        .map(|planet| {
-            let faction = planet
-                .faction
-                .as_deref()
-                .map(|faction| faction_name(registry, faction))
-                .unwrap_or("unclaimed");
-            format!(
-                "{}  {}  {} resource(s)",
-                faction,
-                planet.classification,
-                planet.mineables.len()
-            )
-        })
-        .collect()
-}
-
-fn draw_content_pack_column(
-    game: &GameState,
-    layout: &ContentBrowserLayout,
-    x: f32,
-    y: f32,
-    width: f32,
-) {
-    let rows = std::iter::once("All packs".to_string())
-        .chain(
-            game.content_registry
-                .packs
-                .iter()
-                .map(|pack| format!("{} {}", pack.id, pack.version)),
-        )
-        .collect::<Vec<_>>();
-    draw_content_debug_column(ContentColumnRender {
-        title: "Packs",
-        x,
-        y,
-        width,
-        row_height: layout.row_height,
-        viewport_height: layout.viewport_height,
-        scroll: game.content_browser.packs_scroll,
-        rows: &rows,
-        selected_row: game
-            .content_browser
-            .selected_pack_index
-            .map(|index| index + 1)
-            .or(Some(0)),
-    });
-}
-
-fn draw_content_debug_column(column: ContentColumnRender<'_>) {
-    let title_color = Color::from_rgba(235, 242, 226, 255);
-    let text = Color::from_rgba(205, 226, 230, 245);
-    let selected_text = Color::from_rgba(235, 242, 226, 255);
-    let scroll = column.scroll.clamp(
-        0.0,
-        max_scroll_offset(column.rows.len(), column.row_height, column.viewport_height),
-    );
-    let viewport_top = column.y + 18.0;
-    let viewport_bottom = viewport_top + column.viewport_height;
-    draw_text(
-        &format!("{} ({})", column.title, column.rows.len()),
-        column.x,
-        column.y,
-        18.0,
-        title_color,
-    );
-    draw_line(
-        column.x,
-        column.y + 12.0,
-        column.x + column.width,
-        column.y + 12.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 205),
-    );
-
-    for (index, row) in column.rows.iter().enumerate() {
-        let row_y =
-            viewport_top + column.row_height - 5.0 + index as f32 * column.row_height - scroll;
-        if row_y - 17.0 < viewport_top || row_y + 6.0 > viewport_bottom {
-            continue;
-        }
-        let selected = column.selected_row == Some(index);
-        if index % 2 == 0 || selected {
-            draw_rectangle(
-                column.x,
-                row_y - 17.0,
-                column.width,
-                column.row_height,
-                if selected {
-                    Color::from_rgba(24, 58, 66, 215)
-                } else {
-                    Color::from_rgba(10, 18, 24, 94)
-                },
-            );
-        }
-        draw_text(
-            &fit_debug_text(row, column.width - 10.0, 15),
-            column.x + 6.0,
-            row_y,
-            15.0,
-            if selected { selected_text } else { text },
-        );
-    }
-    draw_scrollbar(
-        column.x + column.width - 4.0,
-        viewport_top,
-        column.viewport_height,
-        column.rows.len(),
-        column.row_height,
-        scroll,
-    );
-}
-
 fn fit_debug_text(text: &str, width: f32, font_size: u16) -> String {
     let mut fitted = text.to_string();
     let original_char_count = text.chars().count();
@@ -20259,1214 +19386,9 @@ fn ship_upgrades_panel_rect() -> (f32, f32, f32, f32) {
     (x, y, width, height)
 }
 
-fn ship_upgrade_table_origin() -> Vec2 {
-    let (panel_x, panel_y, _, _) = ship_upgrades_panel_rect();
-    vec2(
-        panel_x + GAME_PANEL_CONTENT_PAD_X,
-        panel_y + GAME_PANEL_BODY_TOP,
-    )
-}
-
-fn ship_upgrades_table_viewport_top() -> f32 {
-    ship_upgrade_table_origin().y + 18.0
-}
-
 fn ship_upgrades_table_viewport_height() -> f32 {
     let (_, _, _, panel_height) = ship_upgrades_panel_rect();
     (panel_height - GAME_PANEL_BODY_TOP - 42.0).max(0.0)
-}
-
-fn hovered_ship_upgrade_plus(mouse: Vec2, row_count: usize, scroll: f32) -> Option<usize> {
-    let origin = ship_upgrade_table_origin();
-    let (_, _, panel_width, _) = ship_upgrades_panel_rect();
-    let layout = ship_upgrade_table_layout(
-        origin.x,
-        origin.y,
-        panel_width - 56.0,
-        ship_upgrades_table_viewport_height(),
-    );
-    ui_hovered_table_cell(mouse, &layout, row_count, scroll)
-        .filter(|cell| cell.column == 3)
-        .map(|cell| cell.row)
-}
-
-fn draw_ship_upgrades_table(table: ShipUpgradeTableRender<'_>) {
-    let ShipUpgradeTableRender {
-        content_registry,
-        upgrades,
-        inventory,
-        x,
-        y,
-        width,
-        scroll,
-        viewport_height,
-        mouse,
-    } = table;
-    let layout = ship_upgrade_table_layout(x, y, width, viewport_height);
-    let name_column = layout.columns[0];
-    let level_column = layout.columns[1];
-    let cost_column = layout.columns[2];
-    let plus_column = layout.columns[3];
-    let header = Color::from_rgba(168, 204, 210, 255);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let detail = Color::from_rgba(178, 197, 203, 255);
-    let active = Color::from_rgba(150, 221, 226, 255);
-    let unavailable = Color::from_rgba(126, 143, 148, 255);
-    let scroll = scroll.clamp(
-        0.0,
-        max_scroll_offset(upgrades.len(), layout.row_height, viewport_height),
-    );
-    let hovered = hovered_ship_upgrade_plus(mouse, upgrades.len(), scroll);
-
-    draw_text("Upgrade", name_column.x, y, 16.0, header);
-    draw_text("Level", level_column.x, y, 16.0, header);
-    draw_text("Next cost", cost_column.x, y, 16.0, header);
-    draw_text("+", plus_column.x + 10.0, y, 16.0, header);
-
-    for (row, upgrade) in upgrades.iter().enumerate() {
-        let row_rect = ui_table_row_rect(&layout, row, scroll);
-        if !ui_table_row_visible(&layout, row_rect) {
-            continue;
-        }
-        let row_y = row_rect.y + 24.0;
-        let cost = upgrade.next_cost(content_registry);
-        let affordable = can_afford_cost(inventory, &cost);
-        let is_hovered = hovered == Some(row);
-        if row % 2 == 0 || is_hovered {
-            draw_rectangle(
-                row_rect.x,
-                row_rect.y,
-                row_rect.w,
-                row_rect.h,
-                Color::from_rgba(10, 18, 24, if is_hovered { 170 } else { 100 }),
-            );
-        }
-
-        draw_text(
-            &fit_debug_text(upgrade.kind.name(), name_column.w, 21),
-            name_column.x,
-            row_y - 4.0,
-            21.0,
-            text,
-        );
-        draw_text(
-            &fit_debug_text(upgrade.kind.effect_text(), name_column.w, 15),
-            name_column.x,
-            row_y + 18.0,
-            15.0,
-            detail,
-        );
-        draw_text(
-            &upgrade.level.to_string(),
-            level_column.x,
-            row_y,
-            22.0,
-            active,
-        );
-        draw_text(
-            &fit_debug_text(&format_cost(&cost), cost_column.w, 18),
-            cost_column.x,
-            row_y,
-            18.0,
-            if affordable { active } else { unavailable },
-        );
-
-        draw_plus_button(
-            plus_column.x,
-            row_rect.y + 1.0,
-            affordable,
-            active,
-            unavailable,
-        );
-    }
-    draw_scrollbar(
-        x + width - 4.0,
-        layout.viewport.y,
-        layout.viewport.h,
-        upgrades.len(),
-        layout.row_height,
-        scroll,
-    );
-}
-
-struct ShipUpgradeTableRender<'a> {
-    content_registry: &'a content::ContentRegistry,
-    upgrades: &'a [ShipUpgrade; SHIP_UPGRADE_COUNT],
-    inventory: &'a Inventory,
-    x: f32,
-    y: f32,
-    width: f32,
-    scroll: f32,
-    viewport_height: f32,
-    mouse: Vec2,
-}
-
-fn format_cost(cost: &[ItemStack]) -> String {
-    cost.iter()
-        .map(|stack| format!("{} {}", stack.count, stack.item.name))
-        .collect::<Vec<_>>()
-        .join(" / ")
-}
-
-fn draw_plus_button(x: f32, y: f32, enabled: bool, enabled_color: Color, disabled_color: Color) {
-    let button_size = 28.0;
-    draw_rectangle_lines(
-        x,
-        y,
-        button_size,
-        button_size,
-        1.0,
-        if enabled {
-            Color::from_rgba(150, 221, 226, 180)
-        } else {
-            Color::from_rgba(82, 114, 124, 95)
-        },
-    );
-    let plus_measure = measure_text("+", None, 24, 1.0);
-    draw_text(
-        "+",
-        x + (button_size - plus_measure.width) * 0.5,
-        y + (button_size + plus_measure.height) * 0.5 - 2.0,
-        24.0,
-        if enabled {
-            enabled_color
-        } else {
-            disabled_color
-        },
-    );
-}
-
-fn research_panel_rect() -> (f32, f32, f32, f32) {
-    let width = (screen_width() * 0.8).clamp(640.0, screen_width() - 32.0);
-    let height = (screen_height() * 0.8).clamp(420.0, screen_height() - 32.0);
-    let x = (screen_width() - width) * 0.5;
-    let y = (screen_height() - height) * 0.5;
-    (x, y, width, height)
-}
-
-fn research_tree_rect() -> Rect {
-    let (panel_x, panel_y, panel_width, panel_height) = research_panel_rect();
-    Rect::new(
-        panel_x + GAME_PANEL_CONTENT_PAD_X + RESEARCH_TREE_INSET,
-        panel_y + GAME_PANEL_BODY_TOP + RESEARCH_TREE_INSET,
-        panel_width - GAME_PANEL_CONTENT_PAD_X - 30.0 - RESEARCH_TREE_INSET * 2.0,
-        panel_height - 128.0 - RESEARCH_TREE_INSET * 2.0,
-    )
-}
-
-fn research_detail_rect() -> Rect {
-    let bounds = research_tree_rect();
-    Rect::new(
-        bounds.x,
-        bounds.y + bounds.h - RESEARCH_DETAIL_HEIGHT,
-        bounds.w,
-        RESEARCH_DETAIL_HEIGHT,
-    )
-}
-
-fn research_start_button_rect(detail_rect: Rect) -> Rect {
-    Rect::new(
-        detail_rect.x + detail_rect.w - 166.0,
-        detail_rect.y + detail_rect.h - 46.0,
-        148.0,
-        34.0,
-    )
-}
-
-struct ResearchGridLayout {
-    min_column: i32,
-    max_column: i32,
-    min_row: i32,
-    max_row: i32,
-    node_width: f32,
-    node_height: f32,
-    tree_height: f32,
-    step_x: f32,
-    step_y: f32,
-}
-
-fn research_grid_layout(registry: &content::ContentRegistry, bounds: Rect) -> ResearchGridLayout {
-    let (min_column, max_column, min_row, max_row) = research_grid_extents(registry);
-    let column_count = (max_column - min_column + 1).max(1) as f32;
-    let row_count = (max_row - min_row + 1).max(1) as f32;
-    let detail_height = RESEARCH_DETAIL_HEIGHT + 12.0;
-    let tree_height = (bounds.h - detail_height - 22.0 - RESEARCH_TIER_LABEL_HEIGHT).max(180.0);
-    let node_width = ((bounds.w - (column_count - 1.0) * 34.0) / column_count).clamp(150.0, 210.0);
-    let node_height = 54.0;
-    let step_x = if column_count <= 1.0 {
-        0.0
-    } else {
-        (bounds.w - node_width) / (column_count - 1.0)
-    };
-    let step_y = if row_count <= 1.0 {
-        0.0
-    } else {
-        (tree_height - node_height) / (row_count - 1.0)
-    };
-
-    ResearchGridLayout {
-        min_column,
-        max_column,
-        min_row,
-        max_row,
-        node_width,
-        node_height,
-        tree_height,
-        step_x,
-        step_y,
-    }
-}
-
-fn research_node_rect(game: &GameState, research: &content::ResearchDef, bounds: Rect) -> Rect {
-    let layout = research_grid_layout(&game.content_registry, bounds);
-    Rect::new(
-        bounds.x + (research.column - layout.min_column) as f32 * layout.step_x,
-        bounds.y
-            + RESEARCH_TIER_LABEL_HEIGHT
-            + (research.row - layout.min_row) as f32 * layout.step_y,
-        layout.node_width,
-        layout.node_height,
-    )
-}
-
-fn research_grid_extents(registry: &content::ContentRegistry) -> (i32, i32, i32, i32) {
-    let mut min_column = 0;
-    let mut max_column = 0;
-    let mut min_row = 0;
-    let mut max_row = 0;
-    let mut initialized = false;
-    for research_id in &registry.research_order {
-        let Some(research) = registry.research.get(research_id) else {
-            continue;
-        };
-        if !initialized {
-            min_column = research.column;
-            max_column = research.column;
-            min_row = research.row;
-            max_row = research.row;
-            initialized = true;
-        } else {
-            min_column = min_column.min(research.column);
-            max_column = max_column.max(research.column);
-            min_row = min_row.min(research.row);
-            max_row = max_row.max(research.row);
-        }
-    }
-    (min_column, max_column, min_row, max_row)
-}
-
-fn hovered_research_node_id(game: &GameState, mouse: Vec2) -> Option<String> {
-    let bounds = research_tree_rect();
-    game.content_registry
-        .research_order
-        .iter()
-        .filter_map(|research_id| game.content_registry.research.get(research_id))
-        .find(|research| research_node_rect(game, research, bounds).contains(mouse))
-        .map(|research| research.id.clone())
-}
-
-fn draw_research_tree(game: &GameState, bounds: Rect, mouse: Vec2) {
-    let registry = &game.content_registry;
-    if registry.research_order.is_empty() {
-        draw_text(
-            "No research loaded",
-            bounds.x,
-            bounds.y + 28.0,
-            22.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-        return;
-    }
-
-    draw_research_tier_background(game, bounds);
-
-    for research_id in &registry.research_order {
-        let Some(research) = registry.research.get(research_id) else {
-            continue;
-        };
-        let from = research_node_rect(game, research, bounds);
-        for required in research.requires.iter().chain(research.revealed_by.iter()) {
-            let Some(required_research) = registry.research.get(required) else {
-                continue;
-            };
-            let to = research_node_rect(game, required_research, bounds);
-            draw_research_connection(game, required_research, research, to, from);
-        }
-    }
-
-    let mut hovered: Option<&content::ResearchDef> = None;
-    for research_id in &registry.research_order {
-        let Some(research) = registry.research.get(research_id) else {
-            continue;
-        };
-        let rect = research_node_rect(game, research, bounds);
-        let is_hovered = rect.contains(mouse);
-        let is_selected = game
-            .selected_research
-            .as_ref()
-            .is_some_and(|selected| selected == &research.id);
-        if is_hovered {
-            hovered = Some(research);
-        }
-        draw_research_node(game, research, rect, is_hovered, is_selected);
-    }
-
-    let selected = game
-        .selected_research
-        .as_ref()
-        .and_then(|research_id| registry.research.get(research_id));
-    draw_research_detail(
-        game,
-        selected.or(hovered),
-        selected.is_some(),
-        research_detail_rect(),
-    );
-}
-
-fn draw_research_node(
-    game: &GameState,
-    research: &content::ResearchDef,
-    rect: Rect,
-    hovered: bool,
-    selected: bool,
-) {
-    let state = research_node_state(
-        research,
-        game.active_research.as_ref(),
-        &game.completed_research,
-        game.credits,
-    );
-    let palette = research_node_palette(state);
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, palette.shadow);
-    draw_rectangle(
-        rect.x + 2.0,
-        rect.y + 2.0,
-        rect.w - 4.0,
-        rect.h - 4.0,
-        palette.fill,
-    );
-    draw_rectangle(
-        rect.x + 5.0,
-        rect.y + 5.0,
-        rect.w - 10.0,
-        1.0,
-        palette.highlight,
-    );
-    draw_rectangle(
-        rect.x + 5.0,
-        rect.y + rect.h - 6.0,
-        rect.w - 10.0,
-        1.0,
-        palette.lowlight,
-    );
-    draw_rectangle(rect.x + 2.0, rect.y + 2.0, 5.0, rect.h - 4.0, palette.rail);
-    draw_research_node_socket(rect, palette, state);
-    draw_research_node_tier_badge(rect, research.tier, palette);
-    if state == ResearchNodeState::Locked {
-        draw_research_node_hatch(rect);
-    }
-    if state == ResearchNodeState::Researching {
-        draw_research_node_progress(game, research, rect, palette.rail);
-    }
-    draw_text(
-        &fit_debug_text(&research.name, rect.w - 18.0, 17),
-        rect.x + 28.0,
-        rect.y + 31.0,
-        17.0,
-        palette.text,
-    );
-    if state == ResearchNodeState::Completed {
-        draw_research_node_check(rect, palette.rail);
-    }
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        if selected || hovered { 2.0 } else { 1.0 },
-        if selected {
-            palette.selected
-        } else {
-            palette.stroke
-        },
-    );
-}
-
-fn draw_research_tier_background(game: &GameState, bounds: Rect) {
-    let registry = &game.content_registry;
-    let layout = research_grid_layout(registry, bounds);
-    let band_top = bounds.y;
-    let band_height = layout.tree_height + RESEARCH_TIER_LABEL_HEIGHT;
-    let band_y = band_top;
-    let band_bottom = band_y + band_height;
-
-    draw_research_blueprint_background(bounds, &layout, band_y, band_bottom);
-
-    for column in layout.min_column..=layout.max_column {
-        let column_index = (column - layout.min_column) as f32;
-        let node_x = bounds.x + column_index * layout.step_x;
-        let band_x = if column == layout.min_column {
-            bounds.x
-        } else {
-            node_x - layout.step_x * 0.5
-        };
-        let next_x = if column == layout.max_column {
-            bounds.x + bounds.w
-        } else {
-            node_x + layout.node_width + layout.step_x * 0.5
-        };
-        let band_width = (next_x - band_x).max(layout.node_width);
-        let fill_alpha = if column % 2 == 0 { 22 } else { 12 };
-        draw_rectangle(
-            band_x,
-            band_y,
-            band_width,
-            band_height,
-            Color::from_rgba(28, 58, 66, fill_alpha),
-        );
-        draw_line(
-            band_x,
-            band_y + RESEARCH_TIER_LABEL_HEIGHT,
-            band_x,
-            band_bottom,
-            1.0,
-            Color::from_rgba(82, 114, 124, 46),
-        );
-        draw_research_column_ticks(node_x, band_y + RESEARCH_TIER_LABEL_HEIGHT, band_bottom);
-
-        if let Some(tier) = research_tier_for_column(registry, column) {
-            let label = research_tier_label(tier);
-            draw_text(
-                label,
-                node_x,
-                band_y + 17.0,
-                14.0,
-                Color::from_rgba(126, 156, 164, 190),
-            );
-            draw_text(
-                &format!("T{}", tier),
-                node_x + layout.node_width - 28.0,
-                band_y + 17.0,
-                13.0,
-                Color::from_rgba(226, 190, 150, 150),
-            );
-            draw_line(
-                node_x,
-                band_y + 23.0,
-                node_x + layout.node_width,
-                band_y + 23.0,
-                1.0,
-                Color::from_rgba(96, 137, 150, 92),
-            );
-        }
-    }
-
-    draw_line(
-        bounds.x,
-        band_y + RESEARCH_TIER_LABEL_HEIGHT,
-        bounds.x + bounds.w,
-        band_y + RESEARCH_TIER_LABEL_HEIGHT,
-        1.0,
-        Color::from_rgba(96, 137, 150, 78),
-    );
-}
-
-fn draw_research_blueprint_background(
-    bounds: Rect,
-    layout: &ResearchGridLayout,
-    top: f32,
-    bottom: f32,
-) {
-    draw_research_blueprint_grid(bounds, top, bottom);
-    draw_research_orbital_arcs(bounds, top, bottom);
-    draw_research_horizontal_lanes(bounds, layout, top, bottom);
-    draw_research_coordinate_marks(bounds, layout, top, bottom);
-}
-
-fn draw_research_blueprint_grid(bounds: Rect, top: f32, bottom: f32) {
-    let grid = Color::from_rgba(96, 137, 150, 16);
-    let major = Color::from_rgba(96, 137, 150, 28);
-    let mut x = bounds.x;
-    let mut index = 0;
-    while x <= bounds.x + bounds.w {
-        draw_line(
-            x,
-            top,
-            x,
-            bottom,
-            1.0,
-            if index % 4 == 0 { major } else { grid },
-        );
-        x += 24.0;
-        index += 1;
-    }
-
-    let mut y = top;
-    index = 0;
-    while y <= bottom {
-        draw_line(
-            bounds.x,
-            y,
-            bounds.x + bounds.w,
-            y,
-            1.0,
-            if index % 4 == 0 { major } else { grid },
-        );
-        y += 24.0;
-        index += 1;
-    }
-}
-
-fn draw_research_orbital_arcs(bounds: Rect, top: f32, bottom: f32) {
-    let left_center = vec2(bounds.x + bounds.w * 0.10, top + 36.0);
-    let right_center = vec2(bounds.x + bounds.w * 0.96, top + (bottom - top) * 0.58);
-    for (radius, alpha) in [(88.0, 24), (126.0, 16), (168.0, 10)] {
-        draw_circle_lines(
-            left_center.x,
-            left_center.y,
-            radius,
-            1.0,
-            Color::from_rgba(96, 137, 150, alpha),
-        );
-    }
-    for (radius, alpha) in [(70.0, 26), (92.0, 18), (118.0, 12)] {
-        draw_circle_lines(
-            right_center.x,
-            right_center.y,
-            radius,
-            1.0,
-            Color::from_rgba(226, 190, 150, alpha),
-        );
-    }
-}
-
-fn draw_research_horizontal_lanes(
-    bounds: Rect,
-    layout: &ResearchGridLayout,
-    top: f32,
-    bottom: f32,
-) {
-    let lane_top = top + RESEARCH_TIER_LABEL_HEIGHT;
-    for row in layout.min_row..=layout.max_row {
-        let row_index = (row - layout.min_row) as f32;
-        let y = lane_top + row_index * layout.step_y + layout.node_height * 0.5;
-        if y >= bottom {
-            break;
-        }
-        draw_line(
-            bounds.x,
-            y,
-            bounds.x + bounds.w,
-            y,
-            1.0,
-            Color::from_rgba(82, 114, 124, 28),
-        );
-        draw_line(
-            bounds.x,
-            y + 6.0,
-            bounds.x + bounds.w,
-            y + 6.0,
-            1.0,
-            Color::from_rgba(28, 58, 66, 16),
-        );
-    }
-}
-
-fn draw_research_coordinate_marks(
-    bounds: Rect,
-    layout: &ResearchGridLayout,
-    top: f32,
-    bottom: f32,
-) {
-    let lane_top = top + RESEARCH_TIER_LABEL_HEIGHT;
-    let mark = Color::from_rgba(150, 221, 226, 42);
-    for column in layout.min_column..=layout.max_column {
-        let x = bounds.x + (column - layout.min_column) as f32 * layout.step_x;
-        for row in layout.min_row..=layout.max_row {
-            let y = lane_top + (row - layout.min_row) as f32 * layout.step_y;
-            if y >= bottom {
-                break;
-            }
-            let center = vec2(x + layout.node_width * 0.5, y + layout.node_height * 0.5);
-            draw_line(
-                center.x - 5.0,
-                center.y,
-                center.x - 2.0,
-                center.y,
-                1.0,
-                mark,
-            );
-            draw_line(
-                center.x + 2.0,
-                center.y,
-                center.x + 5.0,
-                center.y,
-                1.0,
-                mark,
-            );
-            draw_line(
-                center.x,
-                center.y - 5.0,
-                center.x,
-                center.y - 2.0,
-                1.0,
-                mark,
-            );
-            draw_line(
-                center.x,
-                center.y + 2.0,
-                center.x,
-                center.y + 5.0,
-                1.0,
-                mark,
-            );
-        }
-    }
-}
-
-fn draw_research_column_ticks(x: f32, top: f32, bottom: f32) {
-    let mut y = top + 18.0;
-    while y < bottom - 6.0 {
-        draw_line(x, y, x + 12.0, y, 1.0, Color::from_rgba(96, 137, 150, 42));
-        y += 34.0;
-    }
-}
-
-fn research_tier_for_column(registry: &content::ContentRegistry, column: i32) -> Option<u32> {
-    registry
-        .research_order
-        .iter()
-        .filter_map(|research_id| registry.research.get(research_id))
-        .filter(|research| research.column == column)
-        .map(|research| research.tier)
-        .min()
-}
-
-fn research_tier_label(tier: u32) -> &'static str {
-    match tier {
-        0 => "Survey",
-        1 => "Extraction",
-        2 => "Refinement",
-        3 => "Advanced Systems",
-        4 => "Remote Systems",
-        _ => "Frontier Systems",
-    }
-}
-
-fn draw_research_connection(
-    game: &GameState,
-    from_research: &content::ResearchDef,
-    to_research: &content::ResearchDef,
-    from: Rect,
-    to: Rect,
-) {
-    let from_state = research_node_state(
-        from_research,
-        game.active_research.as_ref(),
-        &game.completed_research,
-        game.credits,
-    );
-    let to_state = research_node_state(
-        to_research,
-        game.active_research.as_ref(),
-        &game.completed_research,
-        game.credits,
-    );
-    let active = to_state == ResearchNodeState::Researching;
-    let completed =
-        from_state == ResearchNodeState::Completed && to_state == ResearchNodeState::Completed;
-    let available = matches!(
-        to_state,
-        ResearchNodeState::Affordable
-            | ResearchNodeState::Available
-            | ResearchNodeState::Researching
-    ) && from_state == ResearchNodeState::Completed;
-    let color = if active {
-        let pulse = (get_time() as f32 * 5.5).sin() * 0.5 + 0.5;
-        Color::new(0.88, 0.74, 0.45, 0.55 + pulse * 0.34)
-    } else if completed {
-        Color::from_rgba(142, 218, 166, 190)
-    } else if available {
-        Color::from_rgba(150, 221, 226, 150)
-    } else {
-        Color::from_rgba(67, 87, 94, 95)
-    };
-    let glow = if active {
-        Color::from_rgba(226, 190, 150, 48)
-    } else if completed || available {
-        Color::from_rgba(150, 221, 226, 34)
-    } else {
-        Color::from_rgba(31, 42, 48, 50)
-    };
-    let start = vec2(from.x + from.w, from.y + from.h * 0.5);
-    let end = vec2(to.x, to.y + to.h * 0.5);
-    let elbow_x = (start.x + end.x) * 0.5;
-
-    draw_research_trace_segment(start, vec2(elbow_x, start.y), glow, 5.0);
-    draw_research_trace_segment(vec2(elbow_x, start.y), vec2(elbow_x, end.y), glow, 5.0);
-    draw_research_trace_segment(vec2(elbow_x, end.y), end, glow, 5.0);
-    draw_research_trace_segment(start, vec2(elbow_x, start.y), color, 2.0);
-    draw_research_trace_segment(vec2(elbow_x, start.y), vec2(elbow_x, end.y), color, 2.0);
-    draw_research_trace_segment(vec2(elbow_x, end.y), end, color, 2.0);
-
-    let node_color = if active || completed || available {
-        color
-    } else {
-        Color::from_rgba(67, 87, 94, 115)
-    };
-    draw_circle(start.x, start.y, 3.0, node_color);
-    draw_circle(end.x, end.y, 3.0, node_color);
-    draw_circle(elbow_x, start.y, 2.5, node_color);
-    draw_circle(elbow_x, end.y, 2.5, node_color);
-}
-
-fn draw_research_trace_segment(start: Vec2, end: Vec2, color: Color, thickness: f32) {
-    draw_line(start.x, start.y, end.x, end.y, thickness, color);
-}
-
-#[derive(Clone, Copy)]
-struct ResearchNodePalette {
-    fill: Color,
-    shadow: Color,
-    stroke: Color,
-    selected: Color,
-    rail: Color,
-    highlight: Color,
-    lowlight: Color,
-    text: Color,
-}
-
-fn research_node_palette(state: ResearchNodeState) -> ResearchNodePalette {
-    match state {
-        ResearchNodeState::Completed => ResearchNodePalette {
-            fill: Color::from_rgba(13, 45, 37, 235),
-            shadow: Color::from_rgba(2, 7, 10, 220),
-            stroke: Color::from_rgba(98, 172, 132, 210),
-            selected: Color::from_rgba(160, 238, 182, 245),
-            rail: Color::from_rgba(142, 218, 166, 235),
-            highlight: Color::from_rgba(174, 246, 194, 70),
-            lowlight: Color::from_rgba(5, 16, 14, 190),
-            text: Color::from_rgba(230, 244, 222, 255),
-        },
-        ResearchNodeState::Researching => ResearchNodePalette {
-            fill: Color::from_rgba(44, 36, 17, 238),
-            shadow: Color::from_rgba(2, 7, 10, 220),
-            stroke: Color::from_rgba(204, 164, 92, 225),
-            selected: Color::from_rgba(255, 212, 128, 245),
-            rail: Color::from_rgba(226, 190, 150, 245),
-            highlight: Color::from_rgba(255, 218, 148, 76),
-            lowlight: Color::from_rgba(19, 13, 5, 200),
-            text: Color::from_rgba(248, 233, 204, 255),
-        },
-        ResearchNodeState::Affordable => ResearchNodePalette {
-            fill: Color::from_rgba(12, 44, 54, 238),
-            shadow: Color::from_rgba(2, 7, 10, 220),
-            stroke: Color::from_rgba(112, 197, 205, 225),
-            selected: Color::from_rgba(172, 240, 246, 250),
-            rail: Color::from_rgba(150, 221, 226, 245),
-            highlight: Color::from_rgba(182, 245, 248, 78),
-            lowlight: Color::from_rgba(4, 14, 18, 200),
-            text: Color::from_rgba(235, 242, 226, 255),
-        },
-        ResearchNodeState::Available => ResearchNodePalette {
-            fill: Color::from_rgba(24, 34, 40, 232),
-            shadow: Color::from_rgba(2, 7, 10, 215),
-            stroke: Color::from_rgba(135, 147, 124, 185),
-            selected: Color::from_rgba(226, 190, 150, 230),
-            rail: Color::from_rgba(226, 190, 150, 205),
-            highlight: Color::from_rgba(226, 190, 150, 48),
-            lowlight: Color::from_rgba(6, 10, 13, 195),
-            text: Color::from_rgba(214, 224, 211, 235),
-        },
-        ResearchNodeState::Locked => ResearchNodePalette {
-            fill: Color::from_rgba(15, 22, 27, 190),
-            shadow: Color::from_rgba(2, 6, 9, 210),
-            stroke: Color::from_rgba(78, 98, 104, 130),
-            selected: Color::from_rgba(104, 130, 136, 180),
-            rail: Color::from_rgba(82, 114, 124, 135),
-            highlight: Color::from_rgba(112, 151, 163, 28),
-            lowlight: Color::from_rgba(3, 6, 8, 190),
-            text: Color::from_rgba(126, 143, 148, 215),
-        },
-    }
-}
-
-fn draw_research_node_socket(rect: Rect, palette: ResearchNodePalette, state: ResearchNodeState) {
-    let center = vec2(rect.x + 16.0, rect.y + rect.h * 0.5);
-    let radius = 6.0;
-    draw_circle(
-        center.x,
-        center.y,
-        radius + 3.0,
-        Color::from_rgba(2, 7, 10, 230),
-    );
-    draw_circle_lines(center.x, center.y, radius + 2.0, 1.0, palette.stroke);
-    draw_circle(
-        center.x,
-        center.y,
-        radius,
-        if state == ResearchNodeState::Locked {
-            Color::from_rgba(14, 20, 24, 225)
-        } else {
-            palette.rail
-        },
-    );
-}
-
-fn draw_research_node_tier_badge(rect: Rect, tier: u32, palette: ResearchNodePalette) {
-    let badge = Rect::new(rect.x + rect.w - 28.0, rect.y + 7.0, 20.0, 16.0);
-    draw_rectangle(
-        badge.x,
-        badge.y,
-        badge.w,
-        badge.h,
-        Color::from_rgba(4, 12, 18, 210),
-    );
-    draw_rectangle_lines(badge.x, badge.y, badge.w, badge.h, 1.0, palette.stroke);
-    let label = tier.to_string();
-    let measure = measure_text(&label, None, 12, 1.0);
-    draw_text(
-        &label,
-        badge.x + (badge.w - measure.width) * 0.5,
-        badge.y + 12.0,
-        12.0,
-        palette.text,
-    );
-}
-
-fn draw_research_node_hatch(rect: Rect) {
-    let color = Color::from_rgba(82, 114, 124, 42);
-    let mut x = rect.x - rect.h;
-    while x < rect.x + rect.w {
-        draw_line(
-            x,
-            rect.y + rect.h - 4.0,
-            x + rect.h,
-            rect.y + 4.0,
-            1.0,
-            color,
-        );
-        x += 14.0;
-    }
-}
-
-fn draw_research_node_progress(
-    game: &GameState,
-    research: &content::ResearchDef,
-    rect: Rect,
-    color: Color,
-) {
-    let Some(active) = game.active_research.as_ref() else {
-        return;
-    };
-    if active.research != research.id || research.duration_seconds <= 0.0 {
-        return;
-    }
-    let progress = 1.0 - (active.remaining_seconds / research.duration_seconds).clamp(0.0, 1.0);
-    let track = Rect::new(rect.x + 9.0, rect.y + rect.h - 10.0, rect.w - 18.0, 3.0);
-    draw_rectangle(
-        track.x,
-        track.y,
-        track.w,
-        track.h,
-        Color::from_rgba(3, 8, 12, 230),
-    );
-    draw_rectangle(track.x, track.y, track.w * progress, track.h, color);
-}
-
-fn draw_research_node_check(rect: Rect, color: Color) {
-    let x = rect.x + rect.w - 20.0;
-    let y = rect.y + rect.h - 14.0;
-    draw_line(x - 5.0, y - 1.0, x - 1.0, y + 4.0, 2.0, color);
-    draw_line(x - 1.0, y + 4.0, x + 7.0, y - 6.0, 2.0, color);
-}
-
-fn draw_research_detail(
-    game: &GameState,
-    research: Option<&content::ResearchDef>,
-    selected: bool,
-    rect: Rect,
-) {
-    let panel = Color::from_rgba(5, 12, 17, 218);
-    let border = Color::from_rgba(82, 114, 124, 132);
-    let label = Color::from_rgba(126, 156, 164, 210);
-    let text = Color::from_rgba(235, 242, 226, 255);
-    let detail = Color::from_rgba(178, 197, 203, 235);
-
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, panel);
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        5.0,
-        rect.h,
-        Color::from_rgba(150, 221, 226, 90),
-    );
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, border);
-    draw_line(
-        rect.x + 14.0,
-        rect.y + 38.0,
-        rect.x + rect.w - 14.0,
-        rect.y + 38.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 90),
-    );
-    let button = research_start_button_rect(rect);
-    let Some(research) = research else {
-        draw_text("Research Console", rect.x + 18.0, rect.y + 27.0, 20.0, text);
-        draw_text(
-            "Click a module to inspect its requirements, rewards, cost, and research time.",
-            rect.x + 18.0,
-            rect.y + 72.0,
-            18.0,
-            label,
-        );
-        return;
-    };
-    let state = research_node_state(
-        research,
-        game.active_research.as_ref(),
-        &game.completed_research,
-        game.credits,
-    );
-    let palette = research_node_palette(state);
-    let left_x = rect.x + 18.0;
-    let right_x = rect.x + rect.w * 0.48;
-    let right_width = button.x - right_x - 18.0;
-
-    draw_text(
-        &fit_debug_text(&research.name, rect.w * 0.42, 24),
-        left_x,
-        rect.y + 28.0,
-        24.0,
-        text,
-    );
-    draw_research_chip(
-        rect.x + rect.w - 378.0,
-        rect.y + 12.0,
-        112.0,
-        state.label(),
-        palette.rail,
-    );
-    draw_research_chip(
-        rect.x + rect.w - 254.0,
-        rect.y + 12.0,
-        94.0,
-        &format!("{} cr", research.price),
-        Color::from_rgba(150, 221, 226, 225),
-    );
-    draw_research_chip(
-        rect.x + rect.w - 148.0,
-        rect.y + 12.0,
-        130.0,
-        &format!("{} time", format_seconds(research.duration_seconds)),
-        Color::from_rgba(226, 190, 150, 225),
-    );
-
-    if let Some(summary) = research.summary.as_deref() {
-        draw_wrapped_text(summary, left_x, rect.y + 62.0, rect.w * 0.40, 15, detail);
-    }
-
-    draw_text("Requirements", right_x, rect.y + 62.0, 15.0, label);
-    draw_research_detail_list(
-        &research_requirement_labels(&game.content_registry, research),
-        right_x,
-        rect.y + 84.0,
-        right_width * 0.48,
-        Color::from_rgba(205, 226, 230, 245),
-    );
-
-    let rewards_x = right_x + right_width * 0.52;
-    draw_text("Rewards", rewards_x, rect.y + 62.0, 15.0, label);
-    draw_research_reward_list(
-        &game.content_registry,
-        research,
-        rewards_x,
-        rect.y + 84.0,
-        right_width * 0.48,
-        Color::from_rgba(226, 190, 150, 245),
-    );
-
-    draw_research_detail_progress(game, research, rect, state, palette.rail);
-    draw_research_start_button(button, state, selected);
-}
-
-fn draw_research_chip(x: f32, y: f32, width: f32, value: &str, color: Color) {
-    draw_rectangle(x, y, width, 24.0, Color::from_rgba(8, 18, 24, 224));
-    draw_rectangle(x, y, 4.0, 24.0, color);
-    draw_rectangle_lines(x, y, width, 24.0, 1.0, Color { a: 0.7, ..color });
-    draw_text(
-        &fit_debug_text(value, width - 14.0, 14),
-        x + 9.0,
-        y + 17.0,
-        14.0,
-        Color::from_rgba(235, 242, 226, 245),
-    );
-}
-
-fn draw_research_detail_list(items: &[String], x: f32, y: f32, width: f32, color: Color) {
-    if items.is_empty() {
-        draw_text("None", x, y, 14.0, Color::from_rgba(126, 156, 164, 185));
-        return;
-    }
-    for (index, item) in items.iter().take(3).enumerate() {
-        let row_y = y + index as f32 * 18.0;
-        draw_rectangle(x, row_y - 12.0, 5.0, 5.0, color);
-        draw_text(
-            &fit_debug_text(item, width - 16.0, 14),
-            x + 13.0,
-            row_y,
-            14.0,
-            color,
-        );
-    }
-}
-
-fn draw_research_reward_list(
-    registry: &content::ContentRegistry,
-    research: &content::ResearchDef,
-    x: f32,
-    y: f32,
-    width: f32,
-    color: Color,
-) {
-    if research.rewards.is_empty() {
-        draw_text("None", x, y, 14.0, Color::from_rgba(126, 156, 164, 185));
-        return;
-    }
-    for (index, reward) in research.rewards.iter().take(3).enumerate() {
-        let row_y = y + index as f32 * 18.0;
-        draw_research_reward_icon(&reward.kind, x + 7.0, row_y - 6.0, color);
-        draw_text(
-            &fit_debug_text(&research_reward_label(registry, reward), width - 24.0, 14),
-            x + 24.0,
-            row_y,
-            14.0,
-            color,
-        );
-    }
-}
-
-fn draw_research_reward_icon(kind: &str, x: f32, y: f32, color: Color) {
-    match kind {
-        "mining_speed_percent" => draw_research_pickaxe_icon(x, y, color),
-        "smelting_speed_percent" => draw_research_furnace_icon(x, y, color),
-        "fabrication_speed_percent" => draw_research_wrench_icon(x, y, color),
-        "bonus_output_chance" => draw_research_spark_icon(x, y, color),
-        "recipe_unlock" => draw_research_schematic_icon(x, y, color),
-        _ => draw_research_generic_reward_icon(x, y, color),
-    }
-}
-
-fn draw_research_pickaxe_icon(x: f32, y: f32, color: Color) {
-    draw_line(x - 4.0, y - 4.0, x + 5.0, y + 5.0, 1.5, color);
-    draw_line(x - 6.0, y - 3.0, x + 3.0, y - 6.0, 1.5, color);
-    draw_line(x + 3.0, y - 6.0, x + 7.0, y - 2.0, 1.5, color);
-}
-
-fn draw_research_furnace_icon(x: f32, y: f32, color: Color) {
-    draw_rectangle_lines(x - 6.0, y - 6.0, 12.0, 12.0, 1.2, color);
-    draw_line(x - 3.0, y + 2.0, x, y - 3.0, 1.2, color);
-    draw_line(x, y - 3.0, x + 3.0, y + 2.0, 1.2, color);
-    draw_line(x - 4.0, y + 5.0, x + 4.0, y + 5.0, 1.2, color);
-}
-
-fn draw_research_wrench_icon(x: f32, y: f32, color: Color) {
-    draw_circle_lines(x - 3.0, y - 4.0, 3.0, 1.2, color);
-    draw_line(x - 1.0, y - 2.0, x + 6.0, y + 5.0, 1.5, color);
-    draw_circle(x + 6.0, y + 5.0, 1.8, color);
-    draw_rectangle(x - 4.0, y - 7.0, 3.0, 4.0, Color::from_rgba(5, 12, 17, 255));
-}
-
-fn draw_research_spark_icon(x: f32, y: f32, color: Color) {
-    draw_line(x, y - 7.0, x, y + 7.0, 1.3, color);
-    draw_line(x - 7.0, y, x + 7.0, y, 1.3, color);
-    draw_line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.1, color);
-    draw_line(x + 4.5, y - 4.5, x - 4.5, y + 4.5, 1.1, color);
-}
-
-fn draw_research_schematic_icon(x: f32, y: f32, color: Color) {
-    draw_rectangle_lines(x - 6.0, y - 6.0, 12.0, 12.0, 1.2, color);
-    draw_line(x - 3.0, y - 2.0, x + 3.0, y - 2.0, 1.0, color);
-    draw_line(x - 3.0, y + 1.0, x + 3.0, y + 1.0, 1.0, color);
-    draw_line(x - 3.0, y + 4.0, x + 1.0, y + 4.0, 1.0, color);
-}
-
-fn draw_research_generic_reward_icon(x: f32, y: f32, color: Color) {
-    draw_circle_lines(x, y, 5.5, 1.2, color);
-    draw_line(x - 3.0, y, x + 3.0, y, 1.2, color);
-    draw_line(x, y - 3.0, x, y + 3.0, 1.2, color);
-}
-
-fn draw_research_detail_progress(
-    game: &GameState,
-    research: &content::ResearchDef,
-    rect: Rect,
-    state: ResearchNodeState,
-    color: Color,
-) {
-    let Some(active) = game.active_research.as_ref() else {
-        return;
-    };
-    if active.research != research.id || state != ResearchNodeState::Researching {
-        return;
-    }
-    let progress = if research.duration_seconds <= 0.0 {
-        1.0
-    } else {
-        1.0 - (active.remaining_seconds / research.duration_seconds).clamp(0.0, 1.0)
-    };
-    let track = Rect::new(rect.x + 18.0, rect.y + rect.h - 20.0, rect.w - 206.0, 5.0);
-    draw_rectangle(
-        track.x,
-        track.y,
-        track.w,
-        track.h,
-        Color::from_rgba(3, 8, 12, 230),
-    );
-    draw_rectangle(track.x, track.y, track.w * progress, track.h, color);
-    draw_text(
-        &format!("{} remaining", format_seconds(active.remaining_seconds)),
-        track.x + track.w - 116.0,
-        track.y - 6.0,
-        13.0,
-        Color::from_rgba(226, 190, 150, 225),
-    );
-}
-
-fn draw_research_start_button(rect: Rect, state: ResearchNodeState, selected: bool) {
-    let enabled = selected && state == ResearchNodeState::Affordable;
-    let fill = if enabled {
-        Color::from_rgba(16, 48, 58, 236)
-    } else {
-        Color::from_rgba(26, 30, 36, 180)
-    };
-    let stroke = if enabled {
-        Color::from_rgba(150, 221, 226, 230)
-    } else {
-        Color::from_rgba(82, 114, 124, 130)
-    };
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, stroke);
-    let label = match state {
-        ResearchNodeState::Affordable if selected => "Research",
-        ResearchNodeState::Affordable => "Select",
-        ResearchNodeState::Available => "Need credits",
-        ResearchNodeState::Researching => "Researching",
-        ResearchNodeState::Completed => "Completed",
-        ResearchNodeState::Locked => "Locked",
-    };
-    let text = measure_text(label, None, 15, 1.0);
-    draw_text(
-        label,
-        rect.x + (rect.w - text.width) * 0.5,
-        rect.y + 20.0,
-        15.0,
-        if enabled {
-            Color::from_rgba(235, 242, 226, 255)
-        } else {
-            Color::from_rgba(126, 156, 164, 220)
-        },
-    );
 }
 
 fn format_seconds(seconds: f32) -> String {
@@ -21541,462 +19463,9 @@ fn research_reward_label(
     }
 }
 
-fn ui_column_spec_fixed(width: f32) -> UiColumnSpec {
-    UiColumnSpec {
-        sizing: UiColumnSizing::Fixed(width),
-    }
-}
-
-fn ui_column_spec_content(measured: f32, min: f32, max: f32) -> UiColumnSpec {
-    UiColumnSpec {
-        sizing: UiColumnSizing::Content { measured, min, max },
-    }
-}
-
-fn ui_column_spec_flex(min: f32, weight: f32) -> UiColumnSpec {
-    UiColumnSpec {
-        sizing: UiColumnSizing::Flex { min, weight },
-    }
-}
-
-fn ui_resolve_columns(rect: Rect, gap: f32, specs: &[UiColumnSpec]) -> Vec<Rect> {
-    if specs.is_empty() {
-        return Vec::new();
-    }
-
-    let gap_total = gap * specs.len().saturating_sub(1) as f32;
-    let mut fixed_total = 0.0;
-    let mut flex_min_total = 0.0;
-    let mut flex_weight_total = 0.0;
-
-    for spec in specs {
-        match spec.sizing {
-            UiColumnSizing::Fixed(width) => fixed_total += width.max(0.0),
-            UiColumnSizing::Content { measured, min, max } => {
-                fixed_total += measured.clamp(min, max).max(0.0);
-            }
-            UiColumnSizing::Flex { min, weight } => {
-                flex_min_total += min.max(0.0);
-                flex_weight_total += weight.max(0.0);
-            }
-        }
-    }
-
-    let available_for_flex = (rect.w - gap_total - fixed_total).max(0.0);
-    let flex_extra = (available_for_flex - flex_min_total).max(0.0);
-    let mut x = rect.x;
-    specs
-        .iter()
-        .map(|spec| {
-            let width = match spec.sizing {
-                UiColumnSizing::Fixed(width) => width.max(0.0),
-                UiColumnSizing::Content { measured, min, max } => measured.clamp(min, max).max(0.0),
-                UiColumnSizing::Flex { min, weight } => {
-                    let share = if flex_weight_total > 0.0 {
-                        flex_extra * weight.max(0.0) / flex_weight_total
-                    } else {
-                        0.0
-                    };
-                    min.max(0.0) + share
-                }
-            };
-            let column = Rect::new(x, rect.y, width, rect.h);
-            x += width + gap;
-            column
-        })
-        .collect()
-}
-
-fn ui_table_layout(
-    bounds: Rect,
-    viewport_top: f32,
-    viewport_height: f32,
-    row_height: f32,
-    column_gap: f32,
-    columns: &[UiColumnSpec],
-) -> UiTableLayout {
-    let viewport = Rect::new(bounds.x, viewport_top, bounds.w, viewport_height);
-    let column_rect = Rect::new(bounds.x, viewport.y, bounds.w, viewport.h);
-    UiTableLayout {
-        bounds,
-        viewport,
-        columns: ui_resolve_columns(column_rect, column_gap, columns),
-        row_height,
-    }
-}
-
-fn ui_table_layout_until_bottom(config: UiTableBottomLayout<'_>) -> UiTableLayout {
-    let viewport_top = config.y + config.row_start_offset;
-    let viewport_height = (config.viewport_bottom - viewport_top).max(0.0);
-    ui_table_layout(
-        Rect::new(config.x, config.y, config.width, viewport_height),
-        viewport_top,
-        viewport_height,
-        config.row_height,
-        config.column_gap,
-        config.columns,
-    )
-}
-
-fn ui_table_row_rect(layout: &UiTableLayout, row: usize, scroll: f32) -> Rect {
-    Rect::new(
-        layout.viewport.x,
-        layout.viewport.y + row as f32 * layout.row_height - scroll,
-        layout.viewport.w,
-        layout.row_height,
-    )
-}
-
-fn ui_table_row_visible(layout: &UiTableLayout, row_rect: Rect) -> bool {
-    row_rect.y >= layout.viewport.y
-        && row_rect.y + row_rect.h <= layout.viewport.y + layout.viewport.h
-}
-
-fn ui_hovered_table_cell(
-    mouse: Vec2,
-    layout: &UiTableLayout,
-    row_count: usize,
-    scroll: f32,
-) -> Option<UiTableCell> {
-    if !layout.viewport.contains(mouse) {
-        return None;
-    }
-
-    let row = ((mouse.y - layout.viewport.y + scroll) / layout.row_height).floor() as isize;
-    if row < 0 || row as usize >= row_count {
-        return None;
-    }
-
-    let row_rect = ui_table_row_rect(layout, row as usize, scroll);
-    if !row_rect.contains(mouse) {
-        return None;
-    }
-
-    layout
-        .columns
-        .iter()
-        .position(|column| mouse.x >= column.x && mouse.x <= column.x + column.w)
-        .map(|column| UiTableCell {
-            row: row as usize,
-            column,
-        })
-}
-
-fn work_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    work_table_layout_with_height(x, y, width, work_table_height())
-}
-
-fn work_table_layout_with_height(x: f32, y: f32, width: f32, height: f32) -> UiTableLayout {
-    let compact = width < 382.0;
-    let column_gap = if compact { 6.0 } else { 12.0 };
-    let keep_width = 42.0;
-    let status_width = if compact { 58.0 } else { 76.0 };
-    let percent_width = if compact { 32.0 } else { 42.0 };
-    let active_width = 50.0;
-    let item_width =
-        (width - keep_width - status_width - percent_width - active_width - column_gap * 4.0)
-            .max(60.0);
-    ui_table_layout(
-        Rect::new(x, y, width, height),
-        y + 13.0,
-        height,
-        WORK_ROW_HEIGHT,
-        column_gap,
-        &[
-            ui_column_spec_fixed(item_width),
-            ui_column_spec_fixed(keep_width),
-            ui_column_spec_fixed(status_width),
-            ui_column_spec_fixed(percent_width),
-            ui_column_spec_fixed(active_width),
-        ],
-    )
-}
-
-fn inventory_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    let columns = inventory_column_specs();
-    ui_table_layout(
-        Rect::new(x, y, width, work_table_height()),
-        y + 13.0,
-        work_table_height(),
-        INVENTORY_ROW_HEIGHT,
-        10.0,
-        &columns,
-    )
-}
-
-fn inventory_column_specs() -> [UiColumnSpec; 3] {
-    [
-        ui_column_spec_flex(130.0, 1.0),
-        ui_column_spec_fixed(44.0),
-        ui_column_spec_fixed(78.0),
-    ]
-}
-
-fn npc_interaction_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    ui_table_layout_until_bottom(UiTableBottomLayout {
-        x,
-        y,
-        width,
-        row_start_offset: 28.0,
-        viewport_bottom: action_table_bottom(),
-        row_height: WORK_ROW_HEIGHT,
-        column_gap: 12.0,
-        columns: &[
-            ui_column_spec_flex(150.0, 1.0),
-            ui_column_spec_content(82.0, 78.0, 104.0),
-        ],
-    })
-}
-
-fn station_trade_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    ui_table_layout_until_bottom(UiTableBottomLayout {
-        x,
-        y,
-        width,
-        row_start_offset: 28.0,
-        viewport_bottom: action_table_bottom(),
-        row_height: 40.0,
-        column_gap: 8.0,
-        columns: &[
-            ui_column_spec_flex(88.0, 1.0),
-            ui_column_spec_content(44.0, 42.0, 54.0),
-            ui_column_spec_content(46.0, 44.0, 58.0),
-        ],
-    })
-}
-
-fn recipe_unlock_table_layout(x: f32, y: f32, width: f32) -> UiTableLayout {
-    ui_table_layout_until_bottom(UiTableBottomLayout {
-        x,
-        y,
-        width,
-        row_start_offset: 28.0,
-        viewport_bottom: action_table_bottom(),
-        row_height: WORK_ROW_HEIGHT,
-        column_gap: 12.0,
-        columns: &[
-            ui_column_spec_flex(160.0, 1.0),
-            ui_column_spec_content(82.0, 72.0, 96.0),
-        ],
-    })
-}
-
-fn action_table_bottom() -> f32 {
-    let rail = action_rail_rect(clamp_action_rail_width(OBJECT_ACTION_RAIL_MIN_WIDTH));
-    rail.y + rail.h - 12.0
-}
-
-fn ship_upgrade_table_layout(x: f32, y: f32, width: f32, viewport_height: f32) -> UiTableLayout {
-    ui_table_layout(
-        Rect::new(x, y, width, viewport_height),
-        y + 18.0,
-        viewport_height,
-        SHIP_UPGRADE_ROW_HEIGHT,
-        12.0,
-        &[
-            ui_column_spec_flex(220.0, 1.0),
-            ui_column_spec_content(48.0, 44.0, 60.0),
-            ui_column_spec_flex(220.0, 1.35),
-            ui_column_spec_fixed(34.0),
-        ],
-    )
-}
-
-fn hovered_work_cell(
-    mouse: Vec2,
-    row_count: usize,
-    scroll: f32,
-    action_rail_width: Option<f32>,
-) -> Option<(usize, WorkColumn)> {
-    let overlay = inventory_overlay_layout(action_rail_width);
-    let layout = work_table_layout(
-        overlay.production_x,
-        work_table_y(),
-        overlay.production_width,
-    );
-    hovered_work_cell_in_layout(mouse, &layout, row_count, scroll)
-}
-
-fn hovered_work_cell_with_action_rail(
-    mouse: Vec2,
-    row_count: usize,
-    scroll: f32,
-    action_rail_width: f32,
-) -> Option<(usize, WorkColumn)> {
-    let overlay = inventory_overlay_layout(Some(action_rail_width));
-    let rail = overlay.action_rail?;
-    let layout = work_table_layout_with_height(
-        rail.x + 12.0,
-        rail.y + 198.0,
-        rail.w - 24.0,
-        (rail.h - 252.0).max(WORK_ROW_HEIGHT),
-    );
-    hovered_work_cell_in_layout(mouse, &layout, row_count, scroll)
-}
-
-fn hovered_work_cell_in_layout(
-    mouse: Vec2,
-    layout: &UiTableLayout,
-    row_count: usize,
-    scroll: f32,
-) -> Option<(usize, WorkColumn)> {
-    ui_hovered_table_cell(mouse, layout, row_count, scroll).and_then(|cell| {
-        let column = match cell.column {
-            0 => WorkColumn::Item,
-            1 => WorkColumn::Keep,
-            _ => return None,
-        };
-        Some((cell.row, column))
-    })
-}
-
-fn work_table_y() -> f32 {
-    let panel_height = inventory_panel_height();
-    let panel_y = (screen_height() - panel_height) * 0.5 + 18.0;
-    panel_y + GAME_PANEL_BODY_TOP
-}
-
 fn work_table_height() -> f32 {
     let panel_height = inventory_panel_height();
     panel_height - 132.0
-}
-
-fn clicked_production_mode(mouse: Vec2, action_rail_width: Option<f32>) -> Option<ProductionMode> {
-    let layout = inventory_overlay_layout(action_rail_width);
-    let x = layout.production_x + layout.production_width - 204.0;
-    let y = layout.panel_y + GAME_PANEL_HEADER_BASELINE - 19.0;
-
-    if mouse.y < y || mouse.y > y + 26.0 {
-        return None;
-    }
-    if mouse.x >= x && mouse.x <= x + 58.0 {
-        Some(ProductionMode::Smelting)
-    } else if mouse.x >= x + 64.0 && mouse.x <= x + 122.0 {
-        Some(ProductionMode::Crafting)
-    } else if mouse.x >= x + 128.0 && mouse.x <= x + 200.0 {
-        Some(ProductionMode::Processing)
-    } else {
-        None
-    }
-}
-
-fn draw_production_mode_tabs(mode: ProductionMode, x: f32, y: f32) {
-    draw_production_tab("Smelt", ProductionMode::Smelting, mode, x, y, 58.0);
-    draw_production_tab("Craft", ProductionMode::Crafting, mode, x + 64.0, y, 58.0);
-    draw_production_tab(
-        "Process",
-        ProductionMode::Processing,
-        mode,
-        x + 128.0,
-        y,
-        72.0,
-    );
-}
-
-fn draw_production_tab(
-    label: &str,
-    tab_mode: ProductionMode,
-    active_mode: ProductionMode,
-    x: f32,
-    y: f32,
-    width: f32,
-) {
-    let active = tab_mode == active_mode;
-    draw_rectangle(
-        x,
-        y,
-        width,
-        26.0,
-        if active {
-            Color::from_rgba(20, 46, 48, 205)
-        } else {
-            Color::from_rgba(8, 16, 22, 130)
-        },
-    );
-    draw_rectangle_lines(
-        x,
-        y,
-        width,
-        26.0,
-        1.0,
-        if active {
-            Color::from_rgba(150, 221, 226, 180)
-        } else {
-            Color::from_rgba(82, 114, 124, 120)
-        },
-    );
-    draw_text(
-        label,
-        x + 9.0,
-        y + 18.0,
-        16.0,
-        if active {
-            Color::from_rgba(205, 226, 230, 255)
-        } else {
-            Color::from_rgba(126, 156, 164, 220)
-        },
-    );
-}
-
-fn draw_production_text_table(
-    game: &GameState,
-    x: f32,
-    y: f32,
-    width: f32,
-    scroll: f32,
-    mouse: Vec2,
-) {
-    let (recipes, settings) = match game.production_mode {
-        ProductionMode::Smelting => (&game.smelt_recipes, &game.smelt_settings),
-        ProductionMode::Crafting => (&game.craft_recipes, &game.craft_settings),
-        ProductionMode::Processing => (&game.processing_recipes, &game.processing_settings),
-    };
-    let active_row = next_recipe_bill_index(game, recipes, settings);
-    let rows = recipes
-        .iter()
-        .zip(settings.iter())
-        .enumerate()
-        .map(|(index, (recipe, setting))| {
-            let can_craft = game.inventory.can_craft(recipe);
-            let unlocked = recipe_is_unlocked(game, &recipe.id);
-            let current = game.inventory.count(&recipe.output.item);
-            WorkRow {
-                item: recipe_row_label(recipes, index),
-                keep: setting.keep,
-                enabled: unlocked && can_craft,
-                status: if unlocked {
-                    work_row_status(current, setting.keep, setting.queued)
-                } else {
-                    "Locked".to_string()
-                },
-                percent: if active_row == Some(index) {
-                    format!("{:.0}%", setting.progress() * 100.0)
-                } else {
-                    String::new()
-                },
-                active: active_row == Some(index),
-            }
-        })
-        .collect::<Vec<_>>();
-    draw_work_text_table(&rows, x, y, width, scroll, mouse);
-}
-
-fn hovered_production_recipe(game: &GameState, mouse: Vec2, scroll: f32) -> Option<&Recipe> {
-    let recipes = match game.production_mode {
-        ProductionMode::Smelting => &game.smelt_recipes,
-        ProductionMode::Crafting => &game.craft_recipes,
-        ProductionMode::Processing => &game.processing_recipes,
-    };
-    if let Some((recipe_index, _)) = hovered_work_cell(
-        mouse,
-        recipes.len(),
-        scroll,
-        selected_action_rail_width(game),
-    ) {
-        return recipes.get(recipe_index);
-    }
-
-    None
 }
 
 fn recipe_row_label(recipes: &[Recipe], recipe_index: usize) -> String {
@@ -22079,1193 +19548,6 @@ fn faction_color(
         .unwrap_or_else(|| Color::from_rgba(205, 226, 230, alpha))
 }
 
-fn draw_recipe_tooltip(recipe: &Recipe, inventory: &Inventory, mouse: Vec2) {
-    let row_height = 24.0;
-    let width = 286.0;
-    let height = 74.0 + recipe.ingredients.len() as f32 * row_height;
-    let x = (mouse.x + 18.0)
-        .min(screen_width() - width - 18.0)
-        .max(18.0);
-    let y = (mouse.y + 18.0)
-        .min(screen_height() - height - 18.0)
-        .max(18.0);
-    let panel = Color::from_rgba(2, 6, 10, 255);
-    let border = Color::from_rgba(112, 151, 163, 170);
-    let label = Color::from_rgba(126, 156, 164, 220);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let active = Color::from_rgba(150, 221, 226, 255);
-    let unavailable = Color::from_rgba(226, 190, 150, 245);
-
-    draw_rectangle(x, y, width, height, panel);
-    draw_rectangle_lines(x, y, width, height, 1.0, border);
-    draw_text(
-        &recipe_variant_label(recipe),
-        x + 14.0,
-        y + 28.0,
-        21.0,
-        text,
-    );
-    draw_text("Requires", x + 14.0, y + 54.0, 15.0, label);
-
-    for (index, ingredient) in recipe.ingredients.iter().enumerate() {
-        let row_y = y + 82.0 + index as f32 * row_height;
-        let have = inventory.count(&ingredient.item);
-        let enough = have >= ingredient.count;
-        draw_text(
-            &ingredient.item.name,
-            x + 14.0,
-            row_y,
-            18.0,
-            if enough { text } else { unavailable },
-        );
-        let count_label = format!("{have} / {}", ingredient.count);
-        let measure = measure_text(&count_label, None, 18, 1.0);
-        draw_text(
-            &count_label,
-            x + width - 14.0 - measure.width,
-            row_y,
-            18.0,
-            if enough { active } else { unavailable },
-        );
-    }
-}
-
-fn draw_mining_text_table_with_alignment(
-    inventory: &Inventory,
-    planet: &Planet,
-    in_range: bool,
-    rect: Rect,
-    scroll: f32,
-    mouse: Vec2,
-    item_alignment: WorkTableItemAlignment,
-) {
-    let Rect {
-        x,
-        y,
-        w: width,
-        h: height,
-    } = rect;
-
-    if !planet_has_composition_scan(planet) {
-        draw_work_text_table_in_rect_with_alignment(&[], rect, scroll, mouse, item_alignment);
-        draw_wrapped_text(
-            "Planet composition unknown. Launch survey drones from the planet panel to reveal mineable resources and unlock mining.",
-            x,
-            y + 92.0,
-            width,
-            18,
-            Color::from_rgba(205, 226, 230, 210),
-        );
-        return;
-    }
-
-    let active_row = in_range
-        .then(|| next_mining_bill_index(inventory, planet))
-        .flatten();
-    let rows = planet
-        .info
-        .mineables
-        .iter()
-        .zip(planet.mining.iter())
-        .enumerate()
-        .map(|(index, (mineable, setting))| {
-            let current = inventory.count(&mineable.item);
-            let percent = if planet_has_richness_scan(planet) {
-                format!(
-                    "{:.0}%",
-                    mineable_richness_multiplier(planet, index) * 100.0
-                )
-            } else {
-                String::new()
-            };
-            WorkRow {
-                item: mineable.item.name.clone(),
-                keep: setting.keep,
-                enabled: in_range,
-                status: work_row_status(current, setting.keep, setting.queued),
-                percent,
-                active: active_row == Some(index),
-            }
-        })
-        .collect::<Vec<_>>();
-    draw_work_text_table_in_rect_with_alignment(
-        &rows,
-        Rect::new(x, y, width, height),
-        scroll,
-        mouse,
-        item_alignment,
-    );
-}
-
-fn draw_compact_list(lines: &[&str], x: f32, y: f32, max_width: f32, font_size: u16, color: Color) {
-    let mut cursor_x = x;
-    let mut cursor_y = y;
-
-    for line in lines.iter().take(3) {
-        let label = if cursor_x == x {
-            (*line).to_string()
-        } else {
-            format!("/ {line}")
-        };
-        let width = measure_text(&label, None, font_size, 1.0).width;
-        if cursor_x + width > x + max_width {
-            cursor_x = x;
-            cursor_y += font_size as f32 + 5.0;
-        }
-        draw_text(&label, cursor_x, cursor_y, font_size as f32, color);
-        cursor_x += width + 10.0;
-    }
-}
-
-fn draw_detail_panel(game: &GameState, x: f32, y: f32, width: f32) {
-    if let Some(planet_index) = game.selected_planet {
-        if let Some(planet) = game.planets.get(planet_index) {
-            draw_planet_detail(PlanetDetailRender {
-                content_registry: &game.content_registry,
-                planet,
-                in_range: planet_in_interaction_range(&game.ship, planet),
-                is_orbiting: game.orbiting_planet == Some(planet_index),
-                operation_feedback: &game.operation_feedback,
-                x,
-                y,
-                width,
-            });
-            return;
-        }
-    }
-
-    if let Some(station_index) = game.selected_station {
-        if let Some(station) = game.stations.get(station_index) {
-            draw_station_detail(StationDetailRender {
-                content_registry: &game.content_registry,
-                station,
-                selected_service: game.selected_station_service,
-                in_range: station_in_interaction_range(&game.ship, station),
-                distance: station_surface_distance(&game.ship, station),
-                operation_feedback: &game.operation_feedback,
-                x,
-                y,
-                width,
-            });
-            return;
-        }
-    }
-
-    if let Some(npc_ship_index) = game.selected_npc_ship {
-        if let Some(npc_ship) = game.npc_ships.get(npc_ship_index) {
-            draw_npc_ship_detail(
-                &game.content_registry,
-                &game.ship,
-                npc_ship,
-                &game.operation_feedback,
-                x,
-                y,
-                width,
-            );
-            return;
-        }
-    }
-
-    draw_ship_detail(ShipDetailView {
-        ship: &game.ship,
-        power_modules: &game.installed_power_modules,
-        shields: &game.equipped_shields,
-        weapons: &game.equipped_weapons,
-        weapon_slot_capacity: weapon_slot_capacity(game),
-        threats: &game.defense_threats,
-        cargo_mass: game.inventory.total_mass(),
-        cargo_capacity: cargo_rating_kg(&game.ship_upgrades),
-        current_system_id: &game.current_system_id,
-        shield_recharge_delay_remaining: game.shield_recharge_delay_remaining,
-        operation_feedback: &game.operation_feedback,
-        texture: game.ship_textures.get(&game.ship_id),
-        x,
-        y,
-        width,
-    });
-}
-
-fn draw_npc_ship_interaction_list(
-    content_registry: &content::ContentRegistry,
-    ship: &Ship,
-    npc_ship: &NpcShip,
-    rect: Rect,
-) {
-    let Rect { x, y, w: width, .. } = rect;
-    let layout = npc_interaction_table_layout(x, y, width);
-    let action_column = layout.columns[0];
-    let status_column = layout.columns[1];
-    draw_text(
-        "Action",
-        action_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "Status",
-        status_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_line(
-        x,
-        y + 24.0,
-        x + width,
-        y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-
-    let rows = npc_interaction_rows(content_registry, ship, npc_ship);
-    for (index, row) in rows.iter().enumerate() {
-        let row_rect = ui_table_row_rect(&layout, index, 0.0);
-        if !ui_table_row_visible(&layout, row_rect) {
-            continue;
-        }
-        let hovered = row_rect.contains(mouse_vec2());
-        draw_rectangle(
-            row_rect.x,
-            row_rect.y,
-            row_rect.w,
-            row_rect.h,
-            if hovered {
-                Color::from_rgba(13, 32, 40, 210)
-            } else if index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 118)
-            } else {
-                Color::from_rgba(6, 12, 18, 82)
-            },
-        );
-        let color = match row.state {
-            NpcInteractionState::Available => Color::from_rgba(150, 221, 226, 255),
-            NpcInteractionState::Complete => Color::from_rgba(235, 242, 226, 255),
-            NpcInteractionState::Unavailable => Color::from_rgba(126, 143, 148, 220),
-        };
-        draw_text(
-            &fit_debug_text(row.action.label(), action_column.w, 16),
-            action_column.x,
-            row_rect.y + 20.0,
-            16.0,
-            color,
-        );
-        draw_text(
-            &fit_debug_text(row.status, status_column.w, 15),
-            status_column.x,
-            row_rect.y + 20.0,
-            15.0,
-            color,
-        );
-    }
-
-    let hint = if npc_ship.identified {
-        "Known contacts expose available hooks. Disabled rows indicate systems that are not implemented yet."
-    } else if npc_ship_in_interaction_range(ship, npc_ship) {
-        "Identify this contact to reveal faction, loadout, and supported interaction hooks."
-    } else {
-        "Approach this contact to identify it."
-    };
-    draw_wrapped_text(
-        hint,
-        x + 6.0,
-        y + 28.0 + rows.len() as f32 * WORK_ROW_HEIGHT + 22.0,
-        width - 12.0,
-        15,
-        Color::from_rgba(178, 197, 203, 235),
-    );
-}
-
-fn draw_npc_ship_trade_list(render: NpcTradeRender<'_>) {
-    let NpcTradeRender {
-        ship,
-        ship_upgrades,
-        npc_ship,
-        world_seed,
-        world_elapsed_days,
-        credits,
-        inventory,
-        quantity,
-        rect,
-    } = render;
-    let Rect { x, y, w: width, .. } = rect;
-    let layout = npc_trade_table_layout(x, y, width);
-    let columns = &layout.columns;
-    let header = Color::from_rgba(168, 204, 210, 255);
-    draw_text("Cargo market", x, y + 16.0, 16.0, header);
-    draw_text(
-        "Hail for route rumors",
-        x,
-        y + 38.0,
-        13.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
-    for (label, column) in [
-        ("Item", &columns[0]),
-        ("Qty", &columns[1]),
-        ("Buy", &columns[2]),
-        ("Sell", &columns[3]),
-    ] {
-        draw_text(label, column.x, y + 58.0, 14.0, header);
-    }
-    draw_line(
-        x,
-        y + 66.0,
-        x + width,
-        y + 66.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-
-    if !npc_ship_in_interaction_range(ship, npc_ship) {
-        draw_text(
-            "Approach to trade",
-            x,
-            y + 92.0,
-            16.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-        return;
-    }
-    let day = world_elapsed_days.floor().max(0.0) as u64;
-    for (index, stack) in npc_ship.cargo_defaults.iter().enumerate() {
-        let row = ui_table_row_rect(&layout, index, 0.0);
-        if !ui_table_row_visible(&layout, row) {
-            continue;
-        }
-        let quote = npc_trade_quote(npc_ship, &stack.item, world_seed, day);
-        let cargo_count = inventory.count(&stack.item);
-        let buy_amount =
-            npc_trade_buy_amount(credits, inventory, ship_upgrades, stack, &quote, quantity);
-        let buy_label = if stack.count == 0 {
-            "No stock".to_string()
-        } else if buy_amount == 0 {
-            "Unavailable".to_string()
-        } else {
-            format!("Buy x{}", buy_amount)
-        };
-        let sell_amount = npc_trade_sell_amount(npc_ship, stack, cargo_count, quantity);
-        let sell_label = if sell_amount == 0 {
-            "No cargo".to_string()
-        } else {
-            format!("Sell x{}", sell_amount)
-        };
-        let hovered = row.contains(mouse_vec2());
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if hovered {
-                Color::from_rgba(13, 32, 40, 210)
-            } else {
-                Color::from_rgba(8, 18, 24, 118)
-            },
-        );
-        draw_text(
-            &fit_debug_text(&stack.item.name, columns[0].w, 15),
-            columns[0].x,
-            row.y + 17.0,
-            15.0,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        draw_text(
-            &format!("{}", stack.count),
-            columns[0].x,
-            row.y + 33.0,
-            12.0,
-            Color::from_rgba(126, 156, 164, 220),
-        );
-        let quantity_rect = Rect::new(columns[1].x, row.y + 8.0, columns[1].w, 22.0);
-        draw_trade_action_button(
-            quantity_rect,
-            "",
-            true,
-            quantity_rect.contains(mouse_vec2()),
-        );
-        draw_text(
-            "−",
-            quantity_rect.x + 7.0,
-            quantity_rect.y + 15.0,
-            14.0,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        let quantity_label = quantity.to_string();
-        let quantity_width = measure_text(&quantity_label, None, 14, 1.0).width;
-        draw_text(
-            &quantity_label,
-            quantity_rect.x + (quantity_rect.w - quantity_width) * 0.5,
-            quantity_rect.y + 15.0,
-            14.0,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        draw_text(
-            "+",
-            quantity_rect.x + quantity_rect.w - 15.0,
-            quantity_rect.y + 15.0,
-            14.0,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        draw_trade_action_button(
-            Rect::new(columns[2].x, row.y + 8.0, columns[2].w, 22.0),
-            &buy_label,
-            buy_amount > 0,
-            Rect::new(columns[2].x, row.y + 8.0, columns[2].w, 22.0).contains(mouse_vec2()),
-        );
-        draw_trade_action_button(
-            Rect::new(columns[3].x, row.y + 8.0, columns[3].w, 22.0),
-            &sell_label,
-            sell_amount > 0,
-            Rect::new(columns[3].x, row.y + 8.0, columns[3].w, 22.0).contains(mouse_vec2()),
-        );
-    }
-    if npc_ship.cargo_defaults.is_empty() {
-        draw_text(
-            "No cargo available",
-            x,
-            y + 92.0,
-            16.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-    }
-}
-
-fn draw_station_service_list(render: StationActionRailRender<'_>) {
-    let StationActionRailRender {
-        content_registry,
-        station,
-        stations,
-        planets,
-        world_elapsed_days,
-        selected_service,
-        in_range,
-        credits,
-        inventory,
-        completed_research,
-        active_contracts,
-        faction_reputation,
-        action_rail_width,
-    } = render;
-    let layout = station_action_layout(station, action_rail_width);
-    let services = layout.services;
-    let detail = layout.detail;
-    let header = Color::from_rgba(168, 204, 210, 255);
-    let accent = Color::from_rgba(150, 221, 226, 255);
-    let warning = Color::from_rgba(226, 190, 150, 255);
-
-    draw_text("Shops", services.x, services.y + 16.0, 14.0, header);
-    draw_text("Items", detail.x, detail.y + 16.0, 14.0, header);
-    draw_line(
-        services.x,
-        services.y + 24.0,
-        services.x + services.w,
-        services.y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-    draw_line(
-        detail.x,
-        detail.y + 24.0,
-        detail.x + detail.w,
-        detail.y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-    draw_vertical_dotted_line(
-        services.x + services.w + 8.0,
-        services.y,
-        services.y + services.h,
-        0.5,
-        5.0,
-        6.0,
-        Color::from_rgba(96, 137, 150, 100),
-    );
-
-    if station.services.is_empty() {
-        draw_text(
-            "No services declared",
-            services.x,
-            services.y + 48.0,
-            16.0,
-            warning,
-        );
-        return;
-    }
-
-    for (index, service) in station.services.iter().enumerate() {
-        let row = station_service_button_rect(station, index, action_rail_width);
-        let selected = selected_service == Some(index);
-        let hovered = row.contains(mouse_vec2());
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if selected {
-                Color::from_rgba(24, 58, 66, 230)
-            } else if hovered {
-                Color::from_rgba(13, 32, 40, 210)
-            } else if index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 118)
-            } else {
-                Color::from_rgba(6, 12, 18, 82)
-            },
-        );
-        draw_rectangle_lines(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            1.0,
-            if selected {
-                Color::from_rgba(150, 221, 226, 170)
-            } else {
-                Color::from_rgba(82, 114, 124, 105)
-            },
-        );
-        draw_text(
-            &fit_debug_text(&service.name, row.w - 14.0, 16),
-            row.x + 7.0,
-            row.y + 20.0,
-            16.0,
-            if selected {
-                Color::from_rgba(235, 242, 226, 255)
-            } else {
-                Color::from_rgba(205, 226, 230, 255)
-            },
-        );
-        let service_context = service
-            .vendor
-            .as_ref()
-            .map(|vendor| {
-                let specialties = vendor.specialties.join(", ");
-                if specialties.is_empty() {
-                    vendor.name.clone()
-                } else {
-                    format!("{} · {}", vendor.name, specialties)
-                }
-            })
-            .unwrap_or_else(|| service.kind.clone());
-        let service_context = if let Some(required) = service.reputation_required {
-            let faction = service_reputation_faction(station, service);
-            let standing = faction
-                .and_then(|faction| faction_reputation.get(faction))
-                .copied()
-                .unwrap_or_default();
-            format!("{service_context} · rep {standing}/{required}")
-        } else {
-            service_context
-        };
-        draw_text(
-            &fit_debug_text(&service_context, row.w - 14.0, 13),
-            row.x + 7.0,
-            row.y + 31.0,
-            13.0,
-            if selected {
-                accent
-            } else {
-                Color::from_rgba(126, 156, 164, 220)
-            },
-        );
-    }
-
-    if let Some(service) = selected_service.and_then(|index| station.services.get(index)) {
-        let service_available = service_reputation_faction(station, service)
-            .and_then(|faction| faction_reputation.get(faction))
-            .copied()
-            .unwrap_or_default();
-        let vendor_locked = service.vendor.as_ref().is_some_and(|vendor| {
-            faction_reputation
-                .get(vendor.faction.as_deref().unwrap_or_default())
-                .copied()
-                .unwrap_or_default()
-                < vendor.reputation_required
-        });
-        let status = if vendor_locked
-            || service
-                .reputation_required
-                .is_some_and(|required| service_available < required)
-        {
-            "Need reputation"
-        } else if in_range {
-            "Ready"
-        } else {
-            "Approach to trade"
-        };
-        let service_title = service
-            .vendor
-            .as_ref()
-            .map(|vendor| {
-                let faction = vendor
-                    .faction
-                    .as_deref()
-                    .map(|faction| format!(" · {}", faction))
-                    .unwrap_or_default();
-                format!("{}{} / {} / {}", vendor.name, faction, service.name, status)
-            })
-            .unwrap_or_else(|| format!("{} / {}", service.name, status));
-        draw_text(
-            &fit_debug_text(&service_title, detail.w, 16),
-            detail.x,
-            detail.y + 48.0,
-            16.0,
-            if in_range { accent } else { warning },
-        );
-        draw_station_repair_panel(
-            station,
-            service,
-            detail.x,
-            detail.y + 70.0,
-            detail.w,
-            in_range,
-            credits,
-        );
-        draw_station_trade_table(StationTradeTableRender {
-            station,
-            service,
-            world_elapsed_days,
-            in_range,
-            credits,
-            inventory,
-            action_rail_width,
-            x: detail.x,
-            width: detail.w,
-        });
-        draw_station_contract_table(StationContractTableRender {
-            station,
-            service,
-            stations,
-            planets,
-            active_contracts,
-            faction_reputation,
-            world_elapsed_days,
-            in_range,
-            action_rail_width,
-            x: detail.x,
-            width: detail.w,
-        });
-        draw_recipe_unlock_table(RecipeUnlockTableRender {
-            content_registry,
-            station,
-            service,
-            stations,
-            planets,
-            in_range,
-            credits,
-            completed_research,
-            action_rail_width,
-            x: detail.x,
-            width: detail.w,
-        });
-        draw_research_lead_table(RecipeUnlockTableRender {
-            content_registry,
-            station,
-            service,
-            stations,
-            planets,
-            in_range,
-            credits,
-            completed_research,
-            action_rail_width,
-            x: detail.x,
-            width: detail.w,
-        });
-    } else {
-        draw_text("Select a shop", detail.x, detail.y + 48.0, 16.0, warning);
-    }
-}
-
-fn draw_station_trade_table(render: StationTradeTableRender<'_>) {
-    let StationTradeTableRender {
-        station,
-        service,
-        world_elapsed_days,
-        in_range,
-        credits,
-        inventory,
-        action_rail_width,
-        x,
-        width,
-    } = render;
-    let y = station_trade_table_y(station, action_rail_width);
-    let layout = station_trade_table_layout(x, y, width);
-    let item_column = layout.columns[0];
-    let buy_column = layout.columns[1];
-    let sell_column = layout.columns[2];
-    let mouse = mouse_vec2();
-    draw_text(
-        "Item",
-        item_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "Buy",
-        buy_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "Sell",
-        sell_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_line(
-        x,
-        y + 24.0,
-        x + width,
-        y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-
-    if service.trade.is_empty() {
-        draw_text(
-            "No trade stock declared",
-            x + 6.0,
-            y + 48.0,
-            16.0,
-            Color::from_rgba(226, 190, 150, 255),
-        );
-        return;
-    }
-
-    for (index, offer) in service.trade.iter().enumerate() {
-        let row = ui_table_row_rect(&layout, index, 0.0);
-        if !ui_table_row_visible(&layout, row) {
-            continue;
-        }
-        let hovered = row.contains(mouse);
-        let buy_rect = Rect::new(buy_column.x, row.y + 8.0, buy_column.w, 22.0);
-        let sell_rect = Rect::new(sell_column.x, row.y + 8.0, sell_column.w, 22.0);
-        let can_buy =
-            in_range && !offer.unavailable && offer.stock != Some(0) && credits >= offer.buy_price;
-        let cargo_count = inventory.count(&offer.item);
-        let can_sell = in_range && cargo_count > 0;
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if hovered {
-                Color::from_rgba(13, 32, 40, 210)
-            } else if index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 118)
-            } else {
-                Color::from_rgba(6, 12, 18, 82)
-            },
-        );
-        draw_text(
-            &fit_debug_text(&offer.item.name, item_column.w, 15),
-            item_column.x,
-            row.y + 17.0,
-            15.0,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        let detail = format!(
-            "{}  Cargo {}  Buy {} / Sell {}",
-            format_trade_stock(offer, world_elapsed_days),
-            cargo_count,
-            offer.buy_price,
-            offer.sell_price
-        );
-        let detail_color = if offer.unavailable || offer.stock == Some(0) {
-            Color::from_rgba(226, 190, 150, 230)
-        } else {
-            Color::from_rgba(126, 156, 164, 220)
-        };
-        draw_text(
-            &fit_debug_text(&detail, item_column.w, 12),
-            item_column.x,
-            row.y + 32.0,
-            12.0,
-            detail_color,
-        );
-        draw_trade_action_button(
-            buy_rect,
-            &trade_buy_label(offer, in_range, credits),
-            can_buy,
-            buy_rect.contains(mouse),
-        );
-        draw_trade_action_button(
-            sell_rect,
-            &trade_sell_label(in_range, cargo_count),
-            can_sell,
-            sell_rect.contains(mouse),
-        );
-    }
-}
-
-fn trade_buy_label(offer: &TradeOffer, in_range: bool, credits: u32) -> String {
-    if !in_range {
-        "Approach".to_string()
-    } else if offer.unavailable {
-        "Unavailable".to_string()
-    } else if offer.stock == Some(0) {
-        "No stock".to_string()
-    } else if credits < offer.buy_price {
-        format!("Need {}", offer.buy_price.saturating_sub(credits))
-    } else {
-        "Buy".to_string()
-    }
-}
-
-fn trade_sell_label(in_range: bool, cargo_count: u32) -> String {
-    if !in_range {
-        "Approach".to_string()
-    } else if cargo_count == 0 {
-        "No cargo".to_string()
-    } else {
-        "Sell".to_string()
-    }
-}
-
-fn draw_trade_action_button(rect: Rect, label: &str, enabled: bool, hovered: bool) {
-    let fill = if enabled && hovered {
-        Color::from_rgba(30, 75, 83, 235)
-    } else if enabled {
-        Color::from_rgba(16, 42, 50, 220)
-    } else {
-        Color::from_rgba(8, 18, 24, 120)
-    };
-    let stroke = if enabled {
-        Color::from_rgba(150, 221, 226, 155)
-    } else {
-        Color::from_rgba(82, 114, 124, 90)
-    };
-    let text = if enabled {
-        Color::from_rgba(205, 226, 230, 255)
-    } else {
-        Color::from_rgba(126, 143, 148, 210)
-    };
-
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, stroke);
-    draw_text(
-        &fit_debug_text(label, rect.w - 8.0, 14),
-        rect.x + 4.0,
-        rect.y + 14.0,
-        14.0,
-        text,
-    );
-}
-
-fn repair_button_rect(station: &StationDestination, action_rail_width: f32) -> Rect {
-    let layout = station_action_layout(station, action_rail_width);
-    Rect::new(
-        layout.detail.x,
-        layout.detail.y + 88.0,
-        layout.detail.w,
-        30.0,
-    )
-}
-
-fn draw_station_repair_panel(
-    _station: &StationDestination,
-    service: &StationService,
-    x: f32,
-    y: f32,
-    width: f32,
-    in_range: bool,
-    _credits: u32,
-) {
-    if service.kind != "garage" {
-        return;
-    }
-    draw_text(
-        "Maintenance",
-        x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    let button = Rect::new(x, y + 18.0, width, 30.0);
-    let hovered = button.contains(mouse_vec2());
-    draw_trade_action_button(
-        button,
-        if !in_range {
-            "Approach to repair"
-        } else {
-            "Repair hull + shields (credit cost)"
-        },
-        in_range,
-        hovered,
-    );
-}
-
-fn draw_station_contract_table(render: StationContractTableRender<'_>) {
-    let StationContractTableRender {
-        station,
-        service,
-        stations,
-        planets,
-        active_contracts,
-        faction_reputation,
-        world_elapsed_days,
-        in_range,
-        action_rail_width,
-        x,
-        width,
-    } = render;
-    if service.contracts.is_empty() {
-        return;
-    }
-    let y = contract_table_y(station, service, action_rail_width);
-    draw_text(
-        "Contracts",
-        x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "Select a card to accept or complete",
-        x + width - 230.0,
-        y + 16.0,
-        12.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_line(
-        x,
-        y + 24.0,
-        x + width,
-        y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-    for (index, contract) in service.contracts.iter().enumerate() {
-        let row = station_contract_card_rect(
-            station,
-            service,
-            stations,
-            planets,
-            index,
-            action_rail_width,
-        );
-        let active = active_contracts.iter().find(|active| {
-            active.id == contract.id
-                && active.origin_station == contract.origin_station
-                && active.origin_service == contract.origin_service
-        });
-        let standing = contract
-            .reputation_faction
-            .as_deref()
-            .and_then(|faction| faction_reputation.get(faction))
-            .copied()
-            .unwrap_or_default();
-        let status = if standing < contract.reputation_required {
-            "Need reputation"
-        } else if let Some(active) = active {
-            if world_elapsed_days > active.expires_day {
-                "Expired"
-            } else if in_range && active.target_reached && station.id == contract.origin_station {
-                "Complete"
-            } else {
-                "Active"
-            }
-        } else {
-            "Accept"
-        };
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if row.contains(mouse_vec2()) {
-                Color::from_rgba(13, 32, 40, 210)
-            } else if index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 118)
-            } else {
-                Color::from_rgba(6, 12, 18, 82)
-            },
-        );
-        draw_rectangle_lines(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            1.0,
-            Color::from_rgba(82, 114, 124, 100),
-        );
-        let title_bottom = draw_wrapped_text(
-            &contract.name,
-            row.x + 9.0,
-            row.y + 23.0,
-            row.w - 132.0,
-            19,
-            Color::from_rgba(205, 226, 230, 255),
-        );
-        let detail = contract
-            .description
-            .as_deref()
-            .unwrap_or(match contract.kind.as_str() {
-                "hauling" => "Deliver cargo to the listed station",
-                _ => "Complete the requested survey",
-            });
-        let detail_bottom = draw_wrapped_text(
-            detail,
-            row.x + 9.0,
-            title_bottom + 2.0,
-            row.w - 18.0,
-            14,
-            Color::from_rgba(126, 156, 164, 220),
-        );
-        let destination =
-            contract_target_name_from_station_data(station, contract, stations, planets);
-        let objective = if contract.kind == "hauling" {
-            format!(
-                "Deliver {} × {} to {}",
-                contract
-                    .item
-                    .as_ref()
-                    .map(|item| item.name.as_str())
-                    .unwrap_or("cargo"),
-                contract.amount,
-                destination
-            )
-        } else {
-            format!("Scan {} to level {}", destination, contract.amount)
-        };
-        draw_wrapped_text(
-            &format!(
-                "{} · {} cr · {}d",
-                objective, contract.reward, contract.duration_days
-            ),
-            row.x + 9.0,
-            detail_bottom + 2.0,
-            row.w - 18.0,
-            13,
-            Color::from_rgba(178, 197, 203, 230),
-        );
-        draw_text(
-            &fit_debug_text(status, 112.0, 16),
-            row.x + row.w - 116.0,
-            row.y + 23.0,
-            16.0,
-            if status == "Accept" || status == "Complete" {
-                Color::from_rgba(150, 221, 226, 255)
-            } else {
-                Color::from_rgba(226, 190, 150, 255)
-            },
-        );
-    }
-}
-
-fn station_contract_card_rect(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    index: usize,
-    action_rail_width: f32,
-) -> Rect {
-    let layout = station_action_layout(station, action_rail_width);
-    let card_y = contract_table_y(station, service, action_rail_width)
-        + 32.0
-        + (0..index)
-            .map(|previous_index| {
-                station_contract_card_height(
-                    station,
-                    service,
-                    stations,
-                    planets,
-                    previous_index,
-                    action_rail_width,
-                ) + CONTRACT_CARD_GAP
-            })
-            .sum::<f32>();
-    Rect::new(
-        layout.detail.x,
-        card_y,
-        layout.detail.w,
-        station_contract_card_height(
-            station,
-            service,
-            stations,
-            planets,
-            index,
-            action_rail_width,
-        ),
-    )
-}
-
-fn station_contract_card_height(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    index: usize,
-    action_rail_width: f32,
-) -> f32 {
-    let layout = station_action_layout(station, action_rail_width);
-    let Some(contract) = service.contracts.get(index) else {
-        return 0.0;
-    };
-    let detail = contract
-        .description
-        .as_deref()
-        .unwrap_or(match contract.kind.as_str() {
-            "hauling" => "Deliver cargo to the listed station",
-            _ => "Complete the requested survey",
-        });
-    let destination = contract_target_name_from_station_data(station, contract, stations, planets);
-    let objective = if contract.kind == "hauling" {
-        format!(
-            "Deliver {} × {} to {}",
-            contract
-                .item
-                .as_ref()
-                .map(|item| item.name.as_str())
-                .unwrap_or("cargo"),
-            contract.amount,
-            destination
-        )
-    } else {
-        format!("Scan {} to level {}", destination, contract.amount)
-    };
-    (39.0
-        + wrapped_text_height(&contract.name, layout.detail.w - 132.0, 19)
-        + wrapped_text_height(detail, layout.detail.w - 18.0, 14)
-        + wrapped_text_height(
-            &format!(
-                "{} · {} cr · {}d",
-                objective, contract.reward, contract.duration_days
-            ),
-            layout.detail.w - 18.0,
-            13,
-        ))
-    .max(96.0)
-}
-
-fn station_contract_cards_height(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    action_rail_width: f32,
-) -> f32 {
-    service
-        .contracts
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            station_contract_card_height(
-                station,
-                service,
-                stations,
-                planets,
-                index,
-                action_rail_width,
-            ) + CONTRACT_CARD_GAP
-        })
-        .sum::<f32>()
-        - CONTRACT_CARD_GAP
-}
-
 fn contract_target_name_from_station_data(
     station: &StationDestination,
     contract: &ContractOffer,
@@ -23291,22 +19573,6 @@ fn contract_target_name_from_station_data(
     }
 }
 
-fn contract_table_y(
-    station: &StationDestination,
-    service: &StationService,
-    action_rail_width: f32,
-) -> f32 {
-    station_trade_table_y(station, action_rail_width)
-        + 28.0
-        + service.trade.len() as f32 * 40.0
-        + if service.trade.is_empty() { 42.0 } else { 20.0 }
-}
-
-fn station_trade_table_y(station: &StationDestination, action_rail_width: f32) -> f32 {
-    let layout = station_action_layout(station, action_rail_width);
-    layout.detail.y + 140.0
-}
-
 fn format_trade_stock(offer: &TradeOffer, world_elapsed_days: f32) -> String {
     if offer.unavailable {
         return "unavail".to_string();
@@ -23323,1414 +19589,6 @@ fn format_trade_stock(offer: &TradeOffer, world_elapsed_days: f32) -> String {
     }
 }
 
-fn draw_research_lead_table(render: RecipeUnlockTableRender<'_>) {
-    let RecipeUnlockTableRender {
-        content_registry,
-        station,
-        service,
-        stations,
-        planets,
-        in_range,
-        credits: _,
-        completed_research,
-        action_rail_width,
-        x,
-        width,
-    } = render;
-    if service.research.is_empty() {
-        return;
-    }
-    let y = research_lead_table_y(station, service, stations, planets, action_rail_width);
-    let layout = recipe_unlock_table_layout(x, y, width);
-    let research_column = layout.columns[0];
-    let status_column = layout.columns[1];
-    draw_text(
-        "Research leads",
-        research_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "K research",
-        x + width - 92.0,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
-    draw_line(
-        x,
-        y + 24.0,
-        x + width,
-        y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-    for (index, lead) in service.research.iter().enumerate() {
-        let row = ui_table_row_rect(&layout, index, 0.0);
-        if !ui_table_row_visible(&layout, row) {
-            continue;
-        }
-        let hovered = row.contains(mouse_vec2());
-        let completed = completed_research.iter().any(|done| done == &lead.research);
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if hovered {
-                Color::from_rgba(13, 32, 40, 210)
-            } else if index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 118)
-            } else {
-                Color::from_rgba(6, 12, 18, 82)
-            },
-        );
-        draw_text(
-            &fit_debug_text(
-                &research_display_name(content_registry, &lead.research),
-                research_column.w,
-                15,
-            ),
-            research_column.x,
-            row.y + 20.0,
-            15.0,
-            if lead.unavailable {
-                Color::from_rgba(126, 143, 148, 220)
-            } else {
-                Color::from_rgba(205, 226, 230, 255)
-            },
-        );
-        let status = if completed {
-            "Complete"
-        } else if lead.unavailable {
-            "Unavailable"
-        } else if !in_range {
-            "Approach"
-        } else {
-            "Available"
-        };
-        draw_text(
-            &fit_debug_text(status, status_column.w, 15),
-            status_column.x,
-            row.y + 20.0,
-            15.0,
-            if completed || (in_range && !lead.unavailable) {
-                Color::from_rgba(150, 221, 226, 255)
-            } else {
-                Color::from_rgba(226, 190, 150, 255)
-            },
-        );
-    }
-}
-
-fn draw_recipe_unlock_table(render: RecipeUnlockTableRender<'_>) {
-    let RecipeUnlockTableRender {
-        content_registry,
-        station,
-        service,
-        stations,
-        planets,
-        in_range,
-        credits,
-        completed_research,
-        action_rail_width,
-        x,
-        width,
-    } = render;
-    if service.recipe_unlocks.is_empty() {
-        return;
-    }
-    let y = recipe_unlock_table_y(station, service, stations, planets, action_rail_width);
-    let layout = recipe_unlock_table_layout(x, y, width);
-    let recipe_column = layout.columns[0];
-    let price_column = layout.columns[1];
-    draw_text(
-        "Recipe unlocks",
-        recipe_column.x,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(168, 204, 210, 255),
-    );
-    draw_text(
-        "Left purchase",
-        x + width - 118.0,
-        y + 16.0,
-        14.0,
-        Color::from_rgba(126, 156, 164, 220),
-    );
-    draw_line(
-        x,
-        y + 24.0,
-        x + width,
-        y + 24.0,
-        1.0,
-        Color::from_rgba(96, 137, 150, 220),
-    );
-    for (index, unlock) in service.recipe_unlocks.iter().enumerate() {
-        let row = ui_table_row_rect(&layout, index, 0.0);
-        if !ui_table_row_visible(&layout, row) {
-            continue;
-        }
-        let hovered = row.contains(mouse_vec2());
-        let purchased = research_id_that_unlocks_recipe(content_registry, &unlock.recipe)
-            .is_some_and(|research_id| completed_research.iter().any(|done| done == research_id));
-        let affordable = in_range && !unlock.unavailable && credits >= unlock.price && !purchased;
-        draw_rectangle(
-            row.x,
-            row.y,
-            row.w,
-            row.h,
-            if hovered {
-                Color::from_rgba(13, 32, 40, 210)
-            } else if index % 2 == 0 {
-                Color::from_rgba(8, 18, 24, 118)
-            } else {
-                Color::from_rgba(6, 12, 18, 82)
-            },
-        );
-        draw_text(
-            &fit_debug_text(&unlock.recipe, recipe_column.w, 15),
-            recipe_column.x,
-            row.y + 20.0,
-            15.0,
-            if unlock.unavailable {
-                Color::from_rgba(126, 143, 148, 220)
-            } else {
-                Color::from_rgba(205, 226, 230, 255)
-            },
-        );
-        let price_label = if purchased {
-            "Owned".to_string()
-        } else if unlock.unavailable {
-            "Unavailable".to_string()
-        } else if !in_range {
-            "Approach".to_string()
-        } else if credits < unlock.price {
-            format!("Need {}", unlock.price.saturating_sub(credits))
-        } else {
-            unlock.price.to_string()
-        };
-        draw_text(
-            &fit_debug_text(&price_label, price_column.w, 15),
-            price_column.x,
-            row.y + 20.0,
-            15.0,
-            if affordable {
-                Color::from_rgba(150, 221, 226, 255)
-            } else {
-                Color::from_rgba(226, 190, 150, 255)
-            },
-        );
-    }
-}
-
-fn recipe_unlock_table_y(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    action_rail_width: f32,
-) -> f32 {
-    contract_table_y(station, service, action_rail_width)
-        + if service.contracts.is_empty() {
-            0.0
-        } else {
-            28.0 + station_contract_cards_height(
-                station,
-                service,
-                stations,
-                planets,
-                action_rail_width,
-            ) + CONTRACT_CARD_GAP
-                + 20.0
-        }
-}
-
-fn research_lead_table_y(
-    station: &StationDestination,
-    service: &StationService,
-    stations: &[StationDestination],
-    planets: &[Planet],
-    action_rail_width: f32,
-) -> f32 {
-    recipe_unlock_table_y(station, service, stations, planets, action_rail_width)
-        + if service.recipe_unlocks.is_empty() {
-            0.0
-        } else {
-            28.0 + service.recipe_unlocks.len() as f32 * WORK_ROW_HEIGHT + 20.0
-        }
-}
-
-fn draw_station_detail(render: StationDetailRender<'_>) {
-    let StationDetailRender {
-        content_registry,
-        station,
-        selected_service,
-        in_range,
-        distance,
-        operation_feedback,
-        x,
-        y,
-        width,
-    } = render;
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let warning = Color::from_rgba(226, 190, 150, 255);
-    let preview_size = 118.0;
-
-    if let Some(texture) = &station.texture {
-        draw_texture_ex(
-            texture,
-            x,
-            y,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(preview_size, preview_size)),
-                ..Default::default()
-            },
-        );
-    } else {
-        draw_station_icon(
-            vec2(x + preview_size * 0.5, y + preview_size * 0.5),
-            preview_size * 0.46,
-            &station.icon,
-        );
-    }
-
-    let data_y = y + preview_size + 34.0;
-    draw_text(&station.name, x, data_y, 18.0, text);
-    draw_text(
-        &fit_debug_text(
-            &format!("{} / dock range {:.0}u", station.id, distance),
-            width,
-            16,
-        ),
-        x,
-        data_y + 30.0,
-        16.0,
-        if in_range {
-            Color::from_rgba(150, 221, 226, 255)
-        } else {
-            warning
-        },
-    );
-    let mut detail_y = draw_wrapped_text(&station.summary, x, data_y + 58.0, width, 16, text);
-    detail_y += 24.0;
-
-    draw_text("Ownership", x, detail_y, 16.0, label);
-    let ownership = match (&station.faction, &station.culture) {
-        (Some(faction), Some(culture)) => format!(
-            "{} / {} / {}",
-            faction_name(content_registry, faction),
-            faction_name(content_registry, culture),
-            faction_disposition_label(content_registry, faction)
-        ),
-        (Some(faction), None) => format!(
-            "{} / {}",
-            faction_name(content_registry, faction),
-            faction_disposition_label(content_registry, faction)
-        ),
-        (None, Some(culture)) => faction_name(content_registry, culture).to_string(),
-        (None, None) => "Independent".to_string(),
-    };
-    draw_text(
-        &fit_debug_text(&ownership, width, 16),
-        x,
-        detail_y + 26.0,
-        16.0,
-        text,
-    );
-
-    let services_y = detail_y + 64.0;
-    draw_text("Services", x, services_y, 16.0, label);
-    if station.services.is_empty() {
-        draw_text(
-            "No service groups declared",
-            x,
-            services_y + 26.0,
-            16.0,
-            warning,
-        );
-    } else {
-        let service_names = station
-            .services
-            .iter()
-            .map(|service| service.name.as_str())
-            .collect::<Vec<_>>();
-        draw_compact_list(&service_names, x, services_y + 27.0, width, 16, text);
-    }
-
-    let selected_y = services_y + 90.0;
-    draw_text("Selected service", x, selected_y, 16.0, label);
-    if let Some(service) = selected_service.and_then(|index| station.services.get(index)) {
-        draw_text(
-            &fit_debug_text(
-                &format!("{} / {} / {}", service.name, service.kind, service.id),
-                width,
-                17,
-            ),
-            x,
-            selected_y + 27.0,
-            17.0,
-            Color::from_rgba(235, 242, 226, 255),
-        );
-        let status = if !in_range {
-            "Approach within dock range to use this service group."
-        } else if service.trade.is_empty() {
-            "Service group available. Detailed actions are staged for future garage, vendor, social, and contract systems."
-        } else {
-            "Trade stock available. Left-click an offer to buy one unit, or right-click to sell one unit from cargo."
-        };
-        let after_status = draw_wrapped_text(
-            status,
-            x,
-            selected_y + 54.0,
-            width,
-            15,
-            if in_range {
-                Color::from_rgba(150, 221, 226, 255)
-            } else {
-                warning
-            },
-        );
-        let after_description = service
-            .description
-            .as_deref()
-            .map(|description| {
-                draw_wrapped_text(description, x, after_status + 16.0, width, 15, text)
-            })
-            .unwrap_or(after_status);
-        draw_latest_operation_row(
-            operation_feedback,
-            &["Station", "Trade", "Unlock", "Route"],
-            x,
-            after_description + 30.0,
-            width,
-        );
-    } else {
-        draw_text(
-            "Select a service group from the station list.",
-            x,
-            selected_y + 27.0,
-            16.0,
-            warning,
-        );
-        draw_latest_operation_row(
-            operation_feedback,
-            &["Station", "Trade", "Unlock", "Route"],
-            x,
-            selected_y + 58.0,
-            width,
-        );
-    }
-}
-
-fn draw_planet_detail(render: PlanetDetailRender<'_>) {
-    let PlanetDetailRender {
-        content_registry,
-        planet,
-        in_range,
-        is_orbiting,
-        operation_feedback,
-        x,
-        y,
-        width,
-    } = render;
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let warning = Color::from_rgba(226, 190, 150, 255);
-    let unavailable = Color::from_rgba(108, 127, 132, 190);
-    let preview_size = 118.0;
-
-    if let Some(texture) = &planet.texture {
-        draw_texture_ex(
-            texture,
-            x,
-            y,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(preview_size, preview_size)),
-                ..Default::default()
-            },
-        );
-    } else {
-        draw_circle(
-            x + preview_size * 0.5,
-            y + preview_size * 0.5,
-            preview_size * 0.5,
-            Color::from_rgba(65, 136, 154, 255),
-        );
-    }
-
-    let data_y = y + preview_size + 34.0;
-    let title = if planet_has_surface_scan(planet) {
-        planet.info.classification.as_str()
-    } else {
-        "Unscanned body"
-    };
-    draw_text(title, x, data_y, 18.0, text);
-    draw_text("Survey status", x, data_y + 32.0, 16.0, label);
-    let summary = if planet_has_surface_scan(planet) {
-        planet.info.summary.as_str()
-    } else {
-        "Classification, hazards, composition, and landing profiles are unknown. Launch survey drones while in range to build the planet record."
-    };
-    let after_scan = draw_wrapped_text(summary, x, data_y + 56.0, width, 16, text);
-
-    let mut next_y = after_scan.max(data_y + 124.0);
-    if planet_has_surface_scan(planet) {
-        draw_text("Ownership", x, next_y, 16.0, label);
-        let ownership = planet
-            .faction
-            .as_deref()
-            .map(|faction| {
-                format!(
-                    "{} / {}",
-                    faction_name(content_registry, faction),
-                    faction_disposition_label(content_registry, faction)
-                )
-            })
-            .unwrap_or_else(|| "Unclaimed".to_string());
-        draw_text(
-            &fit_debug_text(&ownership, width, 16),
-            x,
-            next_y + 27.0,
-            16.0,
-            text,
-        );
-        next_y += 64.0;
-    }
-
-    let mine_y = next_y;
-    draw_text("Mineable", x, mine_y, 16.0, label);
-    if planet_has_composition_scan(planet) {
-        let mineable_names = planet
-            .info
-            .mineables
-            .iter()
-            .map(|mineable| mineable.item.name.as_str())
-            .collect::<Vec<_>>();
-        draw_compact_list(&mineable_names, x, mine_y + 27.0, width, 16, text);
-    } else {
-        draw_text(
-            "Unknown until surveyed",
-            x,
-            mine_y + 27.0,
-            16.0,
-            unavailable,
-        );
-    }
-
-    let hazards_y = mine_y + 86.0;
-    draw_text("Surface readings", x, hazards_y, 16.0, label);
-    if planet_has_surface_scan(planet) {
-        let hazards = planet
-            .info
-            .hazards
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        draw_compact_list(&hazards, x, hazards_y + 27.0, width, 16, warning);
-        let shield_drain = planet_hazard_shield_drain_per_second(planet);
-        let slowdown = planet_hazard_mining_slowdown(planet);
-        if shield_drain > 0.0 || slowdown > 1.0 {
-            draw_text(
-                &format!(
-                    "Mining hazard: {:.0}% speed / {:.1} shield/s",
-                    100.0 / slowdown,
-                    shield_drain
-                ),
-                x,
-                hazards_y + 68.0,
-                15.0,
-                warning,
-            );
-        }
-    } else {
-        draw_text(
-            "No survey telemetry",
-            x,
-            hazards_y + 27.0,
-            16.0,
-            unavailable,
-        );
-    }
-
-    let richness_y = hazards_y + 96.0;
-    draw_text("Resource richness", x, richness_y, 16.0, label);
-    let richness_text = if planet_has_richness_scan(planet) {
-        let min = planet
-            .info
-            .mineables
-            .iter()
-            .enumerate()
-            .map(|(index, _)| mineable_richness_multiplier(planet, index))
-            .fold(f32::INFINITY, f32::min);
-        let max = planet_richness_multiplier(planet);
-        format!(
-            "{:.0}-{:.0}% extraction by resource",
-            min * 100.0,
-            max * 100.0
-        )
-    } else {
-        "Unknown until deep scan".to_string()
-    };
-    draw_text(
-        &richness_text,
-        x,
-        richness_y + 26.0,
-        18.0,
-        if planet_has_richness_scan(planet) {
-            Color::from_rgba(150, 221, 226, 255)
-        } else {
-            unavailable
-        },
-    );
-
-    let status_y = richness_y + 66.0;
-    draw_text("Proximity", x, status_y, 16.0, label);
-    draw_text(
-        if is_orbiting {
-            "Stable orbit locked"
-        } else if in_range {
-            "Docking envelope reached"
-        } else {
-            "Approach required for mining"
-        },
-        x,
-        status_y + 26.0,
-        18.0,
-        if is_orbiting || in_range {
-            Color::from_rgba(150, 221, 226, 255)
-        } else {
-            warning
-        },
-    );
-    draw_latest_operation_row(
-        operation_feedback,
-        &["Survey", "Mining"],
-        x,
-        status_y + 64.0,
-        width,
-    );
-}
-
-fn draw_planet_action_rail(render: PlanetActionRailRender<'_>) {
-    let PlanetActionRailRender {
-        content_registry,
-        planet,
-        inventory,
-        ship_upgrades,
-        action_rail_width,
-        is_orbiting,
-        in_range,
-        scroll,
-        mouse,
-    } = render;
-    let rail_width = action_rail_width;
-    let rail = action_rail_rect(rail_width);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let unavailable = Color::from_rgba(108, 127, 132, 190);
-
-    draw_action_rail_frame(rail, "Actions");
-    draw_text(
-        &format!("Scan level {}/{}", planet.scan_level, MAX_SCAN_LEVEL),
-        rail.x + 10.0,
-        rail.y + 50.0,
-        16.0,
-        text,
-    );
-
-    let orbit_button = planet_orbit_button_rect(rail_width);
-    let orbit_enabled = in_range && !is_orbiting;
-    let orbit_hovered = orbit_button.contains(mouse);
-    let orbit_button_color = if orbit_enabled {
-        if orbit_hovered {
-            Color::from_rgba(42, 86, 88, 230)
-        } else {
-            Color::from_rgba(24, 58, 66, 210)
-        }
-    } else {
-        Color::from_rgba(22, 32, 38, 190)
-    };
-    draw_rectangle(
-        orbit_button.x,
-        orbit_button.y,
-        orbit_button.w,
-        orbit_button.h,
-        orbit_button_color,
-    );
-    draw_rectangle_lines(
-        orbit_button.x,
-        orbit_button.y,
-        orbit_button.w,
-        orbit_button.h,
-        1.0,
-        if orbit_enabled || is_orbiting {
-            Color::from_rgba(150, 221, 226, 190)
-        } else {
-            Color::from_rgba(82, 114, 124, 110)
-        },
-    );
-    let orbit_label = if is_orbiting {
-        "In orbit"
-    } else if in_range {
-        "Orbit"
-    } else {
-        "Approach"
-    };
-    let orbit_measure = measure_text(orbit_label, None, 17, 1.0);
-    draw_text(
-        orbit_label,
-        orbit_button.x + (orbit_button.w - orbit_measure.width) * 0.5,
-        orbit_button.y + 23.0,
-        17.0,
-        if orbit_enabled || is_orbiting {
-            text
-        } else {
-            unavailable
-        },
-    );
-
-    let drone_count = core_item(content_registry, "survey_drone")
-        .map(|survey_drone| inventory.count(&survey_drone))
-        .unwrap_or(0);
-    let improved_drone_count = core_item(content_registry, "improved_survey_drone")
-        .map(|survey_drone| inventory.count(&survey_drone))
-        .unwrap_or(0);
-    if planet.scan_level >= MAX_SCAN_LEVEL {
-        draw_text("Survey complete", rail.x + 10.0, rail.y + 142.0, 17.0, text);
-    } else {
-        let button = planet_scan_button_rect(rail_width);
-        let has_drone = drone_count > 0 || improved_drone_count > 0;
-        let enabled = in_range && has_drone;
-        let hovered = button.contains(mouse);
-        let button_color = if enabled {
-            if hovered {
-                Color::from_rgba(42, 86, 88, 230)
-            } else {
-                Color::from_rgba(24, 58, 66, 210)
-            }
-        } else {
-            Color::from_rgba(22, 32, 38, 190)
-        };
-
-        draw_rectangle(button.x, button.y, button.w, button.h, button_color);
-        draw_rectangle_lines(
-            button.x,
-            button.y,
-            button.w,
-            button.h,
-            1.0,
-            if enabled {
-                Color::from_rgba(150, 221, 226, 190)
-            } else {
-                Color::from_rgba(82, 114, 124, 110)
-            },
-        );
-        let button_label = if !in_range {
-            "Approach"
-        } else if !has_drone {
-            "No drones"
-        } else {
-            "Send drone"
-        };
-        let measure = measure_text(button_label, None, 17, 1.0);
-        draw_text(
-            button_label,
-            button.x + (button.w - measure.width) * 0.5,
-            button.y + 23.0,
-            17.0,
-            if enabled { text } else { unavailable },
-        );
-    }
-    draw_text(
-        "Mining",
-        rail.x + 10.0,
-        rail.y + 178.0,
-        16.0,
-        Color::from_rgba(88, 116, 126, 180),
-    );
-    if planet_has_composition_scan(planet) {
-        draw_mining_text_table_with_alignment(
-            inventory,
-            planet,
-            in_range,
-            Rect::new(
-                rail.x + 12.0,
-                rail.y + 198.0,
-                rail.w - 24.0,
-                (rail.h - 252.0).max(WORK_ROW_HEIGHT),
-            ),
-            scroll,
-            mouse,
-            WorkTableItemAlignment::Left,
-        );
-    } else {
-        draw_wrapped_text(
-            "Survey composition before mining actions become available.",
-            rail.x + 12.0,
-            rail.y + 202.0,
-            rail.w - 24.0,
-            15,
-            unavailable,
-        );
-    }
-    draw_text(
-        &format!("Basic: {drone_count}   Improved: {improved_drone_count}"),
-        rail.x + 10.0,
-        rail.y + rail.h - 12.0,
-        15.0,
-        Color::from_rgba(88, 116, 126, 180),
-    );
-    draw_text(
-        &format!(
-            "Return: {:.0}%",
-            survey_drone_return_chance(ship_upgrades) * 100.0
-        ),
-        rail.x + 10.0,
-        rail.y + rail.h - 32.0,
-        15.0,
-        Color::from_rgba(88, 116, 126, 180),
-    );
-}
-
-fn draw_npc_ship_detail(
-    content_registry: &content::ContentRegistry,
-    ship: &Ship,
-    npc_ship: &NpcShip,
-    operation_feedback: &[OperationFeedback],
-    x: f32,
-    y: f32,
-    width: f32,
-) {
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let active = Color::from_rgba(150, 221, 226, 255);
-    let warning = Color::from_rgba(226, 190, 150, 255);
-    let preview_size = 118.0;
-    let in_range = npc_ship_in_interaction_range(ship, npc_ship);
-    let distance = npc_ship_surface_distance(ship, npc_ship);
-    let identified = npc_ship.identified;
-
-    if let Some(texture) = &npc_ship.texture {
-        draw_rotated_texture_contain(
-            texture,
-            Rect::new(x, y, preview_size, preview_size),
-            if identified {
-                WHITE
-            } else {
-                Color::from_rgba(150, 170, 176, 190)
-            },
-            npc_ship.angle + std::f32::consts::FRAC_PI_2,
-        );
-    } else {
-        draw_ship_model(
-            vec2(x + preview_size * 0.5, y + preview_size * 0.5),
-            preview_size * 0.18,
-            false,
-            npc_ship.angle + std::f32::consts::FRAC_PI_2,
-        );
-    }
-
-    let data_y = y + preview_size + 34.0;
-    draw_text(
-        if identified {
-            npc_ship.name.as_str()
-        } else {
-            "Unidentified transponder"
-        },
-        x,
-        data_y,
-        18.0,
-        text,
-    );
-    draw_text(
-        &fit_debug_text(
-            &format!(
-                "{} / {:.0}u / {}",
-                if in_range { "scan range" } else { "approach" },
-                distance,
-                npc_ship.behavior.label()
-            ),
-            width,
-            16,
-        ),
-        x,
-        data_y + 30.0,
-        16.0,
-        if in_range { active } else { warning },
-    );
-
-    let mut detail_y = data_y + 62.0;
-    draw_text("Identity", x, detail_y, 16.0, label);
-    let identity = if identified {
-        format!(
-            "{} / {} / {}",
-            local_content_id(&npc_ship.id),
-            npc_ship.archetype,
-            npc_ship.role
-        )
-    } else {
-        "Run identification scan from interaction range.".to_string()
-    };
-    draw_text(
-        &fit_debug_text(&identity, width, 16),
-        x,
-        detail_y + 26.0,
-        16.0,
-        text,
-    );
-    detail_y += 64.0;
-
-    draw_text("Disposition", x, detail_y, 16.0, label);
-    let disposition = if identified {
-        npc_ship
-            .faction
-            .as_deref()
-            .map(|faction| {
-                format!(
-                    "{} / {}",
-                    faction_name(content_registry, faction),
-                    faction_disposition_label(content_registry, faction)
-                )
-            })
-            .unwrap_or_else(|| "Independent / unknown".to_string())
-    } else {
-        "Unknown".to_string()
-    };
-    draw_text(
-        &fit_debug_text(&disposition, width, 16),
-        x,
-        detail_y + 26.0,
-        16.0,
-        if identified { text } else { warning },
-    );
-    detail_y += 64.0;
-
-    draw_text("Systems", x, detail_y, 16.0, label);
-    let systems = if identified {
-        format!(
-            "H{:.0}/{:.0}  S{:.0}/{:.0}  E{:.0}/{:.0}",
-            npc_ship.hull.current,
-            npc_ship.hull.max,
-            npc_ship.shields.current,
-            npc_ship.shields.max,
-            npc_ship.energy.current,
-            npc_ship.energy.max
-        )
-    } else {
-        "Unscanned".to_string()
-    };
-    draw_text(
-        &fit_debug_text(&systems, width, 16),
-        x,
-        detail_y + 26.0,
-        16.0,
-        text,
-    );
-    detail_y += 64.0;
-
-    draw_text("Loadout", x, detail_y, 16.0, label);
-    let loadout = if identified {
-        let weapon_count = npc_ship.equipped_weapons.len();
-        format!(
-            "{} shield / {} turret / cargo {}",
-            npc_ship.shield_slots.len(),
-            weapon_count,
-            format_mass(npc_ship.cargo_capacity)
-        )
-    } else {
-        "Unknown".to_string()
-    };
-    draw_text(
-        &fit_debug_text(&loadout, width, 16),
-        x,
-        detail_y + 26.0,
-        16.0,
-        text,
-    );
-    detail_y += 64.0;
-
-    if identified && !npc_ship.equipped_weapons.is_empty() {
-        let weapon = &npc_ship.equipped_weapons[0];
-        let mut defense = format!(
-            "{} / {} / rng {:.0} / dmg {:.0}",
-            weapon.name,
-            weapon.readiness_label(),
-            weapon.range,
-            weapon.damage
-        );
-        if let Some(ammo) = npc_weapon_ammo_count(npc_ship, weapon) {
-            defense.push_str(&format!(" / ammo {ammo}"));
-        }
-        draw_text("Defense", x, detail_y, 16.0, label);
-        draw_text(
-            &fit_debug_text(&defense, width, 16),
-            x,
-            detail_y + 26.0,
-            16.0,
-            if matches!(
-                weapon.status,
-                WeaponStatus::InsufficientEnergy | WeaponStatus::OutOfAmmo
-            ) {
-                warning
-            } else {
-                active
-            },
-        );
-        detail_y += 64.0;
-    }
-
-    if identified {
-        let cargo_units = npc_ship
-            .cargo_defaults
-            .iter()
-            .map(|stack| stack.count)
-            .sum::<u32>();
-        let cargo = format!(
-            "{} manifest item(s), {} unit(s)",
-            npc_ship.cargo_defaults.len(),
-            cargo_units
-        );
-        draw_text("Cargo", x, detail_y, 16.0, label);
-        draw_text(
-            &fit_debug_text(&cargo, width, 16),
-            x,
-            detail_y + 26.0,
-            16.0,
-            text,
-        );
-        detail_y += 64.0;
-    }
-
-    draw_text("Summary", x, detail_y, 16.0, label);
-    let summary = if identified {
-        npc_ship.summary.as_str()
-    } else {
-        "Contact details are not available until identification completes."
-    };
-    let after_summary = draw_wrapped_text(summary, x, detail_y + 26.0, width, 15, text);
-    draw_latest_operation_row(
-        operation_feedback,
-        &["Contact"],
-        x,
-        after_summary + 30.0,
-        width,
-    );
-}
-
-fn draw_ship_detail(view: ShipDetailView<'_>) {
-    let ShipDetailView {
-        ship,
-        power_modules,
-        shields,
-        weapons,
-        weapon_slot_capacity,
-        threats,
-        cargo_mass,
-        cargo_capacity,
-        current_system_id,
-        shield_recharge_delay_remaining,
-        operation_feedback,
-        texture,
-        x,
-        y,
-        width,
-    } = view;
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 255);
-    let accent = Color::from_rgba(150, 221, 226, 255);
-    let image_size = 190.0;
-    let center = vec2(x + width * 0.5, y + 74.0);
-
-    draw_ship_sprite(center, texture, image_size, false, 0.0);
-    let preview_rect = Rect::new(
-        center.x - image_size * 0.5,
-        center.y - image_size * 0.5,
-        image_size,
-        image_size,
-    );
-    if preview_rect.contains(vec2(mouse_position().0, mouse_position().1)) {
-        draw_rectangle_lines(
-            preview_rect.x,
-            preview_rect.y,
-            preview_rect.w,
-            preview_rect.h,
-            1.0,
-            Color::from_rgba(150, 221, 226, 170),
-        );
-    }
-
-    let cargo_y = y + image_size + 8.0;
-    let cargo_label = format!(
-        "Cargo {} / {}",
-        format_mass(cargo_mass),
-        format_mass(cargo_capacity)
-    );
-    let cargo_width = measure_text(&cargo_label, None, 17, 1.0).width;
-    draw_text(
-        &cargo_label,
-        x + (width - cargo_width) * 0.5,
-        cargo_y,
-        17.0,
-        accent,
-    );
-
-    let stats_y = y + image_size + 48.0;
-    draw_line(
-        x,
-        stats_y - 18.0,
-        x + width,
-        stats_y - 18.0,
-        1.0,
-        Color::from_rgba(82, 114, 124, 95),
-    );
-
-    let left_width = width * 0.47;
-    let right_x = x + width * 0.5;
-    let right_width = width - (right_x - x);
-    draw_text("Hull systems", x, stats_y, 15.0, label);
-    let shield_name = shields
-        .first()
-        .map(|shield| shield.name.as_str())
-        .unwrap_or("Standard shield");
-    draw_text(
-        &fit_debug_text(shield_name, left_width, 16),
-        x,
-        stats_y + 24.0,
-        16.0,
-        accent,
-    );
-    let shield_status = if ship.systems.shields.current >= ship.systems.shields.max {
-        "full".to_string()
-    } else if shield_recharge_delay_remaining > 0.0 {
-        format!("delay {:.1}s", shield_recharge_delay_remaining)
-    } else {
-        shields
-            .first()
-            .map(|shield| format!("+{:.1}/s", shield.recharge_rate))
-            .unwrap_or_else(|| "offline".to_string())
-    };
-    draw_text(
-        &fit_debug_text(
-            &format!(
-                "Shield {:.0}% {shield_status}",
-                ship.systems.shields.fraction() * 100.0
-            ),
-            left_width,
-            15,
-        ),
-        x,
-        stats_y + 45.0,
-        15.0,
-        text,
-    );
-    let resistance_label = shields
-        .first()
-        .map(|shield| {
-            format!(
-                "Resist {:.0}% / Hazard {:.0}%",
-                shield.damage_resistance * 100.0,
-                shield.hazard_resistance * 100.0
-            )
-        })
-        .unwrap_or_else(|| "Resist 0% / Hazard 0%".to_string());
-    draw_text(
-        &fit_debug_text(&resistance_label, left_width, 14),
-        x,
-        stats_y + 64.0,
-        14.0,
-        text,
-    );
-    draw_text(
-        &fit_debug_text(
-            &format!(
-                "Energy {:.0}%  Hull {:.0}%",
-                ship.systems.energy.fraction() * 100.0,
-                ship.systems.hull.fraction() * 100.0
-            ),
-            left_width,
-            16,
-        ),
-        x,
-        stats_y + 88.0,
-        16.0,
-        accent,
-    );
-
-    draw_text("Flight profile", right_x, stats_y, 15.0, label);
-    draw_text(
-        &fit_debug_text(
-            &format!("Mass {}", format_mass(ship.attributes.mass)),
-            right_width,
-            18,
-        ),
-        right_x,
-        stats_y + 28.0,
-        18.0,
-        text,
-    );
-    draw_text(
-        &fit_debug_text(
-            &format!("Engine {:.0}", ship.forward_acceleration()),
-            right_width,
-            18,
-        ),
-        right_x,
-        stats_y + 56.0,
-        18.0,
-        text,
-    );
-    draw_text(
-        &fit_debug_text(
-            &format!("Turn {:.1}", ship.turn_acceleration()),
-            right_width,
-            18,
-        ),
-        right_x,
-        stats_y + 84.0,
-        18.0,
-        text,
-    );
-
-    let power_y = stats_y + 132.0;
-    draw_line(
-        x,
-        power_y - 18.0,
-        x + width,
-        power_y - 18.0,
-        1.0,
-        Color::from_rgba(82, 114, 124, 95),
-    );
-    draw_text("Power", x, power_y, 15.0, label);
-    draw_text(
-        &fit_debug_text(
-            &format!(
-                "Recharge {:.1}/s",
-                ship_energy_recharge(ship, power_modules)
-            ),
-            left_width,
-            18,
-        ),
-        x,
-        power_y + 28.0,
-        18.0,
-        accent,
-    );
-    draw_text(
-        &fit_debug_text(
-            &format!("Base {:.1}/s", ship.attributes.energy_recharge),
-            left_width,
-            18,
-        ),
-        x,
-        power_y + 56.0,
-        18.0,
-        text,
-    );
-    let module_mass = power_modules.iter().map(|module| module.mass).sum::<f32>();
-    draw_text(
-        &fit_debug_text(
-            &format!("Module mass {}", format_mass(module_mass)),
-            left_width,
-            18,
-        ),
-        x,
-        power_y + 84.0,
-        18.0,
-        text,
-    );
-
-    let module = power_modules.first();
-    draw_text("Installed", right_x, power_y, 15.0, label);
-    if let Some(module) = module {
-        draw_text(
-            &fit_debug_text(
-                &format!("{} {}", module.family, module.name),
-                right_width,
-                18,
-            ),
-            right_x,
-            power_y + 28.0,
-            18.0,
-            accent,
-        );
-        let fuel = module
-            .fuel_item
-            .as_deref()
-            .map(|item| {
-                format!(
-                    "Fuel {} {:.2}/min",
-                    local_content_id(item).replace('_', " "),
-                    module.fuel_per_minute
-                )
-            })
-            .unwrap_or_else(|| "Fuel none".to_string());
-        draw_text(
-            &fit_debug_text(&fuel, right_width, 18),
-            right_x,
-            power_y + 56.0,
-            18.0,
-            text,
-        );
-        draw_text(
-            &fit_debug_text(
-                &format!(
-                    "Heat {:.0}%  Risk {:.0}%",
-                    module.heat * 100.0,
-                    module.risk * 100.0
-                ),
-                right_width,
-                18,
-            ),
-            right_x,
-            power_y + 84.0,
-            18.0,
-            text,
-        );
-    } else {
-        draw_text(
-            &fit_debug_text("No module installed", right_width, 18),
-            right_x,
-            power_y + 28.0,
-            18.0,
-            text,
-        );
-    }
-
-    let weapons_y = power_y + 132.0;
-    draw_line(
-        x,
-        weapons_y - 18.0,
-        x + width,
-        weapons_y - 18.0,
-        1.0,
-        Color::from_rgba(82, 114, 124, 95),
-    );
-    draw_text("Automatic weapons", x, weapons_y, 15.0, label);
-    draw_text(
-        &fit_debug_text("Use the Defense rail to assign crafted weapons.", width, 15),
-        x,
-        weapons_y + 28.0,
-        15.0,
-        text,
-    );
-    let hostile_count = threats
-        .iter()
-        .filter(|threat| {
-            threat.system == current_system_id
-                && threat.disposition == ThreatDisposition::Hostile
-                && threat.hull.current > 0.0
-        })
-        .count();
-    let active_turrets = weapons
-        .iter()
-        .filter(|weapon| weapon.resolved)
-        .count()
-        .min(weapon_slot_capacity);
-    let threat_label = format!(
-        "{} active / {} slot(s) / {} hostile",
-        active_turrets, weapon_slot_capacity, hostile_count
-    );
-    draw_text(
-        &fit_debug_text(&threat_label, width, 16),
-        x,
-        weapons_y + 52.0,
-        16.0,
-        accent,
-    );
-
-    draw_operation_feedback(operation_feedback, x, weapons_y + 100.0, width);
-}
-
-fn draw_operation_feedback(entries: &[OperationFeedback], x: f32, y: f32, width: f32) {
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 245);
-    let accent = Color::from_rgba(150, 221, 226, 245);
-    draw_line(
-        x,
-        y - 18.0,
-        x + width,
-        y - 18.0,
-        1.0,
-        Color::from_rgba(82, 114, 124, 95),
-    );
-    draw_text("Operations", x, y, 15.0, label);
-    if entries.is_empty() {
-        draw_text(
-            "No recent ship operations",
-            x,
-            y + 28.0,
-            16.0,
-            Color::from_rgba(126, 143, 148, 220),
-        );
-        return;
-    }
-
-    for (index, entry) in entries.iter().take(OPERATION_FEEDBACK_LIMIT).enumerate() {
-        let row_y = y + 28.0 + index as f32 * 23.0;
-        if index == 0 {
-            draw_rectangle(
-                x - 8.0,
-                row_y - 12.0,
-                3.0,
-                15.0,
-                Color::from_rgba(150, 221, 226, 210),
-            );
-        }
-        draw_text(
-            &fit_debug_text(&entry.category, 88.0, 14),
-            x,
-            row_y,
-            14.0,
-            if index == 0 { accent } else { label },
-        );
-        draw_text(
-            &fit_debug_text(&entry.message, width - 96.0, 15),
-            x + 96.0,
-            row_y,
-            15.0,
-            if index == 0 {
-                Color::from_rgba(235, 242, 226, 255)
-            } else {
-                text
-            },
-        );
-    }
-}
-
-fn draw_latest_operation_row(
-    entries: &[OperationFeedback],
-    categories: &[&str],
-    x: f32,
-    y: f32,
-    width: f32,
-) {
-    let Some(entry) = entries.iter().find(|entry| {
-        categories
-            .iter()
-            .any(|category| *category == entry.category)
-    }) else {
-        return;
-    };
-    let label = Color::from_rgba(88, 116, 126, 180);
-    let text = Color::from_rgba(205, 226, 230, 245);
-    draw_text("Latest", x, y, 15.0, label);
-    draw_text(
-        &fit_debug_text(
-            &format!("{} / {}", entry.category, entry.message),
-            width,
-            15,
-        ),
-        x,
-        y + 24.0,
-        15.0,
-        text,
-    );
-}
-
 #[cfg(test)]
 fn operation_feedback_contains(game: &GameState, category: &str, text: &str) -> bool {
     game.operation_feedback
@@ -24745,39 +19603,6 @@ fn latest_operation_feedback(game: &GameState) -> Option<(&str, &str)> {
         .map(|entry| (entry.category.as_str(), entry.message.as_str()))
 }
 
-struct WorkRow {
-    item: String,
-    keep: u32,
-    status: String,
-    percent: String,
-    enabled: bool,
-    active: bool,
-}
-
-#[derive(Clone, Copy)]
-enum WorkTableItemAlignment {
-    Left,
-    Right,
-}
-
-struct ShipDetailView<'a> {
-    ship: &'a Ship,
-    power_modules: &'a [PowerModule],
-    shields: &'a [ShieldSystem],
-    weapons: &'a [WeaponSystem],
-    weapon_slot_capacity: usize,
-    threats: &'a [DefenseThreat],
-    cargo_mass: f32,
-    cargo_capacity: f32,
-    current_system_id: &'a str,
-    shield_recharge_delay_remaining: f32,
-    operation_feedback: &'a [OperationFeedback],
-    texture: Option<&'a Texture2D>,
-    x: f32,
-    y: f32,
-    width: f32,
-}
-
 fn work_row_status(current: u32, keep: u32, queued: u32) -> String {
     if keep > 0 {
         format!("{current}/{keep}")
@@ -24786,259 +19611,6 @@ fn work_row_status(current: u32, keep: u32, queued: u32) -> String {
     } else {
         String::new()
     }
-}
-
-fn draw_work_text_table(rows: &[WorkRow], x: f32, y: f32, width: f32, scroll: f32, mouse: Vec2) {
-    draw_work_text_table_in_rect(
-        rows,
-        Rect::new(x, y, width, work_table_height()),
-        scroll,
-        mouse,
-    );
-}
-
-fn draw_work_text_table_in_rect(rows: &[WorkRow], rect: Rect, scroll: f32, mouse: Vec2) {
-    draw_work_text_table_in_rect_with_alignment(
-        rows,
-        rect,
-        scroll,
-        mouse,
-        WorkTableItemAlignment::Right,
-    );
-}
-
-fn draw_work_text_table_in_rect_with_alignment(
-    rows: &[WorkRow],
-    rect: Rect,
-    scroll: f32,
-    mouse: Vec2,
-    item_alignment: WorkTableItemAlignment,
-) {
-    let Rect {
-        x,
-        y,
-        w: width,
-        h: height,
-    } = rect;
-    let layout = work_table_layout_with_height(x, y, width, height);
-    let item_column = layout.columns[0];
-    let keep_column = layout.columns[1];
-    let status_column = layout.columns[2];
-    let percent_column = layout.columns[3];
-    let active_column = layout.columns[4];
-    let header = Color::from_rgba(168, 204, 210, 255);
-    let active = Color::from_rgba(205, 226, 230, 255);
-    let available = Color::from_rgba(150, 221, 226, 255);
-    let unavailable = Color::from_rgba(126, 143, 148, 255);
-
-    draw_table_column_separators(&layout, y - 10.0, layout.viewport.y + layout.viewport.h);
-
-    let item_header_width = measure_text("Item", None, 16, 1.0).width;
-    let item_header_x = match item_alignment {
-        WorkTableItemAlignment::Left => item_column.x,
-        WorkTableItemAlignment::Right => item_column.x + item_column.w - item_header_width,
-    };
-    draw_text("Item", item_header_x, y, 16.0, header);
-    draw_text("Keep", keep_column.x, y, 16.0, header);
-    draw_text("Status", status_column.x, y, 16.0, header);
-    draw_text("%", percent_column.x, y, 16.0, header);
-    draw_text("Active", active_column.x, y, 16.0, header);
-
-    let hovered = hovered_work_cell_in_layout(mouse, &layout, rows.len(), scroll);
-    for (row, work_row) in rows.iter().enumerate() {
-        let row_rect = ui_table_row_rect(&layout, row, scroll);
-        if !ui_table_row_visible(&layout, row_rect) {
-            continue;
-        }
-        let row_y = row_rect.y + 21.0;
-        let row_color = if work_row.enabled {
-            active
-        } else {
-            unavailable
-        };
-        let value_color = if work_row.enabled {
-            available
-        } else {
-            unavailable
-        };
-        let is_hovered = hovered.is_some_and(|(hovered_row, _)| hovered_row == row);
-
-        if row % 2 == 0 || is_hovered {
-            draw_rectangle(
-                row_rect.x,
-                row_rect.y,
-                row_rect.w,
-                row_rect.h,
-                Color::from_rgba(10, 18, 24, if is_hovered { 170 } else { 100 }),
-            );
-        }
-        let item_label = fit_debug_text(&work_row.item, item_column.w, 20);
-        let item_width = measure_text(&item_label, None, 20, 1.0).width;
-        let item_x = match item_alignment {
-            WorkTableItemAlignment::Left => item_column.x,
-            WorkTableItemAlignment::Right => item_column.x + item_column.w - item_width,
-        };
-        draw_text(&item_label, item_x, row_y, 20.0, row_color);
-        draw_text(
-            &work_row.keep.to_string(),
-            keep_column.x,
-            row_y,
-            20.0,
-            value_color,
-        );
-        let status_label = fit_debug_text(&work_row.status, status_column.w, 18);
-        draw_text(&status_label, status_column.x, row_y, 18.0, value_color);
-        let percent_label = fit_debug_text(&work_row.percent, percent_column.w, 18);
-        draw_text(&percent_label, percent_column.x, row_y, 18.0, value_color);
-        if work_row.active {
-            let cog_x = active_column.x + active_column.w * 0.5;
-            draw_work_cog(vec2(cog_x, row_y - 6.0), get_time() as f32 * 4.0, available);
-        }
-    }
-    draw_scrollbar(
-        x + width - 4.0,
-        layout.viewport.y,
-        layout.viewport.h,
-        rows.len(),
-        layout.row_height,
-        scroll,
-    );
-}
-
-fn draw_table_column_separators(layout: &UiTableLayout, y1: f32, y2: f32) {
-    let separator_color = Color::from_rgba(96, 137, 150, 105);
-    for pair in layout.columns.windows(2) {
-        let left = pair[0];
-        let right = pair[1];
-        let separator_x = left.x + left.w + (right.x - left.x - left.w) * 0.5;
-        draw_line(separator_x, y1, separator_x, y2, 0.5, separator_color);
-    }
-}
-
-fn draw_work_cog(center: Vec2, rotation: f32, color: Color) {
-    let teeth = 8;
-    let inner_radius = 5.0;
-    let outer_radius = 9.0;
-    draw_circle_lines(center.x, center.y, inner_radius, 1.5, color);
-    for tooth in 0..teeth {
-        let angle = rotation + tooth as f32 * std::f32::consts::TAU / teeth as f32;
-        let direction = vec2(angle.cos(), angle.sin());
-        let start = center + direction * (inner_radius + 1.5);
-        let end = center + direction * outer_radius;
-        draw_line(start.x, start.y, end.x, end.y, 1.7, color);
-    }
-    draw_circle(center.x, center.y, 1.7, color);
-}
-
-fn draw_scrollbar(x: f32, y: f32, height: f32, row_count: usize, row_height: f32, scroll: f32) {
-    let content_height = row_count as f32 * row_height;
-    if content_height <= height {
-        return;
-    }
-
-    let track = Color::from_rgba(82, 114, 124, 70);
-    let thumb = Color::from_rgba(150, 221, 226, 165);
-    let thumb_height = (height * height / content_height).clamp(28.0, height);
-    let max_scroll = max_scroll_offset(row_count, row_height, height);
-    let thumb_y = y + (height - thumb_height) * (scroll / max_scroll.max(1.0));
-
-    draw_rectangle(x, y, 2.0, height, track);
-    draw_rectangle(x - 1.0, thumb_y, 4.0, thumb_height, thumb);
-}
-
-fn draw_inventory_text_list(inventory: &Inventory, x: f32, y: f32, width: f32, scroll: f32) {
-    let layout = inventory_table_layout(x, y, width);
-    let item_column = layout.columns[0];
-    let quantity_column = layout.columns[1];
-    let mass_column = layout.columns[2];
-    let name_color = Color::from_rgba(205, 226, 230, 255);
-    let amount_color = Color::from_rgba(150, 221, 226, 255);
-    let header = Color::from_rgba(168, 204, 210, 255);
-    let empty_text = Color::from_rgba(168, 184, 188, 255);
-
-    draw_table_column_separators(&layout, y - 10.0, layout.viewport.y + layout.viewport.h);
-    let item_header_width = measure_text("Item", None, 16, 1.0).width;
-    draw_text(
-        "Item",
-        item_column.x + item_column.w - item_header_width,
-        y,
-        16.0,
-        header,
-    );
-    draw_text("Qty", quantity_column.x, y, 16.0, header);
-    draw_text("Mass", mass_column.x, y, 16.0, header);
-
-    let stacks = inventory
-        .slots
-        .iter()
-        .filter_map(|slot| slot.as_ref())
-        .collect::<Vec<_>>();
-    for (row, stack) in stacks.iter().enumerate() {
-        let row_rect = ui_table_row_rect(&layout, row, scroll);
-        if !ui_table_row_visible(&layout, row_rect) {
-            continue;
-        }
-        let row_y = row_rect.y + 21.0;
-        let name = &stack.item.name;
-        let amount = stack.count.to_string();
-        let mass = format_mass(stack.item.unit_mass * stack.count as f32);
-        let item_label = fit_debug_text(name, item_column.w, 20);
-        let name_width = measure_text(&item_label, None, 20, 1.0).width;
-
-        if row % 2 == 0 {
-            draw_rectangle(
-                row_rect.x,
-                row_rect.y,
-                row_rect.w,
-                row_rect.h,
-                Color::from_rgba(10, 18, 24, 100),
-            );
-        }
-
-        draw_text(
-            &item_label,
-            item_column.x + item_column.w - name_width,
-            row_y,
-            20.0,
-            name_color,
-        );
-        draw_text(
-            &fit_debug_text(&amount, quantity_column.w, 20),
-            quantity_column.x,
-            row_y,
-            20.0,
-            amount_color,
-        );
-        draw_text(
-            &fit_debug_text(&mass, mass_column.w, 18),
-            mass_column.x,
-            row_y,
-            18.0,
-            amount_color,
-        );
-    }
-
-    if stacks.is_empty() {
-        let text = "empty";
-        let text_width = measure_text(text, None, 20, 1.0).width;
-        draw_text(
-            text,
-            item_column.x + item_column.w - text_width,
-            y + 34.0,
-            20.0,
-            empty_text,
-        );
-        draw_text("0", quantity_column.x, y + 34.0, 20.0, empty_text);
-        draw_text("0 kg", mass_column.x, y + 34.0, 18.0, empty_text);
-    }
-    draw_scrollbar(
-        x + width - 4.0,
-        layout.viewport.y,
-        layout.viewport.h,
-        stacks.len(),
-        layout.row_height,
-        scroll,
-    );
 }
 
 fn format_mass(mass_kg: f32) -> String {
@@ -25409,46 +19981,12 @@ mod tests {
     }
 
     #[test]
-    fn new_game_panel_is_wider_and_taller_for_the_ship_grid() {
-        let panel = title_new_game_panel_rect_for_screen(1280.0, 720.0);
-
-        assert_eq!(panel.w, 1_060.0);
-        assert_eq!(panel.h, 672.0);
-        assert_eq!(panel.x, 110.0);
-        assert_eq!(panel.y, 24.0);
-    }
-
-    #[test]
-    fn ship_cards_form_three_columns_and_scroll_by_rows() {
-        let grid = Rect::new(20.0, 30.0, 900.0, 240.0);
-        let first = title_ship_card_rect_for_grid(grid, 0, 0.0);
-        let third = title_ship_card_rect_for_grid(grid, 2, 0.0);
-        let fourth = title_ship_card_rect_for_grid(grid, 3, 0.0);
-
-        assert_eq!(first.y, third.y);
-        assert!(third.x > first.x);
-        assert_eq!(fourth.x, first.x);
-        assert_eq!(
-            fourth.y,
-            first.y + TITLE_SHIP_CARD_HEIGHT + TITLE_SHIP_CARD_GAP
-        );
-        assert!(title_ship_grid_max_scroll(9, grid.h) > 0.0);
-        assert_eq!(title_ship_grid_max_scroll(3, grid.h), 0.0);
-    }
-
-    #[test]
-    fn rectangular_ship_textures_preserve_their_aspect_ratio() {
+    fn contained_textures_preserve_their_aspect_ratio() {
         let fitted = contained_texture_size(vec2(353.0, 512.0), vec2(64.0, 64.0));
-        let quarter_turned =
-            quarter_turned_contained_texture_size(vec2(353.0, 512.0), vec2(300.0, 108.0));
 
         assert!((fitted.x - 44.125).abs() < 0.001);
         assert_eq!(fitted.y, 64.0);
         assert!((fitted.x / fitted.y - 353.0 / 512.0).abs() < 0.001);
-        assert_eq!(quarter_turned.x, 108.0);
-        assert!(quarter_turned.y > quarter_turned.x);
-        assert!(quarter_turned.y <= 300.0);
-        assert!((quarter_turned.x / quarter_turned.y - 353.0 / 512.0).abs() < 0.001);
         assert_eq!(
             contained_texture_size(Vec2::ZERO, vec2(64.0, 64.0)),
             Vec2::ZERO
@@ -25482,6 +20020,37 @@ mod tests {
     }
 
     #[test]
+    fn egui_art_thumbnails_crop_padding_and_cap_the_long_edge() {
+        let mut image = Image {
+            bytes: vec![0; 12 * 8 * 4],
+            width: 12,
+            height: 8,
+        };
+        for y in 2..=5 {
+            for x in 2..=9 {
+                let pixel = (y * 12 + x) * 4;
+                image.bytes[pixel..pixel + 4].copy_from_slice(&[20, 40, 60, 255]);
+            }
+        }
+
+        let thumbnail = thumbnail_color_image(&image, 4);
+
+        assert_eq!(thumbnail.size, [4, 2]);
+        assert!(thumbnail.pixels.iter().all(|pixel| pixel.a() == 255));
+    }
+
+    #[test]
+    fn startup_progress_reports_real_fraction_and_step_count() {
+        let progress = StartupProgress {
+            completed: 7,
+            total: 28,
+        };
+
+        assert!((progress.fraction() - 0.25).abs() < f32::EPSILON);
+        assert_eq!(progress.count(), "7 / 28 startup steps");
+    }
+
+    #[test]
     fn runtime_flags_parse_debug_cli_flag() {
         assert!(RuntimeFlags::from_args(["--debug".to_string()]).debug);
         assert!(RuntimeFlags::from_args(["--fast".to_string(), "--debug".to_string()]).debug);
@@ -25490,19 +20059,11 @@ mod tests {
     }
 
     #[test]
-    fn debug_console_input_starts_inactive() {
+    fn debug_console_starts_closed_with_empty_input() {
         let console = DebugConsole::default();
 
         assert!(!console.open);
-        assert!(!console.input_active);
-    }
-
-    #[test]
-    fn title_save_row_double_click_requires_same_row_within_threshold() {
-        assert!(title_save_row_double_clicked(Some(2), 10.0, 2, 10.2));
-        assert!(!title_save_row_double_clicked(Some(1), 10.0, 2, 10.2));
-        assert!(!title_save_row_double_clicked(Some(2), 10.0, 2, 10.8));
-        assert!(!title_save_row_double_clicked(None, 10.0, 2, 10.2));
+        assert!(console.input.is_empty());
     }
 
     #[test]
@@ -25523,37 +20084,6 @@ mod tests {
     }
 
     #[test]
-    fn title_load_layout_has_wide_save_list_and_detail_pane() {
-        let panel = title_load_panel_rect_for_screen(1024.0, 768.0);
-        let list = title_save_list_rect_for_panel(panel);
-        let detail_width = panel.x + panel.w - (list.x + list.w + 28.0) - 28.0;
-
-        assert!(panel.w >= 720.0);
-        assert!(list.w >= 300.0);
-        assert!(detail_width >= 300.0);
-    }
-
-    #[test]
-    fn title_save_list_scrolls_when_rows_exceed_viewport() {
-        assert_eq!(title_save_slots_max_scroll(2, 180.0), 0.0);
-        assert!(title_save_slots_max_scroll(10, 180.0) > 0.0);
-        assert_eq!(
-            title_save_slots_scrolled_offset(0.0, -1.0, 10, 180.0),
-            TITLE_SAVE_ROW_STEP * 2.0
-        );
-    }
-
-    #[test]
-    fn title_save_row_rect_accounts_for_scroll_offset() {
-        let list = Rect::new(20.0, 40.0, 300.0, 180.0);
-        let row = title_save_row_rect_for_list(list, 3, TITLE_SAVE_ROW_STEP);
-
-        assert_eq!(row.x, list.x);
-        assert_eq!(row.y, list.y + TITLE_SAVE_ROW_STEP * 2.0);
-        assert_eq!(row.h, TITLE_SAVE_ROW_HEIGHT);
-    }
-
-    #[test]
     fn app_settings_clamp_to_supported_ranges() {
         let settings = AppSettings {
             ui_scale: 5.0,
@@ -25567,6 +20097,229 @@ mod tests {
         assert_eq!(settings.master_volume, 0.0);
         assert_eq!(settings.controls_profile, "standard");
         assert_eq!(settings.gameplay_autosave_minutes, 10);
+    }
+
+    #[test]
+    fn persisted_egui_windows_require_a_reachable_grab_area() {
+        let screen = [1100.0, 760.0];
+        assert!(egui_window_has_reachable_area(
+            egui::Rect::from_min_size(egui::pos2(980.0, 40.0), egui::vec2(300.0, 400.0)),
+            screen,
+        ));
+        assert!(!egui_window_has_reachable_area(
+            egui::Rect::from_min_size(egui::pos2(1080.0, 40.0), egui::vec2(300.0, 400.0)),
+            screen,
+        ));
+        assert!(!egui_window_has_reachable_area(
+            egui::Rect::from_min_size(egui::pos2(40.0, 750.0), egui::vec2(300.0, 400.0)),
+            screen,
+        ));
+    }
+
+    #[test]
+    fn egui_memory_round_trips_window_geometry() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::Window::new("Ship")
+            .id(egui::Id::new("inventory-ship-window"))
+            .default_pos(egui::pos2(30.0, 40.0))
+            .show(&ctx, |ui| {
+                ui.label("test");
+            });
+        let _ = ctx.end_pass();
+        let memory = ctx.memory(Clone::clone);
+        let serialized = ron::to_string(&memory).expect("egui memory should serialize");
+        let restored: egui::Memory =
+            ron::from_str(&serialized).expect("egui memory should deserialize");
+
+        assert!(restored
+            .area_rect(egui::Id::new("inventory-ship-window"))
+            .is_some());
+    }
+
+    #[test]
+    fn pinned_egui_panes_remain_visible_after_parent_workspaces_close() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.inventory_open = false;
+        game.fleet_open = false;
+        game.selected_planet = Some(0);
+        let pins = EguiPinSnapshot {
+            production: true,
+            planet: true,
+            fleet: true,
+            ..EguiPinSnapshot::default()
+        };
+
+        assert!(egui_inventory_windows_visible(&game, pins));
+        assert!(egui_planet_visible(&game, pins));
+        assert!(egui_fleet_visible(&game, pins));
+        assert!(!egui_station_visible(&game, pins));
+        assert!(!egui_npc_visible(&game, pins));
+    }
+
+    #[test]
+    fn closing_inventory_preserves_only_pinned_inspection_targets() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.selected_planet = Some(0);
+        game.selected_station = Some(1);
+        game.selected_station_service = Some(2);
+        game.selected_npc_ship = Some(3);
+
+        clear_unpinned_inspection_selection(
+            &mut game,
+            EguiPinSnapshot {
+                station: true,
+                ..EguiPinSnapshot::default()
+            },
+        );
+
+        assert_eq!(game.selected_planet, None);
+        assert_eq!(game.selected_station, Some(1));
+        assert_eq!(game.selected_station_service, Some(2));
+        assert_eq!(game.selected_npc_ship, None);
+    }
+
+    #[test]
+    fn egui_pin_file_round_trips_stable_pane_ids() {
+        let saved = SavedEguiPins {
+            pinned: [EguiPane::Production.id(), EguiPane::Fleet.id()]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        };
+
+        let serialized = ron::to_string(&saved).expect("pins should serialize");
+        let restored: SavedEguiPins = ron::from_str(&serialized).expect("pins should deserialize");
+
+        assert_eq!(restored.pinned, saved.pinned);
+    }
+
+    #[test]
+    fn egui_pane_pin_toggle_is_independent_per_window() {
+        reset_egui_pins();
+
+        toggle_egui_pane_pin(EguiPane::Production);
+        assert!(egui_pane_pinned(EguiPane::Production));
+        assert!(!egui_pane_pinned(EguiPane::Inventory));
+
+        toggle_egui_pane_pin(EguiPane::Inventory);
+        toggle_egui_pane_pin(EguiPane::Production);
+        assert!(!egui_pane_pinned(EguiPane::Production));
+        assert!(egui_pane_pinned(EguiPane::Inventory));
+        reset_egui_pins();
+    }
+
+    #[test]
+    fn content_browser_egui_actions_filter_the_existing_registry_rows() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let pack_index = game
+            .content_registry
+            .packs
+            .iter()
+            .position(|pack| pack.id == "turrets-galore")
+            .expect("turrets-galore should be loaded");
+
+        apply_content_ui_actions(
+            &mut game,
+            vec![egui_content::ContentUiAction::SelectPack(Some(pack_index))],
+        );
+        let view = content_browser_view(&game);
+
+        assert_eq!(view.selected_pack, Some(pack_index));
+        assert_eq!(
+            view.selected_detail
+                .as_ref()
+                .map(|detail| detail.id.as_str()),
+            Some("turrets-galore")
+        );
+        assert_eq!(view.filter_label, "Showing pack: turrets-galore");
+        let item_group = view
+            .object_groups
+            .iter()
+            .find(|group| group.title == "Items")
+            .expect("filtered item group should be present");
+        assert!(!item_group.rows.is_empty());
+        assert!(item_group
+            .rows
+            .iter()
+            .any(|row| row.name.contains("SUPER NUKE")));
+
+        apply_content_ui_actions(
+            &mut game,
+            vec![egui_content::ContentUiAction::SelectPack(None)],
+        );
+        assert_eq!(game.content_browser.selected_pack_index, None);
+        assert_eq!(
+            content_browser_view(&game).filter_label,
+            "Showing all packs"
+        );
+    }
+
+    #[test]
+    fn content_browser_object_references_are_inspectable_and_have_back_history() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let weapon_key = content_object_groups(&game.content_registry, Some("turrets-galore"))
+            .into_iter()
+            .find(|group| group.title == "Weapons")
+            .and_then(|group| group.rows.into_iter().next())
+            .map(|row| row.key)
+            .expect("turrets-galore should provide a weapon");
+
+        apply_content_ui_actions(
+            &mut game,
+            vec![egui_content::ContentUiAction::SelectObject(
+                weapon_key.clone(),
+            )],
+        );
+        let weapon_detail = content_browser_view(&game)
+            .object_detail
+            .expect("selected weapon should have details");
+        assert!(weapon_detail
+            .artwork
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".png")));
+        let install_item = weapon_detail
+            .references
+            .iter()
+            .find(|reference| reference.label == "Install item")
+            .expect("weapon should link its install item")
+            .target
+            .clone();
+
+        apply_content_ui_actions(
+            &mut game,
+            vec![egui_content::ContentUiAction::SelectObject(
+                install_item.clone(),
+            )],
+        );
+        assert_eq!(game.content_browser.selected_object, Some(install_item));
+        assert_eq!(
+            game.content_browser.object_history,
+            vec![weapon_key.clone()]
+        );
+
+        apply_content_ui_actions(&mut game, vec![egui_content::ContentUiAction::BackObject]);
+        assert_eq!(game.content_browser.selected_object, Some(weapon_key));
+        assert!(game.content_browser.object_history.is_empty());
+    }
+
+    #[test]
+    fn pinned_content_browser_is_visible_after_c_closes_its_parent_state() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.content_open = false;
+
+        assert!(egui_content_visible(
+            &game,
+            EguiPinSnapshot {
+                content: true,
+                ..EguiPinSnapshot::default()
+            }
+        ));
+        assert!(!egui_content_visible(&game, EguiPinSnapshot::default()));
     }
 
     #[test]
@@ -25733,7 +20486,6 @@ mod tests {
 
         let power_modules = installed_power_modules_from_ids(&registry, &ship_def.power_modules);
         assert_eq!(power_modules.len(), 1);
-        assert_eq!(power_modules[0].family, "Nuclear");
         assert_eq!(ship.attributes.energy_recharge, 8.0);
         assert_eq!(ship_energy_recharge(&ship, &power_modules), 22.0);
 
@@ -25755,15 +20507,6 @@ mod tests {
         assert_eq!(starter_inventory.count(&sentinel_flak), 1);
         assert_eq!(starter_inventory.count(&storm_chain), 1);
         assert_eq!(starter_inventory.count(&super_nuke), 1);
-        assert_eq!(
-            inventory_turret_ids(&registry, &starter_inventory),
-            vec![
-                "turrets-galore:ember_lance_turret".to_string(),
-                "turrets-galore:sentinel_flak_turret".to_string(),
-                "turrets-galore:storm_chain_turret".to_string(),
-                "turrets-galore:super_nuke_turret".to_string(),
-            ]
-        );
     }
 
     #[test]
@@ -26024,6 +20767,70 @@ mod tests {
         );
         assert_eq!(game.inventory.count(&iron), 8);
         assert_eq!(game.owned_ships[1].inventory.count(&iron), 2);
+    }
+
+    #[test]
+    fn fleet_egui_view_and_actions_cover_transfer_switching_and_shipyard_purchase() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 100_000;
+        assert!(acquire_owned_ship(
+            &mut game,
+            0,
+            "turrets-galore:twinspire_gunship"
+        ));
+        game.inventory.add_item(iron.clone(), 10);
+
+        let view = fleet_pane_view(&game, 10);
+        assert_eq!(view.ships.len(), 2);
+        assert_eq!(view.selected, Some(1));
+        assert!(view
+            .selected_ship
+            .as_ref()
+            .is_some_and(|selected| selected.transfer_available));
+        assert!(view
+            .active_cargo
+            .iter()
+            .any(|cargo| cargo.item_id == iron.id && cargo.count == 10));
+        let offer = view
+            .shipyard
+            .as_ref()
+            .and_then(|shipyard| shipyard.offers.first())
+            .expect("nearby garage should expose purchasable hulls")
+            .ship_id
+            .clone();
+
+        apply_fleet_ui_actions(
+            &mut game,
+            vec![
+                egui_fleet::FleetUiAction::AdjustTransferQuantity(1),
+                egui_fleet::FleetUiAction::TransferToSelected(iron.id.clone()),
+            ],
+            10,
+        );
+        assert_eq!(game.fleet_transfer_quantity, 11);
+        assert_eq!(game.inventory.count(&iron), 0);
+        assert_eq!(game.owned_ships[1].inventory.count(&iron), 10);
+
+        apply_fleet_ui_actions(&mut game, vec![egui_fleet::FleetUiAction::SwitchControl], 1);
+        assert_eq!(game.active_owned_ship_id, "ship-2");
+
+        let owned_before_purchase = game.owned_ships.len();
+        apply_fleet_ui_actions(
+            &mut game,
+            vec![egui_fleet::FleetUiAction::BuyShip(offer)],
+            1,
+        );
+        assert_eq!(game.owned_ships.len(), owned_before_purchase + 1);
+        assert!(game.save_dirty);
     }
 
     #[test]
@@ -27555,198 +22362,11 @@ mod tests {
     }
 
     #[test]
-    fn ui_columns_allocate_fixed_content_and_flexible_widths() {
-        let columns = ui_resolve_columns(
-            Rect::new(10.0, 20.0, 300.0, 40.0),
-            10.0,
-            &[
-                ui_column_spec_fixed(50.0),
-                ui_column_spec_content(80.0, 40.0, 100.0),
-                ui_column_spec_flex(60.0, 1.0),
-            ],
-        );
-
-        assert_eq!(columns.len(), 3);
-        assert!((columns[0].w - 50.0).abs() < 0.01);
-        assert!((columns[1].w - 80.0).abs() < 0.01);
-        assert!((columns[2].w - 150.0).abs() < 0.01);
-        assert!((columns[1].x - 70.0).abs() < 0.01);
-        assert!((columns[2].x - 160.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn inventory_pane_expands_left_when_action_rail_is_present() {
-        let (detail, production, inventory) = inventory_pane_shares(true);
-
-        assert!((detail + production + inventory - 1.0).abs() < 0.001);
-        assert!(inventory > production);
-        assert!(inventory > detail);
-        assert_eq!(detail, 0.28);
-        assert_eq!(production, 0.34);
-        assert_eq!(inventory, 0.38);
-    }
-
-    #[test]
-    fn inventory_separator_tracks_the_inventory_table_leading_edge() {
-        let inventory_x = 816.0;
-        let separator = pane_leading_separator_x(inventory_x);
-
-        assert_eq!(separator, 808.0);
-        assert!(separator < inventory_x);
-        assert_eq!(inventory_x - separator, 8.0);
-    }
-
-    #[test]
-    fn compressed_production_columns_stay_inside_the_table() {
-        let layout = work_table_layout_with_height(100.0, 80.0, 300.0, 180.0);
-        let last = layout.columns.last().expect("active column should exist");
-
-        assert_eq!(layout.columns.len(), 5);
-        assert!((last.x + last.w - 400.0).abs() < 0.01);
-    }
-
-    #[test]
     fn inventory_panel_height_is_valid_at_the_minimum_supported_window() {
         let height = inventory_panel_height_for(420.0);
 
         assert_eq!(height, 336.0);
         assert!(height <= 420.0 - 56.0);
-    }
-
-    #[test]
-    fn expanded_inventory_prioritizes_item_names_over_numeric_columns() {
-        let columns = ui_resolve_columns(
-            Rect::new(0.0, 0.0, 400.0, 40.0),
-            10.0,
-            &inventory_column_specs(),
-        );
-
-        assert!(columns[0].w >= 250.0);
-        assert_eq!(columns[1].w, 44.0);
-        assert_eq!(columns[2].w, 78.0);
-        let last = columns[2];
-        assert!((last.x + last.w - 400.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn action_rail_override_can_expand_but_not_shrink_auto_width() {
-        assert_eq!(action_rail_override_candidate(320.0, None), 320.0);
-        assert_eq!(action_rail_override_candidate(320.0, Some(420.0)), 420.0);
-        assert_eq!(action_rail_override_candidate(320.0, Some(280.0)), 320.0);
-    }
-
-    #[test]
-    fn action_rail_resize_handle_has_wide_grab_target() {
-        let rail = Rect::new(100.0, 50.0, 320.0, 260.0);
-        let handle = action_rail_resize_handle_rect(rail);
-        let visual_grip_x = rail.x;
-
-        assert!((handle.w - ACTION_RAIL_RESIZE_HITBOX_WIDTH).abs() < 0.01);
-        assert!(handle.contains(vec2(visual_grip_x - 10.0, rail.y + 80.0)));
-        assert!(handle.contains(vec2(visual_grip_x + 10.0, rail.y + 80.0)));
-    }
-
-    #[test]
-    fn action_rail_blocks_pointer_inside_rail_and_resize_handle() {
-        let rail = Rect::new(100.0, 50.0, 320.0, 260.0);
-
-        assert!(action_rail_blocks_pointer(rail, vec2(180.0, 90.0)));
-        assert!(action_rail_blocks_pointer(rail, vec2(rail.x - 10.0, 90.0)));
-        assert!(!action_rail_blocks_pointer(rail, vec2(rail.x - 30.0, 90.0)));
-    }
-
-    #[test]
-    fn ui_table_rows_and_hover_cells_share_geometry() {
-        let layout = ui_table_layout(
-            Rect::new(20.0, 40.0, 240.0, 100.0),
-            52.0,
-            90.0,
-            30.0,
-            8.0,
-            &[ui_column_spec_flex(80.0, 1.0), ui_column_spec_fixed(44.0)],
-        );
-
-        let second_row = ui_table_row_rect(&layout, 1, 6.0);
-        assert!((second_row.y - 76.0).abs() < 0.01);
-        assert_eq!(
-            ui_hovered_table_cell(
-                vec2(layout.columns[1].x + 2.0, second_row.y + 8.0),
-                &layout,
-                4,
-                6.0
-            ),
-            Some(UiTableCell { row: 1, column: 1 })
-        );
-        assert_eq!(
-            ui_hovered_table_cell(
-                vec2(layout.viewport.x - 2.0, second_row.y + 8.0),
-                &layout,
-                4,
-                6.0
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn ui_table_layout_until_bottom_clamps_viewport_height() {
-        let layout = ui_table_layout_until_bottom(UiTableBottomLayout {
-            x: 12.0,
-            y: 30.0,
-            width: 180.0,
-            row_start_offset: 24.0,
-            viewport_bottom: 130.0,
-            row_height: 28.0,
-            column_gap: 8.0,
-            columns: &[ui_column_spec_flex(70.0, 1.0), ui_column_spec_fixed(40.0)],
-        });
-
-        assert!((layout.viewport.y - 54.0).abs() < 0.01);
-        assert!((layout.viewport.h - 76.0).abs() < 0.01);
-        assert!(ui_table_row_visible(
-            &layout,
-            ui_table_row_rect(&layout, 1, 0.0)
-        ));
-        assert!(!ui_table_row_visible(
-            &layout,
-            ui_table_row_rect(&layout, 3, 0.0)
-        ));
-    }
-
-    #[test]
-    fn work_table_hover_uses_adaptive_columns() {
-        let layout = ui_table_layout(
-            Rect::new(100.0, 80.0, 342.0, 180.0),
-            93.0,
-            180.0,
-            WORK_ROW_HEIGHT,
-            12.0,
-            &[
-                ui_column_spec_flex(132.0, 1.0),
-                ui_column_spec_fixed(42.0),
-                ui_column_spec_content(56.0, 50.0, 82.0),
-            ],
-        );
-        let row_rect = ui_table_row_rect(&layout, 2, 0.0);
-
-        assert_eq!(
-            ui_hovered_table_cell(
-                vec2(layout.columns[0].x + 12.0, row_rect.y + 8.0),
-                &layout,
-                5,
-                0.0
-            ),
-            Some(UiTableCell { row: 2, column: 0 })
-        );
-        assert_eq!(
-            ui_hovered_table_cell(
-                vec2(layout.columns[2].x + 12.0, row_rect.y + 8.0),
-                &layout,
-                5,
-                0.0
-            ),
-            Some(UiTableCell { row: 2, column: 2 })
-        );
     }
 
     #[test]
@@ -28008,28 +22628,6 @@ mod tests {
     }
 
     #[test]
-    fn npc_trade_quantity_controls_match_visible_button_sides() {
-        let rect = Rect::new(100.0, 40.0, 92.0, 22.0);
-
-        assert_eq!(
-            npc_trade_quantity_control_delta(vec2(105.0, 50.0), rect),
-            Some(-1)
-        );
-        assert_eq!(
-            npc_trade_quantity_control_delta(vec2(146.0, 50.0), rect),
-            Some(0)
-        );
-        assert_eq!(
-            npc_trade_quantity_control_delta(vec2(185.0, 50.0), rect),
-            Some(1)
-        );
-        assert_eq!(
-            npc_trade_quantity_control_delta(vec2(195.0, 50.0), rect),
-            None
-        );
-    }
-
-    #[test]
     fn identified_nearby_hauler_with_cargo_exposes_trade_action() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -28228,9 +22826,16 @@ mod tests {
         }
 
         assert!(game.approach_target.is_none());
+        let center_distance = game.ship.position.distance(game.planets[0].position);
+        assert!(center_distance <= planet_interaction_radius(&game.planets[0]));
         assert!(
-            game.ship.position.distance(game.planets[0].position)
-                <= planet_interaction_radius(&game.planets[0])
+            center_distance
+                <= planet_interaction_radius(&game.planets[0]) - AUTOPILOT_INTERACTION_INSET
+        );
+        assert!(
+            (planet_surface_distance(&game.ship, &game.planets[0]) - AUTOPILOT_CLEARANCE_MARGIN)
+                .abs()
+                < 0.1
         );
         assert!((game.ship.angle - std::f32::consts::PI).abs() < 0.01);
     }
@@ -28271,7 +22876,7 @@ mod tests {
 
         game.selected_planet = Some(0);
         game.context_action_menu = Some(ContextActionMenu {
-            target: ContextTarget::Planet(0),
+            content: ContextMenuContent::Actions(ContextTarget::Planet(0)),
             position: Vec2::ZERO,
         });
         handle_inventory_shortcut(&mut game);
@@ -28287,6 +22892,72 @@ mod tests {
         handle_inventory_shortcut(&mut game);
         assert!(game.inventory_open);
         assert_eq!(game.selected_planet, None);
+    }
+
+    #[test]
+    fn egui_context_menu_choice_executes_the_existing_world_action() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let planet = test_planet("core:context_planet", STARTER_SYSTEM_ID, Vec2::ZERO, true);
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        game.context_action_menu = Some(ContextActionMenu {
+            content: ContextMenuContent::Actions(ContextTarget::Planet(0)),
+            position: Vec2::ZERO,
+        });
+
+        apply_context_menu_outcome(
+            &mut game,
+            Some(egui_context_menu::ContextMenuOutcome::Choose(0)),
+        );
+
+        assert!(game.context_action_menu.is_none());
+        assert!(game.inventory_open);
+        assert_eq!(game.selected_planet, Some(0));
+    }
+
+    #[test]
+    fn context_target_ranking_chooses_the_nearest_object_across_types() {
+        let content = context_menu_content_for_candidates(vec![
+            ContextTargetCandidate {
+                target: ContextTarget::Planet(0),
+                cursor_distance: 82.0,
+            },
+            ContextTargetCandidate {
+                target: ContextTarget::Station(0),
+                cursor_distance: 18.0,
+            },
+        ]);
+
+        assert_eq!(
+            content,
+            Some(ContextMenuContent::Actions(ContextTarget::Station(0)))
+        );
+    }
+
+    #[test]
+    fn context_target_ranking_requests_a_choice_for_nearly_tied_objects() {
+        let content = context_menu_content_for_candidates(vec![
+            ContextTargetCandidate {
+                target: ContextTarget::Planet(0),
+                cursor_distance: 42.0,
+            },
+            ContextTargetCandidate {
+                target: ContextTarget::Station(0),
+                cursor_distance: 29.0,
+            },
+            ContextTargetCandidate {
+                target: ContextTarget::NpcShip(0),
+                cursor_distance: 90.0,
+            },
+        ]);
+
+        assert_eq!(
+            content,
+            Some(ContextMenuContent::ChooseTarget(vec![
+                ContextTarget::Station(0),
+                ContextTarget::Planet(0),
+            ]))
+        );
     }
 
     #[test]
@@ -28307,6 +22978,17 @@ mod tests {
             }
             update_ship_approach(&mut game, 0.1);
         }
+
+        let center_distance = game.ship.position.distance(game.stations[0].position);
+        assert!(
+            center_distance
+                <= station_interaction_radius(&game.stations[0]) - AUTOPILOT_INTERACTION_INSET
+        );
+        assert!(
+            (station_surface_distance(&game.ship, &game.stations[0]) - AUTOPILOT_CLEARANCE_MARGIN)
+                .abs()
+                < 0.1
+        );
 
         let inspect = context_action_entries(&game, ContextTarget::Station(0))
             .into_iter()
@@ -28647,6 +23329,41 @@ mod tests {
     }
 
     #[test]
+    fn station_ui_actions_dispatch_through_existing_market_rules() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.credits = 100;
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].trade = vec![TradeOffer {
+            item: iron.clone(),
+            buy_price: 25,
+            sell_price: 10,
+            stock: Some(2),
+            max_stock: Some(2),
+            restock_days: None,
+            next_restock_day: None,
+            catalog_rotation: None,
+            unavailable: false,
+        }];
+        game.ship.position = vec2(120.0, 0.0);
+        game.selected_station = Some(0);
+        game.selected_station_service = Some(0);
+
+        apply_station_ui_actions(&mut game, vec![egui_station::StationUiAction::Buy(0)]);
+
+        assert_eq!(game.credits, 75);
+        assert_eq!(game.inventory.count(&iron), 1);
+        assert_eq!(game.stations[0].services[0].trade[0].stock, Some(1));
+        assert!(game.save_dirty);
+    }
+
+    #[test]
     fn garage_repairs_hull_and_shields_for_credits() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -28779,13 +23496,38 @@ mod tests {
         assert_eq!(entries[0].progress, "Survey level 0/2");
         assert_eq!(entries[0].status, "Active");
 
+        let initial_view = contracts_view(&game);
+        assert_eq!(initial_view.rows.len(), 1);
+        assert_eq!(initial_view.rows[0].name, "Test Survey");
+        assert!(initial_view.detail.is_none());
+        apply_contracts_ui_actions(
+            &mut game,
+            vec![egui_contracts::ContractsUiAction::Select(0)],
+        );
+        let selected_view = contracts_view(&game);
+        assert_eq!(selected_view.selected, Some(0));
+        assert_eq!(
+            selected_view
+                .detail
+                .as_ref()
+                .map(|detail| detail.progress.as_str()),
+            Some("Survey level 0/2")
+        );
+        assert!(selected_view
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.focus_enabled));
+
         game.active_contracts[0].target_reached = true;
         let completed_entries = active_contract_menu_entries(&game);
         assert_eq!(completed_entries[0].progress, "Survey level 2/2");
         assert_eq!(completed_entries[0].status, "Ready to complete");
 
         game.contracts_open = true;
-        focus_active_contract(&mut game, &completed_entries[0]);
+        apply_contracts_ui_actions(
+            &mut game,
+            vec![egui_contracts::ContractsUiAction::FocusOrigin(0)],
+        );
         assert!(!game.contracts_open);
         assert!(game.inventory_open);
         assert_eq!(game.selected_station, Some(0));
@@ -29102,6 +23844,54 @@ mod tests {
     }
 
     #[test]
+    fn research_egui_browser_projects_authored_tiers_and_uses_existing_start_rules() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.credits = 1_500;
+        let starter_id = "core:frontier_survey_methods".to_string();
+
+        let initial = research_view(&game);
+        assert_eq!(initial.nodes.len(), game.content_registry.research.len());
+        assert!(!initial.edges.is_empty());
+        assert!(initial.nodes.iter().any(|node| node.tier == 4));
+        assert!(initial.nodes.iter().any(|node| {
+            node.id == starter_id && node.state == egui_research::ResearchState::Affordable
+        }));
+
+        apply_research_ui_actions(
+            &mut game,
+            vec![egui_research::ResearchUiAction::Select(starter_id.clone())],
+        );
+        let selected = research_view(&game);
+        assert_eq!(selected.selected.as_deref(), Some(starter_id.as_str()));
+        assert!(selected
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.start_enabled));
+
+        let price = game.content_registry.research[&starter_id].price;
+        apply_research_ui_actions(
+            &mut game,
+            vec![egui_research::ResearchUiAction::Start(starter_id.clone())],
+        );
+        assert_eq!(game.credits, 1_500 - price);
+        assert_eq!(
+            game.active_research
+                .as_ref()
+                .map(|active| active.research.as_str()),
+            Some(starter_id.as_str())
+        );
+        assert_eq!(
+            research_view(&game)
+                .detail
+                .as_ref()
+                .map(|detail| detail.state),
+            Some(egui_research::ResearchState::Researching)
+        );
+    }
+
+    #[test]
     fn debug_console_completes_research_nodes() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -29305,29 +24095,6 @@ mod tests {
             Some(("Mining", "Recovered Iron ore x3"))
         );
         assert_eq!(game.operation_feedback[0].count, 3);
-    }
-
-    #[test]
-    fn trade_and_unlock_disabled_labels_explain_blockers() {
-        let registry = content::load_content_packs(Path::new("content/packs"))
-            .expect("content packs should load and validate");
-        let iron = required_item(&registry, "core:iron_ore");
-        let offer = TradeOffer {
-            item: iron,
-            buy_price: 25,
-            sell_price: 10,
-            stock: Some(2),
-            max_stock: Some(2),
-            restock_days: Some(3.0),
-            next_restock_day: Some(3.0),
-            catalog_rotation: None,
-            unavailable: false,
-        };
-
-        assert_eq!(trade_buy_label(&offer, false, 100), "Approach");
-        assert_eq!(trade_buy_label(&offer, true, 10), "Need 15");
-        assert_eq!(trade_sell_label(false, 1), "Approach");
-        assert_eq!(trade_sell_label(true, 0), "No cargo");
     }
 
     #[test]
@@ -29755,6 +24522,36 @@ mod tests {
     }
 
     #[test]
+    fn ship_upgrades_egui_view_and_actions_use_existing_purchase_rules() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let first_cost = game.ship_upgrades[0].next_cost(&game.content_registry);
+        for stack in &first_cost {
+            game.inventory.add_item(stack.item.clone(), 100);
+        }
+
+        let view = upgrades_view(&game, 2);
+        assert_eq!(view.rows.len(), SHIP_UPGRADE_COUNT);
+        assert_eq!(view.purchase_count, 2);
+        assert!(view.rows[0].affordable);
+        assert_eq!(view.rows[0].level, 0);
+        assert!(view.rows[0]
+            .cost
+            .iter()
+            .all(|cost| cost.available >= cost.required));
+
+        apply_upgrades_ui_actions(
+            &mut game,
+            vec![egui_upgrades::UpgradesUiAction::Purchase(0)],
+            2,
+        );
+
+        assert_eq!(game.ship_upgrades[0].level, 2);
+        assert!(operation_feedback_contains(&game, "Upgrade", "level 2"));
+    }
+
+    #[test]
     fn hazard_effects_are_explicit_planet_configuration() {
         let mut planet = test_planet("core:hazard", STARTER_SYSTEM_ID, Vec2::ZERO, true);
         planet.info.hazards = vec![
@@ -30012,8 +24809,13 @@ mod tests {
         let planet_position = game.planets[0].position;
         game.ship.position =
             planet_position + vec2(planet_interaction_radius(&game.planets[0]) - 1.0, 0.0);
+        let entry_position = game.ship.position;
 
         assert!(enter_planet_orbit(&mut game, 0));
+        assert_eq!(game.ship.position, entry_position);
+        assert_eq!(game.orbiting_planet, None);
+        assert_eq!(game.approach_target, Some(ApproachTarget::PlanetOrbit(0)));
+        advance_test_ship_to_orbit(&mut game, 0);
         assert_eq!(game.orbiting_planet, Some(0));
         assert_vec2_near(
             game.ship.position,
@@ -30040,6 +24842,7 @@ mod tests {
         game.ship.position = game.planets[0].position + vec2(30.0, 0.0);
 
         assert!(enter_planet_orbit(&mut game, 0));
+        advance_test_ship_to_orbit(&mut game, 0);
         let initial_ship_position = game.ship.position;
         advance_world_time_and_planets(&mut game, GAME_DAY_SECONDS);
         update_ship_orbit(&mut game);
@@ -30077,6 +24880,7 @@ mod tests {
         assert!(enter_planet_orbit(&mut game, 0));
         set_destination_planet(&mut game, Some(1));
         assert_eq!(game.orbiting_planet, None);
+        assert_eq!(game.approach_target, None);
         assert_eq!(game.destination_planet, Some(1));
 
         assert!(enter_planet_orbit(&mut game, 0));
@@ -30106,8 +24910,283 @@ mod tests {
 
         game.ship.systems.shields.current = max_shields;
         assert!(enter_planet_orbit(&mut game, 0));
+        advance_test_ship_to_orbit(&mut game, 0);
         update_orbital_hazards(&mut game, 1.0);
         assert_eq!(game.ship.systems.shields.current, max_shields);
+    }
+
+    #[test]
+    fn navigation_route_uses_stable_planet_ids_in_save_data() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![test_planet(
+                "turrets-galore:route_proof",
+                STARTER_SYSTEM_ID,
+                vec2(400.0, 0.0),
+                true,
+            )],
+        );
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "turrets-galore:route_proof".to_string(),
+        }];
+        game.navigation_route_current = Some(0);
+        game.navigation_route_active = true;
+
+        let serialized = toml::to_string(&game.to_save()).expect("route save should serialize");
+        let restored: SaveData = toml::from_str(&serialized).expect("route save should load");
+
+        assert_eq!(restored.navigation_route.len(), 1);
+        assert_eq!(
+            restored.navigation_route[0].planet,
+            "turrets-galore:route_proof"
+        );
+        assert_eq!(restored.navigation_route_current, Some(0));
+        assert!(restored.navigation_route_active);
+    }
+
+    #[test]
+    fn starmap_panel_size_respects_dragged_dimensions_and_screen_bounds() {
+        assert_eq!(
+            starmap_panel_size_for(vec2(1600.0, 900.0), Some(vec2(900.0, 600.0))),
+            vec2(900.0, 600.0)
+        );
+        assert_eq!(
+            starmap_panel_size_for(vec2(1600.0, 900.0), Some(vec2(5000.0, 5000.0))),
+            vec2(1552.0, 852.0)
+        );
+        assert_eq!(
+            starmap_panel_size_for(vec2(480.0, 320.0), Some(vec2(100.0, 100.0))),
+            vec2(432.0, 280.0)
+        );
+    }
+
+    #[test]
+    fn starmap_panel_position_stays_on_screen() {
+        let screen = vec2(1600.0, 900.0);
+        let size = vec2(900.0, 600.0);
+        assert_eq!(
+            starmap_panel_position_for(screen, size, Some(vec2(300.0, 200.0))),
+            vec2(300.0, 200.0)
+        );
+        assert_eq!(
+            starmap_panel_position_for(screen, size, Some(vec2(2000.0, 2000.0))),
+            vec2(700.0, 300.0)
+        );
+        assert_eq!(
+            starmap_panel_position_for(screen, size, Some(vec2(-50.0, -20.0))),
+            Vec2::ZERO
+        );
+    }
+
+    #[test]
+    fn starmap_geometry_parser_accepts_saved_and_legacy_sizes() {
+        assert_eq!(
+            parse_starmap_panel_geometry("120 80 900 600\n"),
+            Some((Some(vec2(120.0, 80.0)), vec2(900.0, 600.0)))
+        );
+        assert_eq!(
+            parse_starmap_panel_geometry("900 600\n"),
+            Some((None, vec2(900.0, 600.0)))
+        );
+        assert_eq!(parse_starmap_panel_geometry("120 80 900\n"), None);
+    }
+
+    #[test]
+    fn startup_loading_composition_stays_centered_and_visible() {
+        let (logo, panel_center_y) = startup_loading_layout(vec2(1100.0, 760.0));
+        assert_eq!(logo.w, 720.0);
+        assert!(logo.x >= 0.0 && logo.y >= 0.0);
+        assert!(logo.x + logo.w <= 1100.0);
+        assert!(logo.y + logo.h < panel_center_y);
+        assert!(panel_center_y <= 760.0 - 72.0);
+
+        let (compact_logo, compact_panel_center_y) = startup_loading_layout(vec2(640.0, 420.0));
+        assert!(compact_logo.x >= 0.0 && compact_logo.y >= 0.0);
+        assert!(compact_logo.x + compact_logo.w <= 640.0);
+        assert!(compact_logo.y + compact_logo.h < compact_panel_center_y);
+        assert!(compact_panel_center_y <= 420.0 - 72.0);
+    }
+
+    #[test]
+    fn title_submenu_actions_queue_the_selected_new_game() {
+        let ship = TitleShip {
+            id: "test:ship".to_string(),
+            name: "Test Ship".to_string(),
+            texture: None,
+            hull_capacity: 100.0,
+            shield_capacity: 100.0,
+            weapon_banks: 1,
+        };
+        let mut menu = TitleMenu {
+            view: TitleView::NewGame,
+            pending_action: None,
+            branding_egui_image: None,
+            branding_egui_texture: None,
+            new_game_seed_text: "1".to_string(),
+            ships: vec![ship],
+            selected_ship_index: 0,
+            ship_textures: HashMap::new(),
+            save_slots: Vec::new(),
+            selected_save_index: 0,
+            pending_delete_save_index: None,
+            delete_save_error: None,
+            content_packs: Vec::new(),
+            selected_pack_index: 0,
+            settings: AppSettings::default(),
+            selected_settings_category: SettingsCategory::Display,
+        };
+        let selected_ship = menu.ships.len().saturating_sub(1);
+
+        apply_title_submenu_actions(
+            &mut menu,
+            vec![
+                egui_title::TitleSubmenuAction::SetSeed("4242".to_string()),
+                egui_title::TitleSubmenuAction::SelectShip(selected_ship),
+                egui_title::TitleSubmenuAction::StartGame,
+            ],
+        );
+
+        match menu.pending_action.as_ref() {
+            Some(TitleAction::NewGame { seed, ship_id, .. }) => {
+                assert_eq!(*seed, 4242);
+                assert_eq!(ship_id, &menu.ships[selected_ship].id);
+            }
+            _ => panic!("new-game submenu should queue a start action"),
+        }
+    }
+
+    #[test]
+    fn title_ship_preview_rotation_swaps_image_dimensions() {
+        let image = Image {
+            bytes: vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 0, 255,
+                255, 0, 255, 255, 255,
+            ],
+            width: 2,
+            height: 3,
+        };
+
+        let rotated = quarter_turned_cropped_color_image(&image, Rect::new(0.0, 0.0, 2.0, 3.0));
+
+        assert_eq!(rotated.size, [3, 2]);
+        assert_eq!(rotated.pixels[0], egui::Color32::from_rgb(255, 0, 255));
+        assert_eq!(rotated.pixels[2], egui::Color32::from_rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn navigation_route_load_discards_missing_content_and_resumes_valid_stop() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![test_planet(
+                "turrets-galore:route_proof",
+                STARTER_SYSTEM_ID,
+                vec2(400.0, 0.0),
+                true,
+            )],
+        );
+        let mut save = game.to_save();
+        save.navigation_route = vec![
+            SaveNavigationStop {
+                system: STARTER_SYSTEM_ID.to_string(),
+                planet: "turrets-galore:route_proof".to_string(),
+            },
+            SaveNavigationStop {
+                system: STARTER_SYSTEM_ID.to_string(),
+                planet: "missing-pack:missing-planet".to_string(),
+            },
+        ];
+        save.navigation_route_current = Some(0);
+        save.navigation_route_active = true;
+
+        game.apply_save(save);
+
+        assert_eq!(game.navigation_route.len(), 1);
+        assert_eq!(
+            game.navigation_route[0].planet,
+            "turrets-galore:route_proof"
+        );
+        assert!(game.navigation_route_active);
+        assert_eq!(game.approach_target, Some(ApproachTarget::Planet(0)));
+    }
+
+    #[test]
+    fn active_navigation_route_advances_through_each_planet() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![
+                test_planet("core:route_one", STARTER_SYSTEM_ID, vec2(360.0, 0.0), true),
+                test_planet(
+                    "core:route_two",
+                    STARTER_SYSTEM_ID,
+                    vec2(780.0, 120.0),
+                    true,
+                ),
+            ],
+        );
+        game.ship.position = Vec2::ZERO;
+        game.navigation_route = vec![
+            NavigationStop {
+                system: STARTER_SYSTEM_ID.to_string(),
+                planet: "core:route_one".to_string(),
+            },
+            NavigationStop {
+                system: STARTER_SYSTEM_ID.to_string(),
+                planet: "core:route_two".to_string(),
+            },
+        ];
+
+        assert!(activate_navigation_route(&mut game));
+        assert_eq!(game.approach_target, Some(ApproachTarget::Planet(0)));
+        for _ in 0..600 {
+            if !game.navigation_route_active {
+                break;
+            }
+            update_ship_approach(&mut game, 0.1);
+        }
+
+        assert!(!game.navigation_route_active);
+        assert_eq!(game.navigation_route_current, Some(2));
+        assert_eq!(game.approach_target, None);
+        assert!(planet_in_interaction_range(&game.ship, &game.planets[1]));
+        assert!(operation_feedback_contains(
+            &game,
+            "Route",
+            "Itinerary complete"
+        ));
+    }
+
+    #[test]
+    fn manual_route_pause_preserves_the_remaining_itinerary() {
+        let mut game = test_game_with_systems(
+            content::ContentRegistry::default(),
+            vec![test_planet(
+                "core:route_pause",
+                STARTER_SYSTEM_ID,
+                vec2(360.0, 0.0),
+                true,
+            )],
+        );
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:route_pause".to_string(),
+        }];
+        game.navigation_route_current = Some(0);
+        game.navigation_route_active = true;
+        game.approach_target = Some(ApproachTarget::Planet(0));
+
+        pause_navigation_route(&mut game, Some("Manual flight input paused itinerary"));
+
+        assert!(!game.navigation_route_active);
+        assert_eq!(game.navigation_route_current, Some(0));
+        assert_eq!(game.navigation_route.len(), 1);
+        assert_eq!(game.approach_target, None);
     }
 
     #[test]
@@ -30479,11 +25558,123 @@ mod tests {
         assert_eq!(production_keep_click_step_for_keys(true, true), 20);
     }
 
+    #[test]
+    fn planet_ui_actions_update_mining_through_gameplay_state() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:test_mining_planet",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        game.selected_planet = Some(0);
+
+        apply_planet_ui_actions(
+            &mut game,
+            vec![
+                egui_planet::PlanetUiAction::AdjustMiningKeep {
+                    row: 0,
+                    direction: 1,
+                },
+                egui_planet::PlanetUiAction::QueueMining { row: 0 },
+            ],
+            10,
+        );
+
+        assert_eq!(game.planets[0].mining[0].keep, 10);
+        assert_eq!(game.planets[0].mining[0].queued, 1);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn npc_contact_ui_dispatches_identify_hail_trade_and_quantity_actions() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut trader = test_npc_ship(NpcBehaviorMode::TradeRoute, vec2(120.0, 0.0));
+        trader.role = "trader".to_string();
+        trader.cargo_capacity = 10_000.0;
+        trader.cargo_defaults = vec![ItemStack {
+            item: iron.clone(),
+            count: 5,
+        }];
+        game.npc_ships = vec![trader];
+        game.selected_npc_ship = Some(0);
+        game.ship.position = Vec2::ZERO;
+        game.credits = 10_000;
+
+        apply_npc_ui_actions(&mut game, vec![egui_npc::NpcUiAction::Interaction(0)], 10);
+        assert!(game.npc_ships[0].identified);
+
+        apply_npc_ui_actions(&mut game, vec![egui_npc::NpcUiAction::Interaction(1)], 10);
+        assert!(operation_feedback_contains(&game, "Rumor", "Iron ore"));
+
+        apply_npc_ui_actions(&mut game, vec![egui_npc::NpcUiAction::Interaction(3)], 10);
+        assert!(game.npc_ships[0].trade_open);
+        assert_eq!(game.npc_trade_quantity, 1);
+
+        apply_npc_ui_actions(
+            &mut game,
+            vec![
+                egui_npc::NpcUiAction::AdjustTradeQuantity(1),
+                egui_npc::NpcUiAction::Buy(0),
+            ],
+            10,
+        );
+        assert_eq!(game.npc_trade_quantity, 11);
+        assert_eq!(game.inventory.count(&iron), 5);
+        assert_eq!(game.npc_ships[0].cargo_defaults[0].count, 0);
+        assert!(operation_feedback_contains(
+            &game,
+            "Trade",
+            "Bought Iron ore x5"
+        ));
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn npc_contact_view_projects_hostile_status_and_blocks_friendly_actions() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile.identified = true;
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        game.npc_ships = vec![hostile];
+        game.selected_npc_ship = Some(0);
+        game.ship.position = Vec2::ZERO;
+
+        let view = npc_pane_view(&game, 20);
+
+        assert!(view.hostile);
+        assert!(view.identified);
+        assert_eq!(view.quantity_step, 20);
+        assert_eq!(view.interactions[1].status, "Hostile");
+        assert!(!view.interactions[1].enabled);
+        assert_eq!(view.interactions[3].status, "Hostile");
+        assert!(!view.interactions[3].enabled);
+    }
+
     fn assert_vec2_near(actual: Vec2, expected: Vec2) {
         assert!(
             actual.distance(expected) < 0.01,
             "expected {expected:?}, got {actual:?}"
         );
+    }
+
+    fn advance_test_ship_to_orbit(game: &mut GameState, planet_index: usize) {
+        for _ in 0..120 {
+            if game.orbiting_planet == Some(planet_index) {
+                return;
+            }
+            update_ship_approach(game, 0.1);
+        }
+        panic!("ship did not reach the requested orbit");
     }
 
     fn test_game_with_systems(
@@ -30547,13 +25738,19 @@ mod tests {
             destination_planet: None,
             orbiting_planet: None,
             system_destinations: HashMap::new(),
+            starmap_selected_planet: None,
+            navigation_route: Vec::new(),
+            navigation_route_current: None,
+            navigation_route_active: false,
             pending_warp: None,
             camera_zoom: 1.0,
             starmap_zoom: 1.0,
             starmap_pan: Vec2::ZERO,
             starmap_drag_previous_mouse: None,
-            action_rail_width_override: None,
-            action_rail_resize_previous_mouse: None,
+            starmap_panel_position: None,
+            starmap_panel_size: None,
+            starmap_move_previous_mouse: None,
+            starmap_resize_previous_mouse: None,
             open_turret_bank: None,
             inventory,
             smelt_recipes: Vec::new(),

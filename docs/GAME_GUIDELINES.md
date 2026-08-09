@@ -51,8 +51,10 @@ for defining how the game itself works.
 
 ## UI Guidelines
 
-- Keep contextual planet actions in the right-side action rail attached to the
-  inventory/mining overlay.
+- Use stock-egui windows, tables, disabled states, and context menus for
+  operational UI. Keep Macroquad rendering for the world and specialized visual
+  surfaces such as the starmap.
+- Keep movable window geometry and pins recoverable through `Reset Menus`.
 - Keep planet details focused on identity, survey data, mineables, hazards, and
   proximity.
 - Use disabled states when the player lacks range, items, or prerequisites.
@@ -60,6 +62,14 @@ for defining how the game itself works.
 - Prefer compact operational screens over large explanatory panels.
 - Prefer shared layout helpers for table columns, row hitboxes, fitted text, and
   scrollbars before adding new hard-coded menu offsets.
+
+## Setting And Naming
+
+Consult [the lore bible](LORE_BIBLE.md) when adding player-visible names,
+summaries, factions, places, materials, ships, NPCs, research, or services. New
+content should reinforce the practical frontier economy, state current behavior
+before flavor, and leave unimplemented story systems open rather than presenting
+them as established fact.
 
 ## Fuel Direction
 
