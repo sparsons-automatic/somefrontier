@@ -4206,7 +4206,10 @@ mod tests {
             .is_some_and(|ship| {
                 ship.name == "Frontier Cargo Ship"
                     && ship.mass == 85000.0
-                    && ship.forward_acceleration == 420.0
+                    && ship.forward_acceleration == 350.0
+                    && ship.reverse_acceleration == 320.0
+                    && ship.turn_acceleration == 5.2
+                    && ship.linear_drag == 0.982
                     && ship.power_modules == ["core:compact_fission_cell"]
                     && ship.shield_slots == ["core:balanced_shield_matrix"]
                     && ship.weapon_slots == ["core:point_defense_turret"]

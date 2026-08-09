@@ -81,9 +81,10 @@ const BASE_SMELTING_SECONDS: f32 = 2.0;
 const BASE_CRAFTING_SECONDS: f32 = 1.5;
 const BASE_PROCESSING_SECONDS: f32 = 2.0;
 const STARTER_SHIP_DRY_MASS: f32 = 85_000.0;
-const STARTER_FORWARD_ACCELERATION: f32 = 420.0;
-const STARTER_REVERSE_ACCELERATION: f32 = 280.0;
-const STARTER_TURN_ACCELERATION: f32 = 4.8;
+const STARTER_FORWARD_ACCELERATION: f32 = 350.0;
+const STARTER_REVERSE_ACCELERATION: f32 = 320.0;
+const STARTER_TURN_ACCELERATION: f32 = 5.2;
+const STARTER_LINEAR_DRAG: f32 = 0.982;
 const STARTER_SHIP_ID: &str = "core:frontier_cargo_ship_01";
 const STARMAP_SCALE: f32 = 0.055;
 const STARMAP_ZOOM_MIN: f32 = 0.45;
@@ -773,6 +774,14 @@ struct Ship {
     angular_velocity: f32,
     attributes: ShipAttributes,
     systems: ShipSystems,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShipControl {
+    forward: bool,
+    reverse: bool,
+    turn_left: bool,
+    turn_right: bool,
 }
 
 #[derive(Clone)]
@@ -3879,7 +3888,7 @@ impl ShipAttributes {
             turn_thruster_strength: STARTER_SHIP_DRY_MASS * STARTER_TURN_ACCELERATION,
             energy_capacity: 100.0,
             energy_recharge: 22.0,
-            linear_drag: 0.985,
+            linear_drag: STARTER_LINEAR_DRAG,
         }
     }
 
@@ -9709,7 +9718,7 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
     let direction = offset / distance.max(0.001);
     let current_braking_distance = autopilot_braking_distance(
         game.ship.velocity.length(),
-        game.ship.forward_acceleration(),
+        game.ship.reverse_acceleration(),
     );
     let approach_speed = if current_braking_distance > remaining_distance {
         0.0
@@ -9721,10 +9730,16 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         )
     };
     let desired_velocity = direction * approach_speed;
+    let velocity_change_acceleration = autopilot_velocity_change_acceleration(
+        game.ship.velocity,
+        desired_velocity,
+        game.ship.forward_acceleration(),
+        game.ship.reverse_acceleration(),
+    );
     game.ship.velocity = move_toward_vec2(
         game.ship.velocity,
         desired_velocity,
-        game.ship.forward_acceleration() * dt,
+        velocity_change_acceleration * dt,
     );
     if game.ship.velocity.length_squared() > 0.01 {
         game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x) + std::f32::consts::PI;
@@ -9813,10 +9828,16 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
         Vec2::ZERO
     };
     let desired_velocity = npc_ship.velocity + correction;
+    let velocity_change_acceleration = autopilot_velocity_change_acceleration(
+        game.ship.velocity,
+        desired_velocity,
+        game.ship.forward_acceleration(),
+        game.ship.reverse_acceleration(),
+    );
     game.ship.velocity = move_toward_vec2(
         game.ship.velocity,
         desired_velocity,
-        game.ship.forward_acceleration() * dt,
+        velocity_change_acceleration * dt,
     );
     if game.ship.velocity.length_squared() > 0.01 {
         game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x);
@@ -9859,6 +9880,22 @@ fn autopilot_speed_for_distance(distance: f32, acceleration: f32, max_speed: f32
     (2.0 * safe_acceleration * safe_distance)
         .sqrt()
         .min(safe_max_speed)
+}
+
+fn autopilot_velocity_change_acceleration(
+    current: Vec2,
+    target: Vec2,
+    forward_acceleration: f32,
+    reverse_acceleration: f32,
+) -> f32 {
+    let slowing_or_reversing = target.length_squared() + 0.01 < current.length_squared()
+        || (current.length_squared() > 0.01 && current.dot(target) < 0.0);
+    if slowing_or_reversing {
+        reverse_acceleration
+    } else {
+        forward_acceleration
+    }
+    .max(0.0)
 }
 
 fn move_toward_vec2(current: Vec2, target: Vec2, max_delta: f32) -> Vec2 {
@@ -13534,50 +13571,80 @@ fn default_new_game_ship_id() -> String {
 }
 
 fn update_ship(ship: &mut Ship, dt: f32, energy_recharge: f32) {
-    let forward = vec2(ship.angle.cos(), ship.angle.sin());
-    let mut energy_spend = 0.0;
+    integrate_ship_control(
+        ship,
+        dt,
+        energy_recharge,
+        ShipControl {
+            forward: is_key_down(KeyCode::W),
+            reverse: is_key_down(KeyCode::S),
+            turn_left: is_key_down(KeyCode::A) || is_key_down(KeyCode::Left),
+            turn_right: is_key_down(KeyCode::D) || is_key_down(KeyCode::Right),
+        },
+    );
+}
 
-    let mut thrust = Vec2::ZERO;
-    if is_key_down(KeyCode::W) {
-        thrust -= forward * ship.forward_acceleration();
-        energy_spend += 17.0;
-    }
-    if is_key_down(KeyCode::S) {
-        thrust += forward * ship.reverse_acceleration();
-        energy_spend += 11.0;
-    }
-
-    if thrust.length_squared() > 0.0 {
-        ship.velocity += thrust * dt;
-    }
-
-    let mut turn = 0.0;
-    if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
-        turn -= 1.0;
-        energy_spend += 7.0;
-    }
-    if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
-        turn += 1.0;
-        energy_spend += 7.0;
+fn integrate_ship_control(ship: &mut Ship, dt: f32, energy_recharge: f32, control: ShipControl) {
+    if !dt.is_finite() || dt <= 0.0 {
+        return;
     }
 
+    let turn = f32::from(control.turn_right) - f32::from(control.turn_left);
     let target_turn_rate = turn * ship.max_turn_rate();
     let turn_response = if turn != 0.0 { 10.0 } else { 7.5 };
-    let turn_blend = 1.0 - (-turn_response * dt).exp();
-    ship.angular_velocity += (target_turn_rate - ship.angular_velocity) * turn_blend;
+    let old_angular_velocity = ship.angular_velocity;
+    let turn_retention = (-turn_response * dt).exp();
+    ship.angular_velocity =
+        target_turn_rate + (old_angular_velocity - target_turn_rate) * turn_retention;
+    let angle_delta = target_turn_rate * dt
+        + (old_angular_velocity - target_turn_rate) * (1.0 - turn_retention) / turn_response;
+    let thrust_angle = ship.angle + angle_delta * 0.5;
+    ship.angle += angle_delta;
 
     if turn == 0.0 && ship.angular_velocity.abs() < 0.01 {
         ship.angular_velocity = 0.0;
     }
-    ship.angle += ship.angular_velocity * dt;
 
-    ship.velocity *= ship.attributes.linear_drag.powf(dt * 60.0);
-    ship.position += ship.velocity * dt;
+    let forward = vec2(thrust_angle.cos(), thrust_angle.sin());
+    let mut acceleration = Vec2::ZERO;
+    let mut energy_spend = 0.0;
+    if control.forward {
+        acceleration -= forward * ship.forward_acceleration();
+        energy_spend += 17.0;
+    }
+    if control.reverse {
+        acceleration += forward * ship.reverse_acceleration();
+        energy_spend += 11.0;
+    }
+    if control.turn_left {
+        energy_spend += 7.0;
+    }
+    if control.turn_right {
+        energy_spend += 7.0;
+    }
+
+    integrate_linear_motion(ship, acceleration, dt);
 
     if energy_spend > 0.0 {
         ship.systems.energy.spend(energy_spend * dt);
     } else {
         ship.systems.energy.restore(energy_recharge * dt);
+    }
+}
+
+fn integrate_linear_motion(ship: &mut Ship, acceleration: Vec2, dt: f32) {
+    let drag = ship.attributes.linear_drag;
+    let old_velocity = ship.velocity;
+    if drag > 0.0 && (drag - 1.0).abs() > f32::EPSILON {
+        let decay_rate = -drag.ln() * 60.0;
+        let retention = (-decay_rate * dt).exp();
+        let velocity_factor = (1.0 - retention) / decay_rate;
+        ship.velocity = old_velocity * retention + acceleration * velocity_factor;
+        ship.position += old_velocity * velocity_factor
+            + acceleration * (dt / decay_rate - velocity_factor / decay_rate);
+    } else {
+        ship.velocity = old_velocity + acceleration * dt;
+        ship.position += old_velocity * dt + acceleration * (0.5 * dt * dt);
     }
 }
 
@@ -20469,7 +20536,8 @@ mod tests {
 
         assert_eq!(ship.forward_acceleration(), STARTER_FORWARD_ACCELERATION);
         assert_eq!(ship.reverse_acceleration(), STARTER_REVERSE_ACCELERATION);
-        assert_eq!(ship.attributes.turn_thruster_strength, 85_000.0 * 4.8);
+        assert_eq!(ship.turn_acceleration(), STARTER_TURN_ACCELERATION);
+        assert_eq!(ship.attributes.linear_drag, STARTER_LINEAR_DRAG);
         assert_eq!(ship.systems.hull.max, 100.0);
         assert_eq!(ship.systems.shields.max, 100.0);
         assert_eq!(ship.systems.energy.max, 100.0);
@@ -20507,6 +20575,241 @@ mod tests {
         assert_eq!(starter_inventory.count(&sentinel_flak), 1);
         assert_eq!(starter_inventory.count(&storm_chain), 1);
         assert_eq!(starter_inventory.count(&super_nuke), 1);
+    }
+
+    fn simulate_ship_control(
+        ship: &mut Ship,
+        seconds: f32,
+        steps_per_second: u32,
+        control: ShipControl,
+    ) {
+        let dt = 1.0 / steps_per_second as f32;
+        for _ in 0..(seconds * steps_per_second as f32).round() as usize {
+            integrate_ship_control(ship, dt, 0.0, control);
+        }
+    }
+
+    fn ship_from_registry(registry: &content::ContentRegistry, id: &str) -> Ship {
+        Ship::from_content(
+            registry
+                .ships
+                .get(id)
+                .unwrap_or_else(|| panic!("ship `{id}` should be loaded")),
+        )
+    }
+
+    #[test]
+    fn shipped_hulls_have_distinct_calibrated_handling_roles() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let cargo = ship_from_registry(&registry, STARTER_SHIP_ID);
+        let gunship = ship_from_registry(&registry, "turrets-galore:twinspire_gunship");
+
+        assert_eq!(cargo.forward_acceleration(), 350.0);
+        assert_eq!(cargo.reverse_acceleration(), 320.0);
+        assert_eq!(cargo.turn_acceleration(), 5.2);
+        assert_eq!(cargo.attributes.linear_drag, 0.982);
+        assert_eq!(gunship.forward_acceleration(), 410.0);
+        assert_eq!(gunship.reverse_acceleration(), 330.0);
+        assert_eq!(gunship.turn_acceleration(), 6.0);
+        assert_eq!(gunship.attributes.linear_drag, 0.981);
+        assert!(gunship.forward_acceleration() > cargo.forward_acceleration());
+        assert!(gunship.reverse_acceleration() > cargo.reverse_acceleration());
+        assert!(gunship.max_turn_rate() > cargo.max_turn_rate());
+    }
+
+    #[test]
+    fn straight_line_handling_is_stable_across_common_frame_rates() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        for ship_id in [STARTER_SHIP_ID, "turrets-galore:twinspire_gunship"] {
+            let mut outcomes = Vec::new();
+            for steps_per_second in [30, 60, 144] {
+                let mut ship = ship_from_registry(&registry, ship_id);
+                simulate_ship_control(
+                    &mut ship,
+                    3.0,
+                    steps_per_second,
+                    ShipControl {
+                        forward: true,
+                        ..ShipControl::default()
+                    },
+                );
+                outcomes.push((ship.position, ship.velocity));
+            }
+
+            for outcome in &outcomes[1..] {
+                assert_vec2_near(outcomes[0].0, outcome.0);
+                assert_vec2_near(outcomes[0].1, outcome.1);
+            }
+
+            let drag_rate = -ship_from_registry(&registry, ship_id)
+                .attributes
+                .linear_drag
+                .ln()
+                * 60.0;
+            let expected_speed = ship_from_registry(&registry, ship_id).forward_acceleration()
+                / drag_rate
+                * (1.0 - (-drag_rate * 3.0).exp());
+            assert!((outcomes[0].1.length() - expected_speed).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn calibrated_drag_produces_bounded_soft_cruise_and_readable_coasting() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        for ship_id in [STARTER_SHIP_ID, "turrets-galore:twinspire_gunship"] {
+            let mut ship = ship_from_registry(&registry, ship_id);
+            let drag_rate = -ship.attributes.linear_drag.ln() * 60.0;
+            let soft_cruise_speed = ship.forward_acceleration() / drag_rate;
+            assert!((310.0..=365.0).contains(&soft_cruise_speed));
+
+            ship.velocity = vec2(-300.0, 0.0);
+            simulate_ship_control(&mut ship, 2.0, 60, ShipControl::default());
+            assert!(ship.velocity.length() < 40.0);
+        }
+    }
+
+    #[test]
+    fn turn_response_is_stable_across_frame_rates_and_favors_the_gunship() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut cargo_angles = Vec::new();
+        let mut gunship_angles = Vec::new();
+        for steps_per_second in [30, 60, 144] {
+            let control = ShipControl {
+                turn_right: true,
+                ..ShipControl::default()
+            };
+            let mut cargo = ship_from_registry(&registry, STARTER_SHIP_ID);
+            let mut gunship = ship_from_registry(&registry, "turrets-galore:twinspire_gunship");
+            simulate_ship_control(&mut cargo, 2.0, steps_per_second, control);
+            simulate_ship_control(&mut gunship, 2.0, steps_per_second, control);
+            cargo_angles.push(cargo.angle);
+            gunship_angles.push(gunship.angle);
+        }
+
+        for angle in &cargo_angles[1..] {
+            assert!((cargo_angles[0] - angle).abs() < 0.001);
+        }
+        for angle in &gunship_angles[1..] {
+            assert!((gunship_angles[0] - angle).abs() < 0.001);
+        }
+        assert!(gunship_angles[0] > cargo_angles[0]);
+    }
+
+    #[test]
+    fn combined_thrust_and_turn_remain_consistent_across_frame_rates() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let control = ShipControl {
+            forward: true,
+            turn_right: true,
+            ..ShipControl::default()
+        };
+        let mut outcomes = Vec::new();
+        for steps_per_second in [30, 60, 144] {
+            let mut ship = ship_from_registry(&registry, STARTER_SHIP_ID);
+            simulate_ship_control(&mut ship, 2.0, steps_per_second, control);
+            outcomes.push((ship.position, ship.velocity, ship.angle));
+        }
+
+        for outcome in &outcomes[1..] {
+            assert!(outcomes[0].0.distance(outcome.0) < 0.1);
+            assert!(outcomes[0].1.distance(outcome.1) < 0.1);
+            assert!((outcomes[0].2 - outcome.2).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn reverse_thrust_provides_short_readable_braking_from_approach_speed() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut stopping_distances = Vec::new();
+        for ship_id in [STARTER_SHIP_ID, "turrets-galore:twinspire_gunship"] {
+            let mut ship = ship_from_registry(&registry, ship_id);
+            ship.velocity = vec2(-PLAYER_APPROACH_SPEED, 0.0);
+            for _ in 0..240 {
+                integrate_ship_control(
+                    &mut ship,
+                    1.0 / 120.0,
+                    0.0,
+                    ShipControl {
+                        reverse: true,
+                        ..ShipControl::default()
+                    },
+                );
+                if ship.velocity.x >= 0.0 {
+                    break;
+                }
+            }
+            stopping_distances.push(ship.position.x.abs());
+        }
+
+        assert!(stopping_distances[0] < 80.0);
+        assert!(stopping_distances[1] < stopping_distances[0]);
+    }
+
+    #[test]
+    fn handling_upgrades_scale_calibrated_base_values() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut ship = ship_from_registry(&registry, STARTER_SHIP_ID);
+
+        apply_ship_upgrade(&mut ship, ShipUpgradeKind::Engine);
+        apply_ship_upgrade(&mut ship, ShipUpgradeKind::Thrusters);
+
+        assert!((ship.forward_acceleration() - 378.0).abs() < 0.01);
+        assert!((ship.reverse_acceleration() - 339.2).abs() < 0.01);
+        assert!((ship.turn_acceleration() - 5.616).abs() < 0.001);
+    }
+
+    #[test]
+    fn simultaneous_thrust_and_turn_spend_both_energy_rates() {
+        let mut ship = Ship::starter();
+        integrate_ship_control(
+            &mut ship,
+            1.0,
+            100.0,
+            ShipControl {
+                forward: true,
+                turn_right: true,
+                ..ShipControl::default()
+            },
+        );
+
+        assert_eq!(ship.systems.energy.current, 76.0);
+    }
+
+    #[test]
+    fn save_load_rebuilds_calibrated_handling_with_upgrade_levels() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::Engine)
+            .expect("engine upgrade should exist")
+            .level = 2;
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::Thrusters)
+            .expect("thruster upgrade should exist")
+            .level = 1;
+        game.rebuild_ship_from_upgrades();
+        game.ship.velocity = vec2(-123.0, 45.0);
+        let save = game.to_save();
+
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert!((restored.ship.forward_acceleration() - 350.0 * 1.08_f32.powi(2)).abs() < 0.01);
+        assert!((restored.ship.reverse_acceleration() - 320.0 * 1.06_f32.powi(2)).abs() < 0.01);
+        assert!((restored.ship.turn_acceleration() - 5.2 * 1.08).abs() < 0.001);
+        assert_vec2_near(restored.ship.velocity, vec2(-123.0, 45.0));
     }
 
     #[test]
@@ -22670,6 +22973,33 @@ mod tests {
         assert_eq!(autopilot_braking_distance(100.0, 0.0), 0.0);
         assert!((autopilot_speed_for_distance(100.0, 50.0, 240.0) - 100.0).abs() < 0.01);
         assert_eq!(autopilot_speed_for_distance(100.0, 50.0, 80.0), 80.0);
+        assert_eq!(
+            autopilot_velocity_change_acceleration(
+                vec2(100.0, 0.0),
+                vec2(200.0, 0.0),
+                420.0,
+                320.0,
+            ),
+            420.0
+        );
+        assert_eq!(
+            autopilot_velocity_change_acceleration(
+                vec2(200.0, 0.0),
+                vec2(100.0, 0.0),
+                420.0,
+                320.0,
+            ),
+            320.0
+        );
+        assert_eq!(
+            autopilot_velocity_change_acceleration(
+                vec2(100.0, 0.0),
+                vec2(-20.0, 0.0),
+                420.0,
+                320.0,
+            ),
+            320.0
+        );
     }
 
     #[test]
