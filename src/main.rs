@@ -69,9 +69,12 @@ const NPC_ROUTE_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0
 const NPC_INTERACTION_PADDING: f32 = 126.0;
 const CONTEXT_TARGET_AMBIGUITY_PIXELS: f32 = 24.0;
 const COLLISION_MIN_CLOSING_SPEED: f32 = 24.0;
-const COLLISION_DAMAGE_COEFFICIENT: f32 = 0.006;
+const COLLISION_DAMAGE_COEFFICIENT: f32 = 0.01;
 const COLLISION_REFERENCE_MASS: f32 = 100_000.0;
 const COLLISION_COOLDOWN_SECONDS: f32 = 0.6;
+const COLLISION_RESTITUTION: f32 = 0.08;
+const COLLISION_SEPARATION_SLOP: f32 = 0.5;
+const COLLISION_GRACE_SECONDS: f32 = 1.0;
 const COLLISION_EVENT_SECONDS: f32 = 0.8;
 const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
@@ -339,6 +342,8 @@ struct GameState {
     equipped_weapons: Vec<WeaponSystem>,
     npc_ships: Vec<NpcShip>,
     collision_cooldowns: HashMap<String, f32>,
+    collision_contacts: HashSet<String>,
+    collision_grace_remaining: f32,
     collision_impact_events: Vec<CollisionImpactEvent>,
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
@@ -442,6 +447,7 @@ struct CollisionImpactEvent {
     shield_damage: f32,
     hull_damage: f32,
     severity: CollisionImpactSeverity,
+    warn_player: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1732,6 +1738,8 @@ impl GameState {
             equipped_weapons,
             npc_ships,
             collision_cooldowns: HashMap::new(),
+            collision_contacts: HashSet::new(),
+            collision_grace_remaining: COLLISION_GRACE_SECONDS,
             collision_impact_events: Vec::new(),
             defense_threats,
             weapon_fire_events: Vec::new(),
@@ -2096,6 +2104,9 @@ impl GameState {
         if self.navigation_route_active && !start_current_navigation_stop(self) {
             self.navigation_route_active = false;
         }
+        self.collision_cooldowns.clear();
+        self.collision_contacts.clear();
+        self.collision_grace_remaining = COLLISION_GRACE_SECONDS;
     }
 
     fn to_save(&self) -> SaveData {
@@ -4530,6 +4541,37 @@ struct DamageApplication {
     hull_damage: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionContact {
+    normal: Vec2,
+    closing_speed: f32,
+    time: f32,
+    penetration: f32,
+    started_overlapping: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionDamage {
+    left: f32,
+    right: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionResolution {
+    left_position: Vec2,
+    left_velocity: Vec2,
+    right_position: Vec2,
+    right_velocity: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionMotion {
+    end_position: Vec2,
+    velocity: Vec2,
+    mass: f32,
+    movable: bool,
+}
+
 impl DamageApplication {
     fn changed(self) -> bool {
         self.shield_absorbed > 0.0 || self.hull_damage > 0.0
@@ -4619,39 +4661,210 @@ fn collision_pair_key(left: &str, right: &str) -> String {
     }
 }
 
-fn collision_closing_speed(
-    left_position: Vec2,
+fn swept_circle_contact(
+    left_end_position: Vec2,
     left_velocity: Vec2,
     left_radius: f32,
-    right_position: Vec2,
+    right_end_position: Vec2,
     right_velocity: Vec2,
     right_radius: f32,
-) -> Option<f32> {
-    let separation = right_position - left_position;
-    let contact_distance = left_radius.max(0.0) + right_radius.max(0.0);
-    if !separation.is_finite()
+    dt: f32,
+) -> Option<CollisionContact> {
+    if !left_end_position.is_finite()
+        || !right_end_position.is_finite()
         || !left_velocity.is_finite()
         || !right_velocity.is_finite()
-        || separation.length() > contact_distance
+        || !left_radius.is_finite()
+        || !right_radius.is_finite()
+        || !dt.is_finite()
+        || dt < 0.0
     {
         return None;
     }
-    let normal = safe_direction(
-        separation,
-        safe_direction(left_velocity - right_velocity, vec2(1.0, 0.0)),
-    );
+
+    let contact_distance = left_radius.max(0.0) + right_radius.max(0.0);
+    if contact_distance <= 0.0 {
+        return None;
+    }
+
+    let left_start_position = left_end_position - left_velocity * dt;
+    let right_start_position = right_end_position - right_velocity * dt;
+    let relative_start = right_start_position - left_start_position;
+    let relative_velocity = right_velocity - left_velocity;
+    let start_distance = relative_start.length();
+    let end_separation = right_end_position - left_end_position;
+    let end_distance = end_separation.length();
+    let started_overlapping = start_distance < contact_distance - 0.001;
+
+    if started_overlapping {
+        let normal = safe_direction(
+            end_separation,
+            safe_direction(
+                relative_start,
+                safe_direction(-relative_velocity, vec2(1.0, 0.0)),
+            ),
+        );
+        return Some(CollisionContact {
+            normal,
+            closing_speed: (left_velocity - right_velocity).dot(normal).max(0.0),
+            time: 0.0,
+            penetration: (contact_distance - end_distance).max(0.0),
+            started_overlapping: true,
+        });
+    }
+
+    let a = relative_velocity.length_squared();
+    if a <= f32::EPSILON || dt <= 0.0 {
+        return (end_distance <= contact_distance).then(|| CollisionContact {
+            normal: safe_direction(end_separation, vec2(1.0, 0.0)),
+            closing_speed: 0.0,
+            time: dt,
+            penetration: (contact_distance - end_distance).max(0.0),
+            started_overlapping: false,
+        });
+    }
+    let b = 2.0 * relative_start.dot(relative_velocity);
+    let c = relative_start.length_squared() - contact_distance * contact_distance;
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let contact_time = (-b - discriminant.sqrt()) / (2.0 * a);
+    if !(0.0..=dt).contains(&contact_time) {
+        return None;
+    }
+    let contact_separation = relative_start + relative_velocity * contact_time;
+    let normal = safe_direction(contact_separation, vec2(1.0, 0.0));
     let closing_speed = (left_velocity - right_velocity).dot(normal);
-    (closing_speed.is_finite() && closing_speed >= COLLISION_MIN_CLOSING_SPEED)
-        .then_some(closing_speed)
+    (closing_speed >= 0.0).then_some(CollisionContact {
+        normal,
+        closing_speed,
+        time: contact_time,
+        penetration: 0.0,
+        started_overlapping: false,
+    })
 }
 
-fn collision_impact_damage(closing_speed: f32, left_mass: f32, right_mass: f32) -> f32 {
-    if !closing_speed.is_finite() || !left_mass.is_finite() || !right_mass.is_finite() {
-        return 0.0;
+fn collision_impact_damage(
+    closing_speed: f32,
+    left_mass: f32,
+    right_mass: f32,
+    left_damageable: bool,
+    right_damageable: bool,
+) -> CollisionDamage {
+    if !closing_speed.is_finite()
+        || !left_mass.is_finite()
+        || !right_mass.is_finite()
+        || left_mass <= 0.0
+        || right_mass <= 0.0
+    {
+        return CollisionDamage {
+            left: 0.0,
+            right: 0.0,
+        };
     }
-    let average_mass =
-        ((left_mass.max(0.0) + right_mass.max(0.0)) * 0.5) / COLLISION_REFERENCE_MASS;
-    (closing_speed.max(0.0).powi(2) * average_mass * COLLISION_DAMAGE_COEFFICIENT).max(0.0)
+    let damaging_speed = (closing_speed - COLLISION_MIN_CLOSING_SPEED).max(0.0);
+    if damaging_speed <= 0.0 || (!left_damageable && !right_damageable) {
+        return CollisionDamage {
+            left: 0.0,
+            right: 0.0,
+        };
+    }
+
+    let effective_mass = if left_damageable && right_damageable {
+        left_mass * right_mass / (left_mass + right_mass)
+    } else if left_damageable {
+        left_mass
+    } else {
+        right_mass
+    };
+    let base_damage = damaging_speed.powi(2)
+        * (effective_mass / COLLISION_REFERENCE_MASS)
+        * COLLISION_DAMAGE_COEFFICIENT;
+    let (left_scale, right_scale) = if left_damageable && right_damageable {
+        (
+            (right_mass / left_mass).sqrt().clamp(0.45, 2.25),
+            (left_mass / right_mass).sqrt().clamp(0.45, 2.25),
+        )
+    } else {
+        (1.0, 1.0)
+    };
+    CollisionDamage {
+        left: if left_damageable {
+            base_damage * left_scale
+        } else {
+            0.0
+        },
+        right: if right_damageable {
+            base_damage * right_scale
+        } else {
+            0.0
+        },
+    }
+}
+
+fn resolve_collision_motion(
+    left: CollisionMotion,
+    right: CollisionMotion,
+    contact: CollisionContact,
+    dt: f32,
+) -> CollisionResolution {
+    let left_inverse_mass = if left.movable {
+        1.0 / left.mass.max(1.0)
+    } else {
+        0.0
+    };
+    let right_inverse_mass = if right.movable {
+        1.0 / right.mass.max(1.0)
+    } else {
+        0.0
+    };
+    let inverse_mass_sum = left_inverse_mass + right_inverse_mass;
+    if inverse_mass_sum <= 0.0 {
+        return CollisionResolution {
+            left_position: left.end_position,
+            left_velocity: left.velocity,
+            right_position: right.end_position,
+            right_velocity: right.velocity,
+        };
+    }
+
+    let remaining_time = if contact.started_overlapping {
+        0.0
+    } else {
+        (dt - contact.time).max(0.0)
+    };
+    let mut left_position = if contact.started_overlapping {
+        left.end_position
+    } else {
+        left.end_position - left.velocity * remaining_time
+    };
+    let mut right_position = if contact.started_overlapping {
+        right.end_position
+    } else {
+        right.end_position - right.velocity * remaining_time
+    };
+    let mut resolved_left_velocity = left.velocity;
+    let mut resolved_right_velocity = right.velocity;
+
+    if contact.closing_speed > 0.0 {
+        let impulse = (1.0 + COLLISION_RESTITUTION) * contact.closing_speed / inverse_mass_sum;
+        resolved_left_velocity -= contact.normal * impulse * left_inverse_mass;
+        resolved_right_velocity += contact.normal * impulse * right_inverse_mass;
+    }
+
+    let correction = contact.penetration + COLLISION_SEPARATION_SLOP;
+    left_position -= contact.normal * correction * left_inverse_mass / inverse_mass_sum;
+    right_position += contact.normal * correction * right_inverse_mass / inverse_mass_sum;
+    left_position += resolved_left_velocity * remaining_time;
+    right_position += resolved_right_velocity * remaining_time;
+
+    CollisionResolution {
+        left_position,
+        left_velocity: resolved_left_velocity,
+        right_position,
+        right_velocity: resolved_right_velocity,
+    }
 }
 
 fn collision_impact_severity(
@@ -4690,11 +4903,16 @@ fn record_collision_impact(
     subject: &str,
     application: DamageApplication,
     destroyed: bool,
+    player_result: Option<(DamageApplication, bool)>,
 ) {
     if !application.changed() {
         return;
     }
-    let severity = collision_impact_severity(application, destroyed);
+    let severity = player_result
+        .map(|(player_application, player_destroyed)| {
+            collision_impact_severity(player_application, player_destroyed)
+        })
+        .unwrap_or_else(|| collision_impact_severity(application, destroyed));
     let suffix = if destroyed { " / destroyed" } else { "" };
     push_operation_feedback(
         game,
@@ -4717,6 +4935,7 @@ fn record_collision_impact(
         shield_damage: application.shield_absorbed,
         hull_damage: application.hull_damage,
         severity,
+        warn_player: player_result.is_some(),
     });
 }
 
@@ -4727,20 +4946,63 @@ fn update_collision_impact_events(game: &mut GameState, dt: f32) {
     });
 }
 
+fn apply_active_ship_collision_damage(game: &mut GameState, amount: f32) -> DamageApplication {
+    let resisted_damage = amount.max(0.0) * (1.0 - active_shield_damage_resistance(game));
+    let application = apply_damage_to_resources(
+        &mut game.ship.systems.shields,
+        &mut game.ship.systems.hull,
+        resisted_damage,
+        1.0,
+    );
+    if application.changed() {
+        game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+    }
+    application
+}
+
+fn apply_owned_ship_collision_damage(owned: &mut OwnedShip, amount: f32) -> DamageApplication {
+    let resisted_damage = amount.max(0.0) * (1.0 - owned_ship_shield_damage_resistance(owned));
+    let application = apply_damage_to_resources(
+        &mut owned.ship.systems.shields,
+        &mut owned.ship.systems.hull,
+        resisted_damage,
+        1.0,
+    );
+    if application.changed() {
+        owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
+    }
+    application
+}
+
+fn collision_damage_is_armed(game: &GameState, key: &str) -> bool {
+    game.collision_grace_remaining <= 0.0
+        && !game.collision_contacts.contains(key)
+        && !game.collision_cooldowns.contains_key(key)
+}
+
+fn combined_damage_application(
+    left: DamageApplication,
+    right: DamageApplication,
+) -> DamageApplication {
+    DamageApplication {
+        shield_absorbed: left.shield_absorbed + right.shield_absorbed,
+        hull_damage: left.hull_damage + right.hull_damage,
+    }
+}
+
 fn update_ship_collisions(game: &mut GameState, dt: f32) {
     if dt <= 0.0 || !dt.is_finite() {
         return;
     }
     update_collision_impact_events(game, dt);
+    game.collision_grace_remaining = (game.collision_grace_remaining - dt).max(0.0);
     game.collision_cooldowns.retain(|_, remaining| {
         *remaining = (*remaining - dt).max(0.0);
         *remaining > 0.0
     });
+    let mut active_contacts = HashSet::new();
 
     let player_id = "__player__";
-    let player_position = game.ship.position;
-    let player_velocity = game.ship.velocity;
-    let player_mass = game.ship.attributes.mass;
     let current_system_id = game.current_system_id.clone();
 
     for npc_index in 0..game.npc_ships.len() {
@@ -4751,50 +5013,66 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
             continue;
         }
         let key = collision_pair_key(player_id, &npc.id);
-        let Some(closing_speed) = collision_closing_speed(
-            player_position,
-            player_velocity,
+        let Some(contact) = swept_circle_contact(
+            game.ship.position,
+            game.ship.velocity,
             SHIP_RADIUS,
             npc.position,
             npc.velocity,
             npc.radius,
+            dt,
         ) else {
             continue;
         };
-        if game.collision_cooldowns.contains_key(&key) {
-            continue;
-        }
-        let damage = collision_impact_damage(closing_speed, player_mass, npc.mass);
-        if damage <= 0.0 {
-            continue;
-        }
+        active_contacts.insert(key.clone());
+        let damage_armed = collision_damage_is_armed(game, &key);
+        let npc_mass = npc.mass;
         let npc_name = npc.name.clone();
-        let impact_position = (player_position + npc.position) * 0.5;
-        let player_resistance = active_shield_damage_resistance(game);
-        let player_application = apply_damage_to_resources(
-            &mut game.ship.systems.shields,
-            &mut game.ship.systems.hull,
-            damage * (1.0 - player_resistance),
-            1.0,
+        let player_mass = game.ship.attributes.mass;
+        let resolution = resolve_collision_motion(
+            CollisionMotion {
+                end_position: game.ship.position,
+                velocity: game.ship.velocity,
+                mass: player_mass,
+                movable: true,
+            },
+            CollisionMotion {
+                end_position: npc.position,
+                velocity: npc.velocity,
+                mass: npc_mass,
+                movable: true,
+            },
+            contact,
+            dt,
         );
-        if player_application.changed() {
-            game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        game.ship.position = resolution.left_position;
+        game.ship.velocity = resolution.left_velocity;
+        game.npc_ships[npc_index].position = resolution.right_position;
+        game.npc_ships[npc_index].velocity = resolution.right_velocity;
+        if !damage_armed {
+            continue;
         }
-        let npc_application = apply_npc_collision_damage(&mut game.npc_ships[npc_index], damage);
+        let damage =
+            collision_impact_damage(contact.closing_speed, player_mass, npc_mass, true, true);
+        let player_application = apply_active_ship_collision_damage(game, damage.left);
+        let npc_application =
+            apply_npc_collision_damage(&mut game.npc_ships[npc_index], damage.right);
         if player_application.changed() || npc_application.changed() {
             game.save_dirty = true;
         }
+        if !player_application.changed() && !npc_application.changed() {
+            continue;
+        }
         let npc_destroyed = game.npc_ships[npc_index].hull.current <= 0.0;
+        let player_destroyed = game.ship.systems.hull.current <= 0.0;
+        let impact_position = (game.ship.position + game.npc_ships[npc_index].position) * 0.5;
         record_collision_impact(
             game,
             impact_position,
             &format!("Impact with {npc_name}"),
-            DamageApplication {
-                shield_absorbed: player_application.shield_absorbed
-                    + npc_application.shield_absorbed,
-                hull_damage: player_application.hull_damage + npc_application.hull_damage,
-            },
+            combined_damage_application(player_application, npc_application),
             npc_destroyed,
+            Some((player_application, player_destroyed)),
         );
         game.collision_cooldowns
             .insert(key, COLLISION_COOLDOWN_SECONDS);
@@ -4811,30 +5089,54 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
                 continue;
             }
             let key = collision_pair_key(&left.id, &right.id);
-            let Some(closing_speed) = collision_closing_speed(
+            let Some(contact) = swept_circle_contact(
                 left.position,
                 left.velocity,
                 left.radius,
                 right.position,
                 right.velocity,
                 right.radius,
+                dt,
             ) else {
                 continue;
             };
-            if game.collision_cooldowns.contains_key(&key) {
-                continue;
-            }
-            let damage = collision_impact_damage(closing_speed, left.mass, right.mass);
-            if damage <= 0.0 {
-                continue;
-            }
+            active_contacts.insert(key.clone());
+            let damage_armed = collision_damage_is_armed(game, &key);
+            let left_mass = left.mass;
+            let right_mass = right.mass;
             let left_name = left.name.clone();
             let right_name = right.name.clone();
-            let impact_position = (left.position + right.position) * 0.5;
+            let resolution = resolve_collision_motion(
+                CollisionMotion {
+                    end_position: left.position,
+                    velocity: left.velocity,
+                    mass: left_mass,
+                    movable: true,
+                },
+                CollisionMotion {
+                    end_position: right.position,
+                    velocity: right.velocity,
+                    mass: right_mass,
+                    movable: true,
+                },
+                contact,
+                dt,
+            );
+            let (left, right) = game.npc_ships.split_at_mut(right_index);
+            left[left_index].position = resolution.left_position;
+            left[left_index].velocity = resolution.left_velocity;
+            right[0].position = resolution.right_position;
+            right[0].velocity = resolution.right_velocity;
+            if !damage_armed {
+                continue;
+            }
+            let damage =
+                collision_impact_damage(contact.closing_speed, left_mass, right_mass, true, true);
             let (left_application, right_application, destroyed) = {
                 let (left, right) = game.npc_ships.split_at_mut(right_index);
-                let left_application = apply_npc_collision_damage(&mut left[left_index], damage);
-                let right_application = apply_npc_collision_damage(&mut right[0], damage);
+                let left_application =
+                    apply_npc_collision_damage(&mut left[left_index], damage.left);
+                let right_application = apply_npc_collision_damage(&mut right[0], damage.right);
                 let destroyed =
                     left[left_index].hull.current <= 0.0 || right[0].hull.current <= 0.0;
                 (left_application, right_application, destroyed)
@@ -4842,21 +5144,327 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
             if left_application.changed() || right_application.changed() {
                 game.save_dirty = true;
             }
+            if !left_application.changed() && !right_application.changed() {
+                continue;
+            }
+            let impact_position =
+                (game.npc_ships[left_index].position + game.npc_ships[right_index].position) * 0.5;
             record_collision_impact(
                 game,
                 impact_position,
                 &format!("NPC collision: {left_name} / {right_name}"),
-                DamageApplication {
-                    shield_absorbed: left_application.shield_absorbed
-                        + right_application.shield_absorbed,
-                    hull_damage: left_application.hull_damage + right_application.hull_damage,
-                },
+                combined_damage_application(left_application, right_application),
                 destroyed,
+                None,
             );
             game.collision_cooldowns
                 .insert(key, COLLISION_COOLDOWN_SECONDS);
         }
     }
+
+    for owned_index in 0..game.owned_ships.len() {
+        let owned = &game.owned_ships[owned_index];
+        if owned.instance_id == game.active_owned_ship_id
+            || owned.system_id != current_system_id
+            || owned.ship.systems.hull.current <= 0.0
+        {
+            continue;
+        }
+        let owned_key = format!("owned:{}", owned.instance_id);
+        let key = collision_pair_key(player_id, &owned_key);
+        let Some(contact) = swept_circle_contact(
+            game.ship.position,
+            game.ship.velocity,
+            SHIP_RADIUS,
+            owned.ship.position,
+            Vec2::ZERO,
+            SHIP_RADIUS,
+            dt,
+        ) else {
+            continue;
+        };
+        active_contacts.insert(key.clone());
+        let damage_armed = collision_damage_is_armed(game, &key);
+        let player_mass = game.ship.attributes.mass;
+        let owned_mass = owned.ship.attributes.mass;
+        let callsign = owned.callsign.clone();
+        let resolution = resolve_collision_motion(
+            CollisionMotion {
+                end_position: game.ship.position,
+                velocity: game.ship.velocity,
+                mass: player_mass,
+                movable: true,
+            },
+            CollisionMotion {
+                end_position: owned.ship.position,
+                velocity: Vec2::ZERO,
+                mass: owned_mass,
+                movable: false,
+            },
+            contact,
+            dt,
+        );
+        game.ship.position = resolution.left_position;
+        game.ship.velocity = resolution.left_velocity;
+        if !damage_armed {
+            continue;
+        }
+        let damage =
+            collision_impact_damage(contact.closing_speed, player_mass, owned_mass, true, true);
+        let player_application = apply_active_ship_collision_damage(game, damage.left);
+        let owned_application =
+            apply_owned_ship_collision_damage(&mut game.owned_ships[owned_index], damage.right);
+        if !player_application.changed() && !owned_application.changed() {
+            continue;
+        }
+        game.save_dirty = true;
+        let destroyed = game.owned_ships[owned_index].ship.systems.hull.current <= 0.0;
+        let player_destroyed = game.ship.systems.hull.current <= 0.0;
+        record_collision_impact(
+            game,
+            game.ship.position + contact.normal * SHIP_RADIUS,
+            &format!("Impact with owned ship {callsign}"),
+            combined_damage_application(player_application, owned_application),
+            destroyed,
+            Some((player_application, player_destroyed)),
+        );
+        game.collision_cooldowns
+            .insert(key, COLLISION_COOLDOWN_SECONDS);
+    }
+
+    for npc_index in 0..game.npc_ships.len() {
+        if game.npc_ships[npc_index].system != current_system_id
+            || game.npc_ships[npc_index].hull.current <= 0.0
+        {
+            continue;
+        }
+        for owned_index in 0..game.owned_ships.len() {
+            let owned = &game.owned_ships[owned_index];
+            if owned.instance_id == game.active_owned_ship_id
+                || owned.system_id != current_system_id
+                || owned.ship.systems.hull.current <= 0.0
+            {
+                continue;
+            }
+            let owned_key = format!("owned:{}", owned.instance_id);
+            let key = collision_pair_key(&game.npc_ships[npc_index].id, &owned_key);
+            let Some(contact) = swept_circle_contact(
+                game.npc_ships[npc_index].position,
+                game.npc_ships[npc_index].velocity,
+                game.npc_ships[npc_index].radius,
+                owned.ship.position,
+                Vec2::ZERO,
+                SHIP_RADIUS,
+                dt,
+            ) else {
+                continue;
+            };
+            active_contacts.insert(key.clone());
+            let damage_armed = collision_damage_is_armed(game, &key);
+            let npc_mass = game.npc_ships[npc_index].mass;
+            let owned_mass = owned.ship.attributes.mass;
+            let npc_name = game.npc_ships[npc_index].name.clone();
+            let callsign = owned.callsign.clone();
+            let resolution = resolve_collision_motion(
+                CollisionMotion {
+                    end_position: game.npc_ships[npc_index].position,
+                    velocity: game.npc_ships[npc_index].velocity,
+                    mass: npc_mass,
+                    movable: true,
+                },
+                CollisionMotion {
+                    end_position: owned.ship.position,
+                    velocity: Vec2::ZERO,
+                    mass: owned_mass,
+                    movable: false,
+                },
+                contact,
+                dt,
+            );
+            game.npc_ships[npc_index].position = resolution.left_position;
+            game.npc_ships[npc_index].velocity = resolution.left_velocity;
+            if !damage_armed {
+                continue;
+            }
+            let damage =
+                collision_impact_damage(contact.closing_speed, npc_mass, owned_mass, true, true);
+            let npc_application =
+                apply_npc_collision_damage(&mut game.npc_ships[npc_index], damage.left);
+            let owned_application =
+                apply_owned_ship_collision_damage(&mut game.owned_ships[owned_index], damage.right);
+            if !npc_application.changed() && !owned_application.changed() {
+                continue;
+            }
+            game.save_dirty = true;
+            let destroyed = game.npc_ships[npc_index].hull.current <= 0.0
+                || game.owned_ships[owned_index].ship.systems.hull.current <= 0.0;
+            let impact_position = game.npc_ships[npc_index].position
+                + contact.normal * game.npc_ships[npc_index].radius;
+            record_collision_impact(
+                game,
+                impact_position,
+                &format!("{npc_name} impact with owned ship {callsign}"),
+                combined_damage_application(npc_application, owned_application),
+                destroyed,
+                None,
+            );
+            game.collision_cooldowns
+                .insert(key, COLLISION_COOLDOWN_SECONDS);
+        }
+    }
+
+    let static_bodies = game
+        .stations
+        .iter()
+        .filter(|station| station.system == current_system_id)
+        .map(|station| {
+            (
+                format!("station: {}", station.name),
+                format!("station:{}", station.id),
+                station.position,
+                station.radius,
+            )
+        })
+        .chain(
+            game.planets
+                .iter()
+                .filter(|planet| planet.system == current_system_id)
+                .map(|planet| {
+                    (
+                        format!("planet: {}", planet.id),
+                        format!("planet:{}", planet.id),
+                        planet.position,
+                        planet.radius,
+                    )
+                }),
+        )
+        .collect::<Vec<_>>();
+
+    for (body_name, body_id, body_position, body_radius) in &static_bodies {
+        let key = collision_pair_key(player_id, body_id);
+        let Some(contact) = swept_circle_contact(
+            game.ship.position,
+            game.ship.velocity,
+            SHIP_RADIUS,
+            *body_position,
+            Vec2::ZERO,
+            *body_radius,
+            dt,
+        ) else {
+            continue;
+        };
+        active_contacts.insert(key.clone());
+        let damage_armed = collision_damage_is_armed(game, &key);
+        let player_mass = game.ship.attributes.mass;
+        let resolution = resolve_collision_motion(
+            CollisionMotion {
+                end_position: game.ship.position,
+                velocity: game.ship.velocity,
+                mass: player_mass,
+                movable: true,
+            },
+            CollisionMotion {
+                end_position: *body_position,
+                velocity: Vec2::ZERO,
+                mass: player_mass,
+                movable: false,
+            },
+            contact,
+            dt,
+        );
+        game.ship.position = resolution.left_position;
+        game.ship.velocity = resolution.left_velocity;
+        if !damage_armed {
+            continue;
+        }
+        let damage =
+            collision_impact_damage(contact.closing_speed, player_mass, player_mass, true, false);
+        let application = apply_active_ship_collision_damage(game, damage.left);
+        if !application.changed() {
+            continue;
+        }
+        game.save_dirty = true;
+        let player_destroyed = game.ship.systems.hull.current <= 0.0;
+        record_collision_impact(
+            game,
+            game.ship.position + contact.normal * SHIP_RADIUS,
+            &format!("Impact with {body_name}"),
+            application,
+            player_destroyed,
+            Some((application, player_destroyed)),
+        );
+        game.collision_cooldowns
+            .insert(key, COLLISION_COOLDOWN_SECONDS);
+    }
+
+    for npc_index in 0..game.npc_ships.len() {
+        if game.npc_ships[npc_index].system != current_system_id
+            || game.npc_ships[npc_index].hull.current <= 0.0
+        {
+            continue;
+        }
+        for (body_name, body_id, body_position, body_radius) in &static_bodies {
+            let key = collision_pair_key(&game.npc_ships[npc_index].id, body_id);
+            let Some(contact) = swept_circle_contact(
+                game.npc_ships[npc_index].position,
+                game.npc_ships[npc_index].velocity,
+                game.npc_ships[npc_index].radius,
+                *body_position,
+                Vec2::ZERO,
+                *body_radius,
+                dt,
+            ) else {
+                continue;
+            };
+            active_contacts.insert(key.clone());
+            let damage_armed = collision_damage_is_armed(game, &key);
+            let npc_mass = game.npc_ships[npc_index].mass;
+            let resolution = resolve_collision_motion(
+                CollisionMotion {
+                    end_position: game.npc_ships[npc_index].position,
+                    velocity: game.npc_ships[npc_index].velocity,
+                    mass: npc_mass,
+                    movable: true,
+                },
+                CollisionMotion {
+                    end_position: *body_position,
+                    velocity: Vec2::ZERO,
+                    mass: npc_mass,
+                    movable: false,
+                },
+                contact,
+                dt,
+            );
+            game.npc_ships[npc_index].position = resolution.left_position;
+            game.npc_ships[npc_index].velocity = resolution.left_velocity;
+            if !damage_armed {
+                continue;
+            }
+            let damage =
+                collision_impact_damage(contact.closing_speed, npc_mass, npc_mass, true, false);
+            let application =
+                apply_npc_collision_damage(&mut game.npc_ships[npc_index], damage.left);
+            if !application.changed() {
+                continue;
+            }
+            game.save_dirty = true;
+            let destroyed = game.npc_ships[npc_index].hull.current <= 0.0;
+            let impact_position = game.npc_ships[npc_index].position
+                + contact.normal * game.npc_ships[npc_index].radius;
+            record_collision_impact(
+                game,
+                impact_position,
+                &format!("{} impact with {body_name}", game.npc_ships[npc_index].name),
+                application,
+                destroyed,
+                None,
+            );
+            game.collision_cooldowns
+                .insert(key, COLLISION_COOLDOWN_SECONDS);
+        }
+    }
+
+    game.collision_contacts = active_contacts;
 }
 
 fn make_defense_threats() -> Vec<DefenseThreat> {
@@ -5594,6 +6202,9 @@ fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
     }
     game.weapon_fire_events.clear();
     game.weapon_area_effect_events.clear();
+    game.collision_cooldowns.clear();
+    game.collision_contacts.clear();
+    game.collision_grace_remaining = COLLISION_GRACE_SECONDS;
     game.collision_impact_events.clear();
     game.save_dirty = true;
     let callsign = game.owned_ships[index].callsign.clone();
@@ -10347,6 +10958,9 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.ship.position = vec2(arrival[0], arrival[1]);
     game.ship.velocity = Vec2::ZERO;
     game.ship.angular_velocity = 0.0;
+    game.collision_cooldowns.clear();
+    game.collision_contacts.clear();
+    game.collision_grace_remaining = COLLISION_GRACE_SECONDS;
     game.save_dirty = true;
     push_operation_feedback(game, "Travel", format!("Arrived in {target_name}"));
 }
@@ -13767,7 +14381,7 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, panel_corner: O
         collision_warning: game
             .collision_impact_events
             .iter()
-            .find(|event| event.severity >= CollisionImpactSeverity::Critical),
+            .find(|event| event.warn_player && event.severity >= CollisionImpactSeverity::Critical),
         selected_planet: game.selected_planet,
         selected_station: game.selected_station,
         selected_npc_ship: game.selected_npc_ship,
@@ -22425,50 +23039,213 @@ mod tests {
     }
 
     #[test]
-    fn collision_requires_contact_and_meaningful_closing_speed() {
-        assert_eq!(
-            collision_closing_speed(
-                Vec2::ZERO,
-                vec2(10.0, 0.0),
-                20.0,
-                vec2(30.0, 0.0),
-                Vec2::ZERO,
-                20.0,
-            ),
-            None
-        );
-        assert_eq!(
-            collision_closing_speed(
-                Vec2::ZERO,
-                vec2(10.0, 0.0),
-                20.0,
-                vec2(35.0, 0.0),
-                Vec2::ZERO,
-                20.0,
-            ),
-            None
-        );
-        assert_eq!(
-            collision_closing_speed(
-                Vec2::ZERO,
-                vec2(50.0, 0.0),
-                20.0,
-                vec2(35.0, 0.0),
-                Vec2::ZERO,
-                20.0,
-            ),
-            Some(50.0)
-        );
+    fn swept_collision_detects_contact_without_end_frame_overlap() {
+        let contact = swept_circle_contact(
+            vec2(100.0, 0.0),
+            vec2(1_000.0, 0.0),
+            20.0,
+            vec2(50.0, 0.0),
+            Vec2::ZERO,
+            20.0,
+            0.1,
+        )
+        .expect("swept circles should catch a ship crossing the target between frames");
+
+        assert!((contact.time - 0.01).abs() < 0.001);
+        assert!((contact.closing_speed - 1_000.0).abs() < 0.01);
+        assert!(!contact.started_overlapping);
+        assert!(swept_circle_contact(
+            vec2(1.0, 0.0),
+            vec2(10.0, 0.0),
+            20.0,
+            vec2(60.0, 0.0),
+            Vec2::ZERO,
+            20.0,
+            0.1,
+        )
+        .is_none());
     }
 
     #[test]
     fn collision_damage_scales_with_speed_and_mass_and_rejects_invalid_values() {
-        let light = collision_impact_damage(50.0, 50_000.0, 50_000.0);
-        let heavy = collision_impact_damage(50.0, 100_000.0, 100_000.0);
+        let light = collision_impact_damage(50.0, 50_000.0, 50_000.0, true, true);
+        let heavy = collision_impact_damage(50.0, 100_000.0, 100_000.0, true, true);
+        let below_threshold = collision_impact_damage(
+            COLLISION_MIN_CLOSING_SPEED,
+            100_000.0,
+            100_000.0,
+            true,
+            true,
+        );
+        let invalid = collision_impact_damage(f32::NAN, 100_000.0, 100_000.0, true, true);
 
-        assert!(heavy > light);
-        assert_eq!(collision_impact_damage(f32::NAN, 100_000.0, 100_000.0), 0.0);
-        assert_eq!(collision_impact_damage(50.0, f32::INFINITY, 100_000.0), 0.0);
+        assert!(heavy.left > light.left);
+        assert_eq!(
+            below_threshold,
+            CollisionDamage {
+                left: 0.0,
+                right: 0.0
+            }
+        );
+        assert_eq!(
+            invalid,
+            CollisionDamage {
+                left: 0.0,
+                right: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn collision_mass_asymmetry_hurts_the_lighter_ship_more() {
+        let damage = collision_impact_damage(100.0, 85_000.0, 18_000.0, true, true);
+
+        assert!(damage.left > 0.0);
+        assert!(damage.right > damage.left * 4.0);
+        assert!(damage.left < 5.0);
+        assert!(damage.right < 25.0);
+    }
+
+    #[test]
+    fn collision_response_is_stable_across_common_frame_rates() {
+        fn simulate(step: f32) -> (Vec2, Vec2) {
+            let mut position = vec2(-200.0, 0.0);
+            let mut velocity = vec2(150.0, 0.0);
+            let steps = (2.0 / step).round() as usize;
+            for _ in 0..steps {
+                let end_position = position + velocity * step;
+                if let Some(contact) = swept_circle_contact(
+                    end_position,
+                    velocity,
+                    22.0,
+                    Vec2::ZERO,
+                    Vec2::ZERO,
+                    22.0,
+                    step,
+                ) {
+                    let resolution = resolve_collision_motion(
+                        CollisionMotion {
+                            end_position,
+                            velocity,
+                            mass: 85_000.0,
+                            movable: true,
+                        },
+                        CollisionMotion {
+                            end_position: Vec2::ZERO,
+                            velocity: Vec2::ZERO,
+                            mass: 85_000.0,
+                            movable: false,
+                        },
+                        contact,
+                        step,
+                    );
+                    position = resolution.left_position;
+                    velocity = resolution.left_velocity;
+                } else {
+                    position = end_position;
+                }
+            }
+            (position, velocity)
+        }
+
+        let at_30 = simulate(1.0 / 30.0);
+        let at_60 = simulate(1.0 / 60.0);
+        let at_144 = simulate(1.0 / 144.0);
+        assert!(at_30.0.distance(at_60.0) < 0.1);
+        assert!(at_144.0.distance(at_60.0) < 0.1);
+        assert!(at_30.1.distance(at_60.1) < 0.01);
+        assert!(at_144.1.distance(at_60.1) < 0.01);
+    }
+
+    #[test]
+    fn planet_collision_stops_and_damages_a_fast_ship() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![test_planet(
+                "core:collision_body",
+                STARTER_SYSTEM_ID,
+                Vec2::ZERO,
+                true,
+            )],
+        );
+        game.ship.position = vec2(-80.0, 0.0);
+        game.ship.velocity = vec2(100.0, 0.0);
+        let starting_shields = game.ship.systems.shields.current;
+
+        update_ship_collisions(&mut game, 0.1);
+
+        assert!(game.ship.position.x <= -(game.planets[0].radius + SHIP_RADIUS));
+        assert!(game.ship.velocity.x < 0.0);
+        assert!(game.ship.systems.shields.current < starting_shields);
+        assert!(operation_feedback_contains(&game, "Collision", "planet"));
+    }
+
+    #[test]
+    fn low_speed_station_contact_separates_without_damage() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:collision_station",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+        )];
+        game.ship.position = vec2(-69.0, 0.0);
+        game.ship.velocity = vec2(20.0, 0.0);
+        let starting_shields = game.ship.systems.shields.current;
+
+        update_ship_collisions(&mut game, 0.1);
+
+        assert!(game.ship.position.x <= -(game.stations[0].radius + SHIP_RADIUS));
+        assert_eq!(game.ship.systems.shields.current, starting_shields);
+        assert!(game.collision_impact_events.is_empty());
+    }
+
+    #[test]
+    fn inactive_owned_ship_takes_collision_damage_without_moving() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut inactive = game.capture_active_owned_ship();
+        inactive.instance_id = "ship-2".to_string();
+        inactive.callsign = "Stationary wingmate".to_string();
+        inactive.ship.position = vec2(40.0, 0.0);
+        let inactive_position = inactive.ship.position;
+        let inactive_shields = inactive.ship.systems.shields.current;
+        game.owned_ships.push(inactive);
+        game.ship.position = Vec2::ZERO;
+        game.ship.velocity = vec2(50.0, 0.0);
+
+        update_ship_collisions(&mut game, 0.1);
+
+        assert_eq!(game.owned_ships[1].ship.position, inactive_position);
+        assert_eq!(game.owned_ships[1].ship.velocity, Vec2::ZERO);
+        assert!(game.owned_ships[1].ship.systems.shields.current < inactive_shields);
+    }
+
+    #[test]
+    fn loading_a_save_arms_collision_grace_without_persisting_contact_state() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut save = game.to_save();
+        save.ship.position = [0.0, 0.0];
+        save.ship.velocity = [50.0, 0.0];
+        game.apply_save(save);
+        let mut npc = test_npc_ship(NpcBehaviorMode::Patrol, vec2(40.0, 0.0));
+        npc.velocity = Vec2::ZERO;
+        game.npc_ships = vec![npc];
+        let player_shields = game.ship.systems.shields.current;
+        let npc_shields = game.npc_ships[0].shields.current;
+
+        update_ship_collisions(&mut game, 0.1);
+
+        assert!(game.collision_grace_remaining > 0.0);
+        assert_eq!(game.ship.systems.shields.current, player_shields);
+        assert_eq!(game.npc_ships[0].shields.current, npc_shields);
+        assert!(game.collision_impact_events.is_empty());
     }
 
     #[test]
@@ -22507,7 +23284,7 @@ mod tests {
     }
 
     #[test]
-    fn ship_collision_applies_once_until_pair_cooldown_expires() {
+    fn ship_collision_rearms_only_after_separation_and_cooldown() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
@@ -22521,6 +23298,7 @@ mod tests {
         let first_player_shields = game.ship.systems.shields.current;
         let first_npc_shields = game.npc_ships[0].shields.current;
         assert_eq!(game.collision_impact_events.len(), 1);
+        assert!(game.collision_impact_events[0].warn_player);
         assert!(operation_feedback_contains(
             &game,
             "Collision",
@@ -22531,7 +23309,15 @@ mod tests {
         assert_eq!(game.ship.systems.shields.current, first_player_shields);
         assert_eq!(game.npc_ships[0].shields.current, first_npc_shields);
 
-        update_ship_collisions(&mut game, 0.6);
+        game.ship.position = Vec2::ZERO;
+        game.ship.velocity = Vec2::ZERO;
+        game.npc_ships[0].position = vec2(200.0, 0.0);
+        game.npc_ships[0].velocity = Vec2::ZERO;
+        update_ship_collisions(&mut game, COLLISION_COOLDOWN_SECONDS + 0.1);
+        game.ship.position = Vec2::ZERO;
+        game.ship.velocity = vec2(50.0, 0.0);
+        game.npc_ships[0].position = vec2(40.0, 0.0);
+        update_ship_collisions(&mut game, 0.1);
         assert!(game.ship.systems.shields.current < first_player_shields);
         assert!(game.npc_ships[0].shields.current < first_npc_shields);
         assert!(game.save_dirty);
@@ -22580,8 +23366,10 @@ mod tests {
                 hull_damage: 0.0,
             },
             false,
+            None,
         );
         assert_eq!(game.collision_impact_events.len(), 1);
+        assert!(!game.collision_impact_events[0].warn_player);
         assert_eq!(game.operation_feedback.len(), 1);
 
         update_collision_impact_events(&mut game, COLLISION_EVENT_SECONDS + 0.1);
@@ -22602,6 +23390,7 @@ mod tests {
         right.id = "core:right".to_string();
         right.velocity = Vec2::ZERO;
         game.npc_ships = vec![left, right];
+        game.ship.position = vec2(-1_000.0, 0.0);
 
         update_ship_collisions(&mut game, 0.1);
 
@@ -26045,6 +26834,8 @@ mod tests {
             equipped_weapons: Vec::new(),
             npc_ships: Vec::new(),
             collision_cooldowns: HashMap::new(),
+            collision_contacts: HashSet::new(),
+            collision_grace_remaining: 0.0,
             collision_impact_events: Vec::new(),
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
