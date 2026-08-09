@@ -109,3 +109,28 @@ Run straight-line and turn simulations at 30, 60, and 144 updates per second.
 Check the Frontier Cargo Ship and Twinspire Gunship at base level and with
 representative upgrades. Record speed, stopping distance, turn time, energy use,
 overshoot, and any collision or camera regressions before changing values again.
+
+## Collision Calibration
+
+Collision tuning follows handling because authored acceleration, drag, braking,
+mass, and radius establish the speeds and footprints the solver receives. Keep
+the damage threshold, restitution, separation slop, and cooldown engine-owned;
+content packs contribute physical identity through validated mass and radius.
+
+Use this matrix after collision changes:
+
+| Scenario | What to verify |
+| --- | --- |
+| Low-speed docking contact | Bodies separate without shield or hull damage |
+| Cargo ship versus light probe | The probe takes more damage without making the cargo hull immune |
+| Twinspire versus hauler/patrol | Mass differences are readable and neither ordinary traffic contact is catastrophic |
+| Deliberate high-speed ram | Swept contact catches the impact and severe damage remains possible |
+| Station or planet impact | The world body stays fixed and the moving ship is separated outward |
+| Inactive owned ship contact | The inactive ship stays fixed while shields, hull, and recharge delay remain active |
+| Continuous overlap | Damage does not repeat until separation and cooldown re-arm |
+| Approach, follow, and trade | Autopilot clearance prevents accidental collision damage |
+| Load, system arrival, and ship switch | Collision grace prevents unavoidable restored-position damage |
+
+Run contact and response simulations at 30, 60, and 144 updates per second.
+Record closing speed, per-participant shield and hull loss, final separation,
+velocity response, feedback severity, and whether the same contact can re-arm.

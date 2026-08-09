@@ -867,6 +867,10 @@ Rules:
   to compensate for the New Game card. A missing or unreadable image leaves the
   ship selectable and uses the engine's fallback presentation.
 - `mass`, acceleration, energy, drag, hull, and shield values must be positive.
+- `mass` participates in collision response and damage. Heavier ships change
+  velocity less in ship-to-ship contact, while lighter ships take a larger share
+  of the impact consequence. Collision thresholds and restitution remain global
+  engine rules rather than pack-specific tuning fields.
 - `forward_acceleration` and `reverse_acceleration` are measured in local-space
   units per second squared. Reverse acceleration is also the ship's authored
   braking authority for approach and follow autopilot.
@@ -958,7 +962,9 @@ Rules:
   system.
 - `position` is the local-space spawn and route anchor used by lightweight NPC
   movement.
-- `radius` defaults to 28.0 and must be positive.
+- `radius` defaults to 28.0 and must be positive. It is the NPC's collision,
+  avoidance, targeting, and interaction footprint, so it should describe the
+  visible hull rather than weapon range or decorative transparent padding.
 - `faction` is optional. When present, it resolves to a namespaced faction ID
   and must reference a loaded faction record.
 - `behavior_tags` defaults to an empty list. The runtime currently recognizes
@@ -970,7 +976,8 @@ Rules:
 - `spawn_weight` defaults to 1.0 and must be positive.
 - `spawn_count` defaults to 1 and must be greater than zero.
 - `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
-  positive.
+  positive. NPC mass participates in the same collision response and
+  target-relative damage model as player hull mass.
 - `cargo_defaults` defaults to an empty list. Entries resolve to namespaced item
   IDs and must reference loaded items; counts must be greater than zero. At
   runtime, destroyed NPC ships use these entries as automatic loot, adding each

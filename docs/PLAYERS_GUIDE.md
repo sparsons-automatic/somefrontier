@@ -359,17 +359,22 @@ delay clears.
 
 ### Collision And Safe Flight
 
-Ships can damage one another when they overlap while closing at meaningful
-speed. Impact damage scales with closing speed and ship mass. Shields absorb
-collision damage first, then any remaining damage reaches the hull. Equipped
-shield modules provide their normal damage resistance and recharge delay to
-collision impacts, and NPCs without shields take the damage directly against
-their hull.
+Ships, stations, and planets have solid collision boundaries. The engine checks
+the complete path traveled during each frame, so a fast ship cannot pass through
+a smaller contact between frames. A collision separates the bodies and removes
+their unsafe closing motion; stations, planets, and inactive owned ships remain
+stationary.
 
-Low-speed contact is ignored, and repeated contact while ships remain overlapped
-is limited by a short collision cooldown. Approach and follow movement should
-therefore be performed at low speed near a contact. High-speed ramming can
-destroy a ship quickly.
+Low-speed contact is separated without damage. Faster impacts scale with closing
+speed and ship mass: a light probe suffers more than a cargo hull in the same
+ship-to-ship impact, while hitting an immovable station or planet places the
+consequence on the moving ship. Shields absorb collision damage first, then any
+remainder reaches the hull. Equipped shield resistance and recharge delay apply
+normally, and a pair must separate before another impact can deal damage.
+
+Approach, follow, docking, system arrival, ship switching, and save loading use
+safe clearances or a brief collision grace period to avoid unavoidable damage.
+Deliberate high-speed ramming can still destroy a ship quickly.
 
 When a collision causes damage, a short-lived impact ring and flash appear at
 the contact point. The Operations feed reports whether shields absorbed the
