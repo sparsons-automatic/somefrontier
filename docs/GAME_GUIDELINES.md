@@ -83,3 +83,29 @@ Recommended progression:
 3. Volatile ice and hydrogen unlock dedicated fuel production.
 4. Helium-3 supports advanced engines or long-range travel.
 5. Exotic matter supports late-game jump or warp systems.
+
+## Ship Handling Calibration
+
+Handling changes should be evaluated as one connected system: authored hull
+acceleration and drag establish ordinary flight, reverse acceleration establishes
+autopilot braking authority, settled speeds feed collision severity, and visible
+velocity drives star trails. Tune in that order.
+
+Use this compact matrix for handling changes:
+
+| Scenario | What to verify |
+| --- | --- |
+| Short station approach | No overshoot; arrival is inside interaction range and outside the station body |
+| Medium planet transfer | Acceleration is readable and braking begins without a last-moment snap |
+| Long local flight | Soft cruise speed feels useful without making nearby objects impossible to read |
+| Coast from cruise | Releasing thrust sheds speed predictably without stopping immediately |
+| Reverse from 240 u/s | Both shipped hulls stop in a short, controllable distance |
+| 90/180-degree turn | Rotation follows input promptly and settles cleanly when released |
+| Orbit entry and cancel | The ship flies to orbit, locks only on arrival, and manual input breaks orbit |
+| NPC follow and cancel | Correction respects clearance and manual input wins immediately |
+| Upgraded hull | Engine and maneuver-thruster levels preserve the base hull's identity |
+
+Run straight-line and turn simulations at 30, 60, and 144 updates per second.
+Check the Frontier Cargo Ship and Twinspire Gunship at base level and with
+representative upgrades. Record speed, stopping distance, turn time, energy use,
+overshoot, and any collision or camera regressions before changing values again.

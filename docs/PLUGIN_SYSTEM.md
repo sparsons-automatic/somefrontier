@@ -840,12 +840,12 @@ id = "frontier_cargo_ship_01"
 name = "Frontier Cargo Ship"
 texture = "./assets/ships/frontier-cargo-ship-01.png"
 mass = 85000.0
-forward_acceleration = 420.0
-reverse_acceleration = 280.0
-turn_acceleration = 4.8
+forward_acceleration = 350.0
+reverse_acceleration = 320.0
+turn_acceleration = 5.2
 energy_capacity = 100.0
 energy_recharge = 8.0
-linear_drag = 0.985
+linear_drag = 0.982
 hull_capacity = 100.0
 shield_capacity = 100.0
 purchase_price = 8500
@@ -867,6 +867,14 @@ Rules:
   to compensate for the New Game card. A missing or unreadable image leaves the
   ship selectable and uses the engine's fallback presentation.
 - `mass`, acceleration, energy, drag, hull, and shield values must be positive.
+- `forward_acceleration` and `reverse_acceleration` are measured in local-space
+  units per second squared. Reverse acceleration is also the ship's authored
+  braking authority for approach and follow autopilot.
+- `turn_acceleration` determines the maximum turn rate through the engine's
+  shared response curve. `linear_drag` is a 60 Hz retention factor: values near
+  1 preserve momentum longer, while lower values produce a lower soft cruise
+  speed and quicker coasting slowdown. Manual flight deliberately has no hard
+  speed cap.
 - `purchase_price` is optional. When present, it must be a positive credit
   amount and makes the hull available while the player is in range of an
   available station service whose kind is `garage`; normal service reputation

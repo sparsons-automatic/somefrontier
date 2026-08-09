@@ -106,6 +106,13 @@ You pilot the Frontier Cargo Ship in local space. Thrust and turning are manual.
 The camera follows the ship, and zoom helps inspect nearby planets, stations,
 NPC ships, orbit guides, and route context.
 
+Ships build speed gradually and coast down through maneuvering drag rather than
+hitting a hard speed cap. The Frontier Cargo Ship favors predictable hauling
+control and braking over raw speed; the lighter Twinspire Gunship accelerates,
+turns, and brakes more sharply. Engine and maneuver-thruster upgrades preserve
+those differences. Approach and follow autopilot use each hull's authored
+braking authority, while manual thrust or turning remains an immediate override.
+
 The map shows the current system and known destinations in a compact Macroquad
 3D panel. Opening it also opens a movable stock-egui Destinations window.
 Drag the map panel's header to move it, or its lower-right corner to resize it.
