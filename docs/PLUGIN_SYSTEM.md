@@ -442,7 +442,9 @@ Rules:
 - `column` and `row` place the node in a horizontal tree layout. Keep `column`
   aligned with `tier` for ordinary tiered progression so the research screen's
   vertical bands and labels stay clear; rows can branch related choices
-  vertically.
+  vertically. The UI orders columns and rows numerically, uses content IDs as a
+  stable tie-breaker, and moves nodes with duplicate grid positions into the
+  next free visual lane so independently authored packs cannot overlap.
 - `price` must be positive and is paid in credits.
 - `duration_seconds` must be positive and controls how long the research takes
   after purchase. Research runs asynchronously during flight, but only one node

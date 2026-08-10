@@ -18087,6 +18087,7 @@ fn research_view(game: &GameState) -> egui_research::ResearchView {
             price: research.price,
             duration: format_seconds(research.duration_seconds),
             requirements: research_requirement_labels(registry, research),
+            dependents: research_dependent_labels(registry, &research.id),
             rewards: research
                 .rewards
                 .iter()
@@ -20566,6 +20567,27 @@ fn research_requirement_labels(
         .iter()
         .chain(research.revealed_by.iter())
         .map(|research_id| research_display_name(registry, research_id))
+        .collect::<Vec<_>>();
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+fn research_dependent_labels(
+    registry: &content::ContentRegistry,
+    research_id: &str,
+) -> Vec<String> {
+    let mut labels = registry
+        .research
+        .values()
+        .filter(|research| {
+            research
+                .requires
+                .iter()
+                .chain(research.revealed_by.iter())
+                .any(|required| required == research_id)
+        })
+        .map(|research| research.name.clone())
         .collect::<Vec<_>>();
     labels.sort();
     labels.dedup();
@@ -25588,6 +25610,9 @@ mod tests {
         let initial = research_view(&game);
         assert_eq!(initial.nodes.len(), game.content_registry.research.len());
         assert!(!initial.edges.is_empty());
+        assert!(initial.edges.iter().any(|edge| {
+            edge.from == "core:jump_core" && edge.to == "remote-duskfall:duskfall_vanadium_frames"
+        }));
         assert!(initial.nodes.iter().any(|node| node.tier == 4));
         assert!(initial.nodes.iter().any(|node| {
             node.id == starter_id && node.state == egui_research::ResearchState::Affordable
@@ -25603,6 +25628,9 @@ mod tests {
             .detail
             .as_ref()
             .is_some_and(|detail| detail.start_enabled));
+        assert!(selected.detail.as_ref().is_some_and(|detail| detail
+            .dependents
+            .contains(&"Mining Calibration I".to_string())));
 
         let price = game.content_registry.research[&starter_id].price;
         apply_research_ui_actions(
