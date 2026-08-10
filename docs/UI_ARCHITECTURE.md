@@ -93,11 +93,17 @@ responsible for recalculating each scaled level cost, consuming components, and
 applying ship-stat changes. The window shares pin and geometry persistence with
 the other egui workspaces.
 
-Research uses a data-driven horizontal browser. Distinct authored tier values
-become ordered columns at runtime, and modules within each tier retain their
-content-pack grid order. Only the tier region scrolls horizontally; a fixed
-right-hand details column presents prerequisites, rewards, cost, duration, and
-progress. Selection and start actions return research IDs to
+Research uses a data-driven graph canvas. Pure layout code normalizes authored
+column and row values into stable screen lanes, resolves duplicate positions by
+name and content ID, and derives scrollable content bounds without depending on
+registry hash order. Prerequisite/reveal edges are routed through column gutters
+behind opaque module cards and end in arrowheads. Selecting a module emphasizes
+its incoming and outgoing edges, while state-specific text markers, fills, and
+borders keep completed, active, affordable, unfunded, and locked cards distinct
+without relying on color alone. The graph scrolls in both directions; the fixed
+details pane presents prerequisites, dependents, rewards, cost, duration, and
+progress on the right at ordinary widths and stacks below the graph in narrow
+windows. Selection and start actions return research IDs to
 the gameplay layer, which retains prerequisite, credit, timer, save, and reward
 authority. The window participates in the shared pin, geometry persistence, and
 `Reset Menus` recovery paths without an additional graph or layout dependency.
@@ -210,6 +216,14 @@ event follows the bottom only when the log was already there. Scroll upward,
 generate another event, and confirm the reviewed rows remain stationary. Clear
 history, reset filters, pin the window, and use `Reset Menus` to verify each
 action retains its documented scope.
+
+For Research, test locked, unfunded, affordable, active, and completed cards at
+each window size. Confirm every state retains its marker and border, long pack
+names remain inside cards, arrows stay behind controls, selected prerequisites
+and dependents brighten together, and duplicate pack-authored grid positions do
+not overlap. Scroll both axes through a dense tree, use keyboard focus and
+pointer selection/start actions, resize with a module selected, and confirm the
+fixed details pane remains readable.
 
 ## Native And Web Builds
 

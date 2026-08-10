@@ -286,15 +286,19 @@ out-of-stock offers.
 ## Research
 
 Open the movable stock-egui Research window with `K`. Research modules are
-grouped into one column per authored tier and ordered by their content-pack grid
-position. The tier columns are generated from loaded data, so packs can add
-higher tiers without an engine UI change; scroll horizontally to reach them.
-Modules show whether they are locked, available, affordable, researching, or
-completed. Select one to inspect its cost, duration, requirements, rewards,
-summary, and live progress in the fixed details column on the right; horizontal
-scrolling moves only the research tiers. Then use `Start research` to
-spend credits and begin it. Pin the window to keep it visible after closing the
-Research workspace. Only one project can run at a time, and it completes in the
+placed on a scrollable tree from their content-pack grid positions. Arrows run
+from prerequisites to the modules they unlock. Selecting a module brightens its
+incoming and outgoing connections, while the fixed details pane lists both its
+requirements and the modules it leads to. Scroll the tree horizontally or
+vertically without moving the details pane.
+
+Every card uses text and borders as well as color: `DONE` modules are light
+green, `ACTIVE` marks the current research, `READY` means affordable, `FUNDS`
+means its prerequisites are complete but more credits are needed, and `LOCKED`
+uses a restrained red treatment. Hover a card for the state explanation and
+authored grid position. Then use `Start research` to spend credits and begin an
+affordable module. Pin the window to keep it visible after closing the Research
+workspace. Only one project can run at a time, and it completes in the
 background while you keep flying, mining, trading, or producing.
 
 Research can unlock production recipes and other progression hooks. Locked
