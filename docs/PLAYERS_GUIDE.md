@@ -69,6 +69,7 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Open content browser | `C` |
 | Open contracts | `J` |
 | Open fleet management | `F` (`F` cycles filters while the map is open) |
+| Open Operations Log | `L` |
 | Zoom flight camera | Mouse wheel, `PageUp`, or `PageDown` |
 | Inspect nearby planet or station | `Space` |
 | Select a visible planet | Left click the planet; press `Space` to inspect |
@@ -257,14 +258,30 @@ and hostile ships can target and damage them. Simultaneous fleet movement and
 formation following are separate future behaviors.
 
 The ship detail panel includes an `Operations` readout for recent meaningful
-changes. It records compact feedback for survey results, mined resources,
-produced materials, station trades, research progress, installed modules, upgrades,
-warp preparation, and remote-system arrival. Repeated messages collapse into
+changes. Press `L` to open the full, movable Operations Log. It keeps up to 200
+events from the current play session, with an elapsed-world-time marker, a
+text-marked and color-coded category, a severity marker, and the original event
+source. Category filters cover mining, production, travel, trade, combat,
+research, system, and general events; severity filters cover info, success,
+warning, and error. `Reset filters` shows every category and severity again,
+while `Clear history` removes the current session's entries.
+
+The log follows new events automatically while you are viewing its bottom. If
+you scroll upward to review older events, new entries do not pull the view away;
+scroll back to the bottom to resume following. Repeated messages collapse into
 the newest row so routine mining or production stays readable. Planet, station,
-and contact panes also mirror the latest relevant operation while selected.
+and contact panes continue to mirror the latest relevant operation while
+selected, so opening the log does not replace HUD warnings or contextual
+feedback.
+
+Operations history is deliberately session-only and is not written to save
+files. Loading a save starts an empty log while leaving all gameplay state
+unchanged. This bounds both runtime memory and save size; the 200-entry runtime
+limit discards the oldest entries first.
+
 Disabled trade and research actions use short reason labels such as approach
-requirements, missing cargo, missing credits, completed research, and out-of-stock
-offers.
+requirements, missing cargo, missing credits, completed research, and
+out-of-stock offers.
 
 ## Research
 

@@ -12,6 +12,7 @@ mod egui_fleet;
 mod egui_inventory;
 mod egui_loading;
 mod egui_npc;
+mod egui_operations;
 mod egui_pin;
 mod egui_planet;
 mod egui_research;
@@ -124,7 +125,7 @@ const KNOWN_SYSTEMS_PANEL_WIDTH: f32 = 280.0;
 const KNOWN_SYSTEM_ROW_HEIGHT: f32 = 70.0;
 const WARP_CHARGE_SECONDS: f32 = 2.0;
 const MAX_SCAN_LEVEL: u8 = 3;
-const OPERATION_FEEDBACK_LIMIT: usize = 6;
+const OPERATION_HISTORY_LIMIT: usize = 200;
 const STARTER_SYSTEM_ID: &str = "core:frontier";
 const UI_FONT_PATH: &str = "assets/fonts/Junicode.ttf";
 
@@ -211,6 +212,7 @@ enum EguiPane {
     Upgrades,
     Research,
     Destinations,
+    Operations,
 }
 
 impl EguiPane {
@@ -228,6 +230,7 @@ impl EguiPane {
             Self::Upgrades => "upgrades",
             Self::Research => "research",
             Self::Destinations => "destinations",
+            Self::Operations => "operations",
         }
     }
 }
@@ -246,9 +249,10 @@ struct EguiPinSnapshot {
     upgrades: bool,
     research: bool,
     destinations: bool,
+    operations: bool,
 }
 
-const PERSISTED_EGUI_WINDOW_IDS: [&str; 14] = [
+const PERSISTED_EGUI_WINDOW_IDS: [&str; 15] = [
     "inventory-ship-window",
     "inventory-production-window",
     "inventory-cargo-window",
@@ -263,6 +267,7 @@ const PERSISTED_EGUI_WINDOW_IDS: [&str; 14] = [
     "starmap-destinations-window",
     "escape-menu-window",
     "debug-console-window",
+    "operations-log-window",
 ];
 
 #[derive(Clone, Copy)]
@@ -399,6 +404,7 @@ struct GameState {
     content_open: bool,
     contracts_open: bool,
     fleet_open: bool,
+    operations_open: bool,
     selected_owned_ship_index: usize,
     fleet_transfer_quantity: u32,
     content_browser: ContentBrowserState,
@@ -419,6 +425,8 @@ struct GameState {
     save_status_timer: f32,
     save_status_manual: bool,
     operation_feedback: Vec<OperationFeedback>,
+    operation_hidden_categories: BTreeSet<egui_operations::OperationCategory>,
+    operation_hidden_severities: BTreeSet<egui_operations::OperationSeverity>,
     debug_console: DebugConsole,
     context_action_menu: Option<ContextActionMenu>,
     follow_target: Option<FollowTarget>,
@@ -430,9 +438,12 @@ struct GameState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OperationFeedback {
     category: String,
+    group: egui_operations::OperationCategory,
+    severity: egui_operations::OperationSeverity,
     message: String,
     aggregate_key: Option<String>,
     count: u32,
+    elapsed_minutes: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1819,6 +1830,7 @@ impl GameState {
             content_open: false,
             contracts_open: false,
             fleet_open: false,
+            operations_open: false,
             selected_owned_ship_index: 0,
             fleet_transfer_quantity: 1,
             content_browser: ContentBrowserState::default(),
@@ -1839,6 +1851,8 @@ impl GameState {
             save_status_timer: 0.0,
             save_status_manual: false,
             operation_feedback: Vec::new(),
+            operation_hidden_categories: BTreeSet::new(),
+            operation_hidden_severities: BTreeSet::new(),
             debug_console: DebugConsole::default(),
             context_action_menu: None,
             follow_target: None,
@@ -5743,7 +5757,9 @@ fn push_operation_feedback(
     category: impl Into<String>,
     message: impl Into<String>,
 ) {
+    let category = category.into();
     let message = message.into();
+    let severity = operation_severity(&category, &message);
     if ["failed", "cannot", "unable", "warning", "need "]
         .iter()
         .any(|marker| message.to_ascii_lowercase().contains(marker))
@@ -5751,16 +5767,19 @@ fn push_operation_feedback(
         game.audio.play(audio::AudioCue::Warning);
     }
     let entry = OperationFeedback {
-        category: category.into(),
+        group: operation_category(&category),
+        category,
+        severity,
         message,
         aggregate_key: None,
         count: 1,
+        elapsed_minutes: operation_elapsed_minutes(game.world_elapsed_days),
     };
     game.operation_feedback.retain(|existing| {
         existing.category != entry.category || existing.message != entry.message
     });
     game.operation_feedback.insert(0, entry);
-    game.operation_feedback.truncate(OPERATION_FEEDBACK_LIMIT);
+    game.operation_feedback.truncate(OPERATION_HISTORY_LIMIT);
 }
 
 fn push_aggregate_operation_feedback(
@@ -5786,16 +5805,91 @@ fn push_aggregate_operation_feedback(
             true
         }
     });
+    let message = format_message(total);
     game.operation_feedback.insert(
         0,
         OperationFeedback {
+            group: operation_category(&category),
+            severity: operation_severity(&category, &message),
             category,
-            message: format_message(total),
+            message,
             aggregate_key: Some(aggregate_key),
             count: total,
+            elapsed_minutes: operation_elapsed_minutes(game.world_elapsed_days),
         },
     );
-    game.operation_feedback.truncate(OPERATION_FEEDBACK_LIMIT);
+    game.operation_feedback.truncate(OPERATION_HISTORY_LIMIT);
+}
+
+fn operation_elapsed_minutes(world_elapsed_days: f32) -> u64 {
+    (finite_nonnegative_or(world_elapsed_days, 0.0) * 24.0 * 60.0).floor() as u64
+}
+
+fn operation_category(source: &str) -> egui_operations::OperationCategory {
+    use egui_operations::OperationCategory;
+
+    match source.to_ascii_lowercase().as_str() {
+        "mining" | "survey" => OperationCategory::Mining,
+        "production" | "smelting" | "fabrication" | "processing" => OperationCategory::Production,
+        "route" | "travel" | "orbit" | "autopilot" | "follow" | "station" => {
+            OperationCategory::Travel
+        }
+        "trade" | "market" | "vendor" => OperationCategory::Trade,
+        "combat" | "collision" | "weapon" | "weapons" | "shield" | "shields" | "loot" => {
+            OperationCategory::Combat
+        }
+        "research" => OperationCategory::Research,
+        "system" | "save" | "content" | "warning" => OperationCategory::System,
+        _ => OperationCategory::General,
+    }
+}
+
+fn operation_severity(source: &str, message: &str) -> egui_operations::OperationSeverity {
+    use egui_operations::OperationSeverity;
+
+    let normalized = format!("{} {}", source, message).to_ascii_lowercase();
+    if normalized.contains("target destroyed") {
+        OperationSeverity::Success
+    } else if ["failed", "cannot", "unable", "destroyed", "fatal"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        OperationSeverity::Error
+    } else if [
+        "warning",
+        "need ",
+        "insufficient",
+        "out of",
+        "expired",
+        "collision",
+        "blocked",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        OperationSeverity::Warning
+    } else if [
+        "completed",
+        "arrived",
+        "bought",
+        "sold",
+        "recovered",
+        "produced",
+        "installed",
+        "upgraded",
+        "established",
+        "identified",
+        "accepted",
+        "acquired",
+        "transferred",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        OperationSeverity::Success
+    } else {
+        OperationSeverity::Info
+    }
 }
 
 fn route_ready_feedback(game: &GameState) -> Option<String> {
@@ -7080,6 +7174,7 @@ fn egui_pin_snapshot() -> EguiPinSnapshot {
         upgrades: egui_pane_pinned(EguiPane::Upgrades),
         research: egui_pane_pinned(EguiPane::Research),
         destinations: egui_pane_pinned(EguiPane::Destinations),
+        operations: egui_pane_pinned(EguiPane::Operations),
     }
 }
 
@@ -7740,6 +7835,7 @@ async fn main() {
                 let egui_research_was_active = egui_research_visible(game, pins_before_update);
                 let egui_destinations_was_active =
                     egui_destinations_visible(game, pins_before_update);
+                let egui_operations_was_active = egui_operations_visible(game, pins_before_update);
                 let egui_context_menu_was_active = game.context_action_menu.is_some();
                 update_game(game, dt);
                 if game.quit_to_title_requested {
@@ -7766,6 +7862,8 @@ async fn main() {
                         egui_windows_allowed && egui_research_visible(game, pins);
                     let destinations_visible =
                         egui_windows_allowed && egui_destinations_visible(game, pins);
+                    let operations_visible =
+                        egui_windows_allowed && egui_operations_visible(game, pins);
                     let inventory_view =
                         inventory_visible.then(|| inventory_overlay_view(game, keep_click_step));
                     let planet_view =
@@ -7779,6 +7877,7 @@ async fn main() {
                         upgrades_visible.then(|| upgrades_view(game, upgrade_purchase_count));
                     let research_view = research_visible.then(|| research_view(game));
                     let destinations_view = destinations_visible.then(|| destinations_view(game));
+                    let operations_view = operations_visible.then(|| operations_view(game));
                     let context_view = if egui_windows_allowed {
                         context_menu_view(game)
                     } else {
@@ -7802,6 +7901,7 @@ async fn main() {
                         || upgrades_visible
                         || research_visible
                         || destinations_visible
+                        || operations_visible
                         || context_view.is_some();
 
                     if any_egui_visible {
@@ -7815,6 +7915,7 @@ async fn main() {
                         let mut upgrades_actions = Vec::new();
                         let mut research_actions = Vec::new();
                         let mut destinations_actions = Vec::new();
+                        let mut operations_actions = Vec::new();
                         let mut escape_actions = Vec::new();
                         let mut debug_actions = Vec::new();
                         let mut context_outcome = None;
@@ -7881,6 +7982,13 @@ async fn main() {
                                     view,
                                 );
                             }
+                            if let Some(view) = &operations_view {
+                                operations_actions = egui_operations::draw(
+                                    ctx,
+                                    [screen_width(), screen_height()],
+                                    view,
+                                );
+                            }
                             if let Some(view) = escape_view {
                                 escape_actions =
                                     egui_escape::draw(ctx, [screen_width(), screen_height()], view);
@@ -7927,6 +8035,9 @@ async fn main() {
                         }
                         if egui_destinations_was_active && destinations_visible {
                             apply_destinations_ui_actions(game, destinations_actions);
+                        }
+                        if egui_operations_was_active && operations_visible {
+                            apply_operations_ui_actions(game, operations_actions);
                         }
                         if egui_escape_was_active && escape_visible {
                             apply_escape_ui_actions(game, escape_actions);
@@ -9431,6 +9542,14 @@ fn update_game(game: &mut GameState, dt: f32) {
             game.selected_station_service = None;
         }
     }
+    if is_key_pressed(KeyCode::L) {
+        game.operations_open = !game.operations_open;
+        game.audio.play(if game.operations_open {
+            audio::AudioCue::Select
+        } else {
+            audio::AudioCue::Back
+        });
+    }
     if is_key_pressed(KeyCode::PageUp) {
         adjust_camera_zoom(game, 1);
     }
@@ -10801,6 +10920,9 @@ fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
         true
     } else if game.context_action_menu.is_some() {
         game.context_action_menu = None;
+        true
+    } else if game.operations_open {
+        game.operations_open = false;
         true
     } else if game.content_open {
         game.content_open = false;
@@ -17266,6 +17388,43 @@ fn egui_destinations_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
     game.map_open || pins.destinations
 }
 
+fn egui_operations_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
+    game.operations_open || pins.operations
+}
+
+fn operations_view(game: &GameState) -> egui_operations::OperationsView {
+    let rows = game
+        .operation_feedback
+        .iter()
+        .rev()
+        .filter(|entry| !game.operation_hidden_categories.contains(&entry.group))
+        .filter(|entry| !game.operation_hidden_severities.contains(&entry.severity))
+        .map(|entry| egui_operations::OperationRow {
+            timestamp: format_operation_timestamp(entry.elapsed_minutes),
+            category: entry.group,
+            source: entry.category.clone(),
+            severity: entry.severity,
+            message: entry.message.clone(),
+        })
+        .collect();
+
+    egui_operations::OperationsView {
+        pinned: egui_pane_pinned(EguiPane::Operations),
+        rows,
+        hidden_categories: game.operation_hidden_categories.iter().copied().collect(),
+        hidden_severities: game.operation_hidden_severities.iter().copied().collect(),
+        history_count: game.operation_feedback.len(),
+        history_limit: OPERATION_HISTORY_LIMIT,
+    }
+}
+
+fn format_operation_timestamp(elapsed_minutes: u64) -> String {
+    let day = elapsed_minutes / (24 * 60) + 1;
+    let hour = (elapsed_minutes / 60) % 24;
+    let minute = elapsed_minutes % 60;
+    format!("D{day:03} {hour:02}:{minute:02}")
+}
+
 fn inventory_overlay_view(
     game: &GameState,
     keep_click_step: i32,
@@ -20045,6 +20204,41 @@ fn apply_research_ui_actions(game: &mut GameState, actions: Vec<egui_research::R
         } else {
             audio::AudioCue::Warning
         });
+    }
+}
+
+fn apply_operations_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_operations::OperationsUiAction>,
+) {
+    for action in actions {
+        match action {
+            egui_operations::OperationsUiAction::TogglePin => {
+                toggle_egui_pane_pin(EguiPane::Operations);
+                game.audio.play(audio::AudioCue::Confirm);
+            }
+            egui_operations::OperationsUiAction::ToggleCategory(category) => {
+                if !game.operation_hidden_categories.remove(&category) {
+                    game.operation_hidden_categories.insert(category);
+                }
+                game.audio.play(audio::AudioCue::Select);
+            }
+            egui_operations::OperationsUiAction::ToggleSeverity(severity) => {
+                if !game.operation_hidden_severities.remove(&severity) {
+                    game.operation_hidden_severities.insert(severity);
+                }
+                game.audio.play(audio::AudioCue::Select);
+            }
+            egui_operations::OperationsUiAction::ResetFilters => {
+                game.operation_hidden_categories.clear();
+                game.operation_hidden_severities.clear();
+                game.audio.play(audio::AudioCue::Confirm);
+            }
+            egui_operations::OperationsUiAction::Clear => {
+                game.operation_feedback.clear();
+                game.audio.play(audio::AudioCue::Back);
+            }
+        }
     }
 }
 
@@ -25592,14 +25786,14 @@ mod tests {
         push_operation_feedback(&mut game, "Trade", "Bought Iron ore");
         assert_eq!(game.operation_feedback.len(), 1);
 
-        for index in 0..(OPERATION_FEEDBACK_LIMIT + 2) {
+        for index in 0..(OPERATION_HISTORY_LIMIT + 2) {
             push_operation_feedback(&mut game, "Test", format!("Message {index}"));
         }
 
-        assert_eq!(game.operation_feedback.len(), OPERATION_FEEDBACK_LIMIT);
+        assert_eq!(game.operation_feedback.len(), OPERATION_HISTORY_LIMIT);
         assert_eq!(
             latest_operation_feedback(&game),
-            Some(("Test", "Message 7"))
+            Some(("Test", "Message 201"))
         );
         assert!(!operation_feedback_contains(
             &game,
@@ -25635,6 +25829,88 @@ mod tests {
             Some(("Mining", "Recovered Iron ore x3"))
         );
         assert_eq!(game.operation_feedback[0].count, 3);
+    }
+
+    #[test]
+    fn operation_events_include_timestamp_category_and_severity() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.world_elapsed_days = 2.5;
+
+        push_operation_feedback(&mut game, "Mining", "Recovered Iron ore x1");
+        push_operation_feedback(&mut game, "Collision", "Unable to clear collision hazard");
+
+        let error = &game.operation_feedback[0];
+        assert_eq!(error.group, egui_operations::OperationCategory::Combat);
+        assert_eq!(error.severity, egui_operations::OperationSeverity::Error);
+        assert_eq!(error.elapsed_minutes, 3_600);
+        assert_eq!(
+            format_operation_timestamp(error.elapsed_minutes),
+            "D003 12:00"
+        );
+
+        let success = &game.operation_feedback[1];
+        assert_eq!(success.group, egui_operations::OperationCategory::Mining);
+        assert_eq!(
+            success.severity,
+            egui_operations::OperationSeverity::Success
+        );
+    }
+
+    #[test]
+    fn operation_log_actions_filter_reset_and_clear_history() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        push_operation_feedback(&mut game, "Trade", "Bought Iron ore");
+        push_operation_feedback(&mut game, "Research", "Need 100 credits");
+
+        apply_operations_ui_actions(
+            &mut game,
+            vec![
+                egui_operations::OperationsUiAction::ToggleCategory(
+                    egui_operations::OperationCategory::Trade,
+                ),
+                egui_operations::OperationsUiAction::ToggleSeverity(
+                    egui_operations::OperationSeverity::Warning,
+                ),
+            ],
+        );
+        assert!(operations_view(&game).rows.is_empty());
+        assert_eq!(game.operation_feedback.len(), 2);
+
+        apply_operations_ui_actions(
+            &mut game,
+            vec![egui_operations::OperationsUiAction::ResetFilters],
+        );
+        assert_eq!(operations_view(&game).rows.len(), 2);
+
+        apply_operations_ui_actions(&mut game, vec![egui_operations::OperationsUiAction::Clear]);
+        assert!(game.operation_feedback.is_empty());
+    }
+
+    #[test]
+    fn operation_history_is_session_only_and_never_enters_save_data() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        push_operation_feedback(
+            &mut game,
+            "System",
+            "Sentinel operation that must not persist",
+        );
+
+        let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
+        assert!(!serialized.contains("Sentinel operation"));
+
+        let save: SaveData = toml::from_str(&serialized).expect("save should deserialize");
+        let restored_registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(restored_registry, Vec::new());
+        restored.apply_save(save);
+
+        assert!(restored.operation_feedback.is_empty());
     }
 
     #[test]
@@ -27310,6 +27586,7 @@ mod tests {
             content_open: false,
             contracts_open: false,
             fleet_open: false,
+            operations_open: false,
             selected_owned_ship_index: 0,
             fleet_transfer_quantity: 1,
             content_browser: ContentBrowserState::default(),
@@ -27330,6 +27607,8 @@ mod tests {
             save_status_timer: 0.0,
             save_status_manual: false,
             operation_feedback: Vec::new(),
+            operation_hidden_categories: BTreeSet::new(),
+            operation_hidden_severities: BTreeSet::new(),
             debug_console: DebugConsole::default(),
             context_action_menu: None,
             follow_target: None,
