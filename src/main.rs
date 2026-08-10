@@ -60,6 +60,8 @@ const PLAYER_FOLLOW_DISTANCE: f32 = 120.0;
 const PLAYER_APPROACH_SPEED: f32 = 240.0;
 const AUTOPILOT_CLEARANCE_MARGIN: f32 = 18.0;
 const AUTOPILOT_INTERACTION_INSET: f32 = 12.0;
+const AUTOPILOT_AVOIDANCE_MARGIN: f32 = 34.0;
+const AUTOPILOT_WAYPOINT_REACHED: f32 = 34.0;
 const NPC_HOSTILE_STANDOFF_DISTANCE: f32 = 360.0;
 const NPC_PRESSURE_RANGE: f32 = 520.0;
 const REDWAKE_PROBE_PRESSURE_PER_SECOND: f32 = 2.4;
@@ -421,6 +423,7 @@ struct GameState {
     context_action_menu: Option<ContextActionMenu>,
     follow_target: Option<FollowTarget>,
     approach_target: Option<ApproachTarget>,
+    approach_path: Option<ApproachPath>,
     npc_trade_quantity: u32,
 }
 
@@ -502,6 +505,29 @@ enum ApproachTarget {
     PlanetOrbit(usize),
     Station(usize),
     NpcShip(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApproachObstacleId {
+    Planet(usize),
+    Station(usize),
+    NpcShip(usize),
+    OwnedShip(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ApproachObstacle {
+    id: ApproachObstacleId,
+    position: Vec2,
+    radius: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ApproachPath {
+    obstacle: ApproachObstacleId,
+    entry_offset: Vec2,
+    exit_offset: Vec2,
+    stage: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1817,6 +1843,7 @@ impl GameState {
             context_action_menu: None,
             follow_target: None,
             approach_target: None,
+            approach_path: None,
             npc_trade_quantity: 1,
         };
         if let Some(save_data) = save_data {
@@ -6190,6 +6217,7 @@ fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
     game.pending_warp = None;
     game.scene_transition = None;
     game.approach_target = None;
+    game.approach_path = None;
     game.navigation_route_active = false;
     game.follow_target = None;
     game.orbiting_planet = None;
@@ -9592,6 +9620,7 @@ fn update_game(game: &mut GameState, dt: f32) {
                 pause_navigation_route(game, Some("Manual flight input paused itinerary"));
             } else {
                 game.approach_target = None;
+                game.approach_path = None;
             }
             let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
             update_ship(&mut game.ship, dt, energy_recharge);
@@ -10268,7 +10297,239 @@ fn execute_context_action(game: &mut GameState, target: ContextTarget, action: C
 fn begin_approach(game: &mut GameState, target: ApproachTarget) {
     game.follow_target = None;
     game.approach_target = Some(target);
+    game.approach_path = None;
     game.orbiting_planet = None;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ApproachPathDecision {
+    Direct,
+    Bypass(ApproachPath),
+    Hold,
+}
+
+fn approach_target_obstacle(target: ApproachTarget) -> ApproachObstacleId {
+    match target {
+        ApproachTarget::Planet(index) | ApproachTarget::PlanetOrbit(index) => {
+            ApproachObstacleId::Planet(index)
+        }
+        ApproachTarget::Station(index) => ApproachObstacleId::Station(index),
+        ApproachTarget::NpcShip(index) => ApproachObstacleId::NpcShip(index),
+    }
+}
+
+fn approach_obstacles(game: &GameState, target: ApproachTarget) -> Vec<ApproachObstacle> {
+    let target_id = approach_target_obstacle(target);
+    let planets = game
+        .planets
+        .iter()
+        .enumerate()
+        .filter_map(|(index, planet)| {
+            let id = ApproachObstacleId::Planet(index);
+            (id != target_id && planet_is_in_system(planet, &game.current_system_id)).then_some(
+                ApproachObstacle {
+                    id,
+                    position: planet.position,
+                    radius: planet.radius,
+                },
+            )
+        });
+    let stations =
+        game.stations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, station)| {
+                let id = ApproachObstacleId::Station(index);
+                (id != target_id && station_is_in_system(station, &game.current_system_id))
+                    .then_some(ApproachObstacle {
+                        id,
+                        position: station.position,
+                        radius: station.radius,
+                    })
+            });
+    let npc_ships = game
+        .npc_ships
+        .iter()
+        .enumerate()
+        .filter_map(|(index, npc_ship)| {
+            let id = ApproachObstacleId::NpcShip(index);
+            (id != target_id
+                && npc_ship.system == game.current_system_id
+                && npc_ship.hull.current > 0.0)
+                .then_some(ApproachObstacle {
+                    id,
+                    position: npc_ship.position,
+                    radius: npc_ship.radius,
+                })
+        });
+    let owned_ships = game
+        .owned_ships
+        .iter()
+        .enumerate()
+        .filter_map(|(index, owned)| {
+            (owned.instance_id != game.active_owned_ship_id
+                && owned.system_id == game.current_system_id
+                && owned.ship.systems.hull.current > 0.0)
+                .then_some(ApproachObstacle {
+                    id: ApproachObstacleId::OwnedShip(index),
+                    position: owned.ship.position,
+                    radius: SHIP_RADIUS,
+                })
+        });
+    planets
+        .chain(stations)
+        .chain(npc_ships)
+        .chain(owned_ships)
+        .collect()
+}
+
+fn point_segment_distance(point: Vec2, start: Vec2, end: Vec2) -> f32 {
+    let segment = end - start;
+    let length_squared = segment.length_squared();
+    if length_squared <= f32::EPSILON {
+        return point.distance(start);
+    }
+    let progress = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
+    point.distance(start + segment * progress)
+}
+
+fn approach_segment_is_clear(
+    start: Vec2,
+    end: Vec2,
+    obstacles: &[ApproachObstacle],
+    ignored: ApproachObstacleId,
+) -> bool {
+    obstacles.iter().all(|obstacle| {
+        obstacle.id == ignored
+            || point_segment_distance(obstacle.position, start, end)
+                > obstacle.radius + SHIP_RADIUS + AUTOPILOT_AVOIDANCE_MARGIN
+    })
+}
+
+fn plan_approach_path(
+    start: Vec2,
+    target: Vec2,
+    velocity: Vec2,
+    braking_distance: f32,
+    obstacles: &[ApproachObstacle],
+) -> ApproachPathDecision {
+    let direct = target - start;
+    let direct_length_squared = direct.length_squared();
+    if direct_length_squared <= f32::EPSILON {
+        return ApproachPathDecision::Direct;
+    }
+
+    let blocker = obstacles
+        .iter()
+        .filter_map(|obstacle| {
+            let clearance = obstacle.radius + SHIP_RADIUS + AUTOPILOT_AVOIDANCE_MARGIN;
+            (point_segment_distance(obstacle.position, start, target) <= clearance).then(|| {
+                let progress = ((obstacle.position - start).dot(direct) / direct_length_squared)
+                    .clamp(0.0, 1.0);
+                (progress, *obstacle)
+            })
+        })
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .map(|(_, obstacle)| obstacle);
+    let Some(blocker) = blocker else {
+        return ApproachPathDecision::Direct;
+    };
+
+    let direction = direct.normalize();
+    let perpendicular = vec2(-direction.y, direction.x);
+    let clearance = blocker.radius
+        + SHIP_RADIUS
+        + AUTOPILOT_AVOIDANCE_MARGIN
+        + braking_distance.clamp(0.0, 140.0) * 0.25;
+    let mut best: Option<(f32, ApproachPath)> = None;
+    for side in [-1.0_f32, 1.0] {
+        let lateral = perpendicular * side * clearance * 1.15;
+        let entry_offset = -direction * clearance * 0.8 + lateral;
+        let exit_offset = direction * clearance * 0.8 + lateral;
+        let entry = blocker.position + entry_offset;
+        let exit = blocker.position + exit_offset;
+        if !approach_segment_is_clear(start, entry, obstacles, blocker.id)
+            || !approach_segment_is_clear(entry, exit, obstacles, blocker.id)
+            || !approach_segment_is_clear(exit, target, obstacles, blocker.id)
+        {
+            continue;
+        }
+        let mut cost = start.distance(entry) + entry.distance(exit) + exit.distance(target);
+        if velocity.length_squared() > 0.01 {
+            let initial_direction = (entry - start).normalize_or_zero();
+            cost += (1.0 - velocity.normalize().dot(initial_direction)).max(0.0) * clearance;
+        }
+        let path = ApproachPath {
+            obstacle: blocker.id,
+            entry_offset,
+            exit_offset,
+            stage: 0,
+        };
+        if best.is_none_or(|(best_cost, _)| cost < best_cost) {
+            best = Some((cost, path));
+        }
+    }
+
+    best.map(|(_, path)| ApproachPathDecision::Bypass(path))
+        .unwrap_or(ApproachPathDecision::Hold)
+}
+
+fn approach_steering_point(
+    game: &mut GameState,
+    target: ApproachTarget,
+    target_position: Vec2,
+) -> Option<Vec2> {
+    let obstacles = approach_obstacles(game, target);
+    if let Some(mut path) = game.approach_path {
+        if let Some(obstacle) = obstacles
+            .iter()
+            .find(|obstacle| obstacle.id == path.obstacle)
+        {
+            let entry = obstacle.position + path.entry_offset;
+            if path.stage == 0 && game.ship.position.distance(entry) <= AUTOPILOT_WAYPOINT_REACHED {
+                path.stage = 1;
+            }
+            let waypoint = obstacle.position
+                + if path.stage == 0 {
+                    path.entry_offset
+                } else {
+                    path.exit_offset
+                };
+            if path.stage == 1
+                && game.ship.position.distance(waypoint) <= AUTOPILOT_WAYPOINT_REACHED
+            {
+                game.approach_path = None;
+            } else {
+                game.approach_path = Some(path);
+                return Some(waypoint);
+            }
+        } else {
+            game.approach_path = None;
+        }
+    }
+
+    let braking_distance = autopilot_braking_distance(
+        game.ship.velocity.length(),
+        game.ship.reverse_acceleration(),
+    );
+    match plan_approach_path(
+        game.ship.position,
+        target_position,
+        game.ship.velocity,
+        braking_distance,
+        &obstacles,
+    ) {
+        ApproachPathDecision::Direct => Some(target_position),
+        ApproachPathDecision::Bypass(path) => {
+            let obstacle = obstacles
+                .iter()
+                .find(|obstacle| obstacle.id == path.obstacle)
+                .expect("a new approach path retains its blocking obstacle");
+            game.approach_path = Some(path);
+            Some(obstacle.position + path.entry_offset)
+        }
+        ApproachPathDecision::Hold => None,
+    }
 }
 
 fn update_ship_approach(game: &mut GameState, dt: f32) {
@@ -10307,6 +10568,7 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
             );
         } else {
             game.approach_target = None;
+            game.approach_path = None;
             push_operation_feedback(
                 game,
                 "Autopilot",
@@ -10326,16 +10588,30 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         return;
     }
 
-    let direction = offset / distance.max(0.001);
+    let steering_point = approach_steering_point(game, target, target_position);
+    let steering_offset = steering_point
+        .map(|point| point - game.ship.position)
+        .unwrap_or(Vec2::ZERO);
+    let steering_distance = steering_offset.length();
+    let direction = if steering_distance > 0.001 {
+        steering_offset / steering_distance
+    } else {
+        offset / distance.max(0.001)
+    };
     let current_braking_distance = autopilot_braking_distance(
         game.ship.velocity.length(),
         game.ship.reverse_acceleration(),
     );
-    let approach_speed = if current_braking_distance > remaining_distance {
+    let speed_distance = if game.approach_path.is_some() {
+        steering_distance
+    } else {
+        remaining_distance
+    };
+    let approach_speed = if steering_point.is_none() || current_braking_distance > speed_distance {
         0.0
     } else {
         autopilot_speed_for_distance(
-            remaining_distance,
+            speed_distance,
             game.ship.forward_acceleration(),
             PLAYER_APPROACH_SPEED,
         )
@@ -10357,8 +10633,9 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
     }
     let movement = game.ship.velocity * dt;
     let movement_distance = movement.length();
-    if movement_distance >= remaining_distance {
-        game.ship.position = target_position - direction * safe_distance;
+    if game.approach_path.is_none() && movement_distance >= remaining_distance {
+        let arrival_direction = offset / distance.max(0.001);
+        game.ship.position = target_position - arrival_direction * safe_distance;
         game.ship.velocity = Vec2::ZERO;
         game.ship.angular_velocity = 0.0;
         complete_ship_approach(game, target);
@@ -10375,6 +10652,7 @@ fn complete_ship_approach(game: &mut GameState, target: ApproachTarget) {
     game.ship.velocity = Vec2::ZERO;
     game.ship.angular_velocity = 0.0;
     game.approach_target = None;
+    game.approach_path = None;
     if let ApproachTarget::PlanetOrbit(planet_index) = target {
         if game
             .planets
@@ -10947,6 +11225,7 @@ fn switch_current_system(game: &mut GameState, target_system_id: &str) {
     game.context_action_menu = None;
     game.follow_target = None;
     game.approach_target = None;
+    game.approach_path = None;
     game.navigation_route_active = false;
     game.orbiting_planet = None;
     game.destination_planet = destination_planet_for_system(
@@ -11079,6 +11358,7 @@ fn pause_navigation_route(game: &mut GameState, message: Option<&str>) {
     }
     game.navigation_route_active = false;
     game.approach_target = None;
+    game.approach_path = None;
     game.save_dirty = true;
     if let Some(message) = message {
         push_operation_feedback(game, "Route", message.to_string());
@@ -11117,6 +11397,7 @@ fn advance_navigation_route_after_arrival(game: &mut GameState, planet_index: us
 fn clear_navigation_route(game: &mut GameState) {
     if game.navigation_route_active {
         game.approach_target = None;
+        game.approach_path = None;
     }
     game.navigation_route.clear();
     game.navigation_route_current = None;
@@ -15063,6 +15344,7 @@ fn enter_planet_orbit(game: &mut GameState, planet_index: usize) -> bool {
 fn break_planet_orbit(game: &mut GameState) {
     if matches!(game.approach_target, Some(ApproachTarget::PlanetOrbit(_))) {
         game.approach_target = None;
+        game.approach_path = None;
     }
     if game.orbiting_planet.take().is_some() {
         game.save_dirty = true;
@@ -23792,6 +24074,145 @@ mod tests {
     }
 
     #[test]
+    fn approach_path_stays_direct_when_the_route_is_clear() {
+        let obstacle = ApproachObstacle {
+            id: ApproachObstacleId::Station(0),
+            position: vec2(400.0, 220.0),
+            radius: 48.0,
+        };
+
+        assert_eq!(
+            plan_approach_path(Vec2::ZERO, vec2(800.0, 0.0), Vec2::ZERO, 0.0, &[obstacle],),
+            ApproachPathDecision::Direct
+        );
+    }
+
+    #[test]
+    fn approach_path_builds_a_clear_arc_around_a_blocker() {
+        let obstacle = ApproachObstacle {
+            id: ApproachObstacleId::Station(0),
+            position: vec2(400.0, 0.0),
+            radius: 48.0,
+        };
+        let ApproachPathDecision::Bypass(path) =
+            plan_approach_path(Vec2::ZERO, vec2(800.0, 0.0), Vec2::ZERO, 80.0, &[obstacle])
+        else {
+            panic!("the blocked route should produce a bypass");
+        };
+        let entry = obstacle.position + path.entry_offset;
+        let exit = obstacle.position + path.exit_offset;
+        let collision_clearance = obstacle.radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN;
+
+        assert!(point_segment_distance(obstacle.position, Vec2::ZERO, entry) > collision_clearance);
+        assert!(point_segment_distance(obstacle.position, entry, exit) > collision_clearance);
+        assert!(
+            point_segment_distance(obstacle.position, exit, vec2(800.0, 0.0)) > collision_clearance
+        );
+    }
+
+    #[test]
+    fn approach_path_chooses_the_open_side_and_holds_when_both_are_blocked() {
+        let blocker = ApproachObstacle {
+            id: ApproachObstacleId::Station(0),
+            position: vec2(400.0, 0.0),
+            radius: 48.0,
+        };
+        let upper_guard = ApproachObstacle {
+            id: ApproachObstacleId::Planet(0),
+            position: vec2(310.0, 135.0),
+            radius: 28.0,
+        };
+        let lower_guard = ApproachObstacle {
+            id: ApproachObstacleId::Planet(1),
+            position: vec2(310.0, -135.0),
+            radius: 28.0,
+        };
+
+        let ApproachPathDecision::Bypass(path) = plan_approach_path(
+            Vec2::ZERO,
+            vec2(800.0, 0.0),
+            Vec2::ZERO,
+            0.0,
+            &[blocker, upper_guard],
+        ) else {
+            panic!("the open lower side should be selected");
+        };
+        assert!(path.entry_offset.y < 0.0);
+        assert_eq!(
+            plan_approach_path(
+                Vec2::ZERO,
+                vec2(800.0, 0.0),
+                Vec2::ZERO,
+                0.0,
+                &[blocker, upper_guard, lower_guard],
+            ),
+            ApproachPathDecision::Hold
+        );
+    }
+
+    #[test]
+    fn approach_path_tracks_a_moving_obstacle_without_switching_sides() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let target = test_planet(
+            "core:moving_obstacle_target",
+            STARTER_SYSTEM_ID,
+            vec2(900.0, 0.0),
+            true,
+        );
+        let mut game = test_game_with_systems(registry, vec![target]);
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(420.0, 0.0))];
+        let target = ApproachTarget::Planet(0);
+
+        let first = approach_steering_point(&mut game, target, vec2(900.0, 0.0))
+            .expect("a bypass waypoint should be available");
+        let first_path = game.approach_path.expect("the bypass should be retained");
+        game.npc_ships[0].position += vec2(0.0, 24.0);
+        let second = approach_steering_point(&mut game, target, vec2(900.0, 0.0))
+            .expect("the moving bypass waypoint should remain available");
+        let second_path = game
+            .approach_path
+            .expect("the same bypass should remain active");
+
+        assert_eq!(first_path.obstacle, second_path.obstacle);
+        assert_eq!(first_path.entry_offset, second_path.entry_offset);
+        assert!((second.y - first.y - 24.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn approach_autopilot_arcs_around_a_station_and_reaches_its_target() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let target = test_planet("core:arc_target", STARTER_SYSTEM_ID, vec2(900.0, 0.0), true);
+        let mut game = test_game_with_systems(registry, vec![target]);
+        game.stations = vec![test_station_destination(
+            "core:arc_blocker",
+            STARTER_SYSTEM_ID,
+            vec2(440.0, 0.0),
+        )];
+        begin_approach(&mut game, ApproachTarget::Planet(0));
+        let mut minimum_distance = f32::MAX;
+        let mut maximum_arc = 0.0_f32;
+
+        for _ in 0..400 {
+            if game.approach_target.is_none() {
+                break;
+            }
+            update_ship_approach(&mut game, 0.05);
+            minimum_distance =
+                minimum_distance.min(game.ship.position.distance(game.stations[0].position));
+            maximum_arc = maximum_arc.max(game.ship.position.y.abs());
+        }
+
+        assert!(game.approach_target.is_none());
+        assert!(maximum_arc > game.stations[0].radius + SHIP_RADIUS);
+        assert!(
+            minimum_distance
+                > game.stations[0].radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN - 1.0
+        );
+    }
+
+    #[test]
     fn follow_keeps_a_moving_npc_outside_collision_clearance() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -26913,6 +27334,7 @@ mod tests {
             context_action_menu: None,
             follow_target: None,
             approach_target: None,
+            approach_path: None,
             npc_trade_quantity: 1,
         };
         game.owned_ships.push(game.capture_active_owned_ship());

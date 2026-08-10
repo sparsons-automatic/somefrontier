@@ -374,6 +374,11 @@ normally, and a pair must separate before another impact can deal damage.
 
 Approach, follow, docking, system arrival, ship switching, and save loading use
 safe clearances or a brief collision grace period to avoid unavoidable damage.
+Approach autopilot also checks the route ahead. When a planet, station, contact,
+or inactive fleet ship blocks the direct line, the ship chooses an open side and
+flies a visible clearance arc around it before resuming the approach. The chosen
+side remains stable for moving contacts. If nearby bodies close both bypasses,
+autopilot brakes and waits instead of forcing a collision.
 Deliberate high-speed ramming can still destroy a ship quickly.
 
 When a collision causes damage, a short-lived impact ring and flash appear at

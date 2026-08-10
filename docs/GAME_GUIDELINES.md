@@ -129,6 +129,7 @@ Use this matrix after collision changes:
 | Inactive owned ship contact | The inactive ship stays fixed while shields, hull, and recharge delay remain active |
 | Continuous overlap | Damage does not repeat until separation and cooldown re-arm |
 | Approach, follow, and trade | Autopilot clearance prevents accidental collision damage |
+| Approach with an intervening body | Autopilot takes a stable clearance arc; blocked bypasses brake and hold |
 | Load, system arrival, and ship switch | Collision grace prevents unavoidable restored-position damage |
 
 Run contact and response simulations at 30, 60, and 144 updates per second.
