@@ -78,6 +78,14 @@ summary = "Unlocks the advanced scanner core recipe for deeper survey capability
 kind = "recipe_unlock"
 target = "advanced_scanner_core"
 
+[[research.rewards]]
+kind = "combat_scan_speed_percent"
+amount = 25.0
+
+[[research.rewards]]
+kind = "combat_scan_depth"
+amount = 1.0
+
 [[research]]
 id = "yield_optimization_i"
 name = "Yield Optimization I"

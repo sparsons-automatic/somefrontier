@@ -331,11 +331,13 @@ strength, recharge state, and resistance values.
 
 Ships can also mount weapon modules through weapon slots. The current weapon
 type is automatic turret defense. Turrets scan for valid hostile threats in
-range, including hostile NPC ships, fire when ready, and spend ship energy.
+range, including hostile NPC ships, fire when ready, and spend a dedicated
+weapon capacitor.
 They ignore neutral, owned, and environmental threats. There is no manual
 targeting or fire button in the current build. The Defense rail beside the ship
-pane lists each `Turret Bank`, its installed turret, range, damage, energy cost,
-and cooldown state. Open a bank's `Turret List` dropdown to see the turret types
+pane lists drive energy separately from the weapon capacitor, then shows each
+`Turret Bank`, its installed turret, range, damage, capacitor cost, and cooldown
+state. Open a bank's `Turret List` dropdown to see the turret types
 currently in inventory and their owned counts, then select the exact turret to
 install. The outgoing turret returns to inventory. Ships support one
 independently configurable bank for every weapon slot in their content
@@ -345,10 +347,17 @@ the Twinspire has two banks initially fitted with an Ember Lance and Sentinel
 Flak turret.
 NPC ships can also mount active turrets from their content configuration:
 non-hostile patrol ships engage hostile threats, while hostile ships can fire on
-the player when in range. The starter Frontier system includes a Redwake probe
+the player when in range. Their weapon capacitors recharge during combat, so a
+long engagement no longer permanently silences an NPC after its initial power
+reserve is spent. NPC-origin projectiles use a warm orange incoming-fire palette
+so simultaneous fire from an identical player turret remains distinguishable.
+The starter Frontier system includes a Redwake probe
 that begins PvE pressure with automatic turret fire. Destroyed NPC ships are
 removed from local space, and their cargo is automatically moved into your
 inventory when the full cargo stack fits within your cargo rating.
+Saves created before the capacitor/recharge update restore the authored
+ammunition reserve for depleted armed NPCs once, preventing an old encounter
+from remaining permanently disarmed.
 
 Turret projectiles apply damage when they visually reach their target. Weapons
 may strike one target, chain through nearby targets, damage a blast radius, or
@@ -360,9 +369,13 @@ the weapon's flight path before impact.
 
 Physical turrets consume ammunition from ship inventory when they successfully
 fire. Their turret-bank status shows the remaining ammo count and changes to
-`out of ammo` without spending energy when none remains. Energy weapons such as
+`out of ammo` without spending capacitor power when none remains. Energy weapons such as
 the Ember Lance and Storm Chain need no ammunition. Ammunition can be replenished
 at the crafting station:
+
+Thrust and turning spend only drive energy. Turrets spend only weapon-capacitor
+energy, so exhausting maneuvering power cannot disable automatic defenses.
+Both pools recharge from the installed reactor and are persisted independently.
 
 - 20 interceptor rounds use an iron plate, two copper wires, and electronics.
 - 30 Sentinel flak canisters use an iron plate, a gear, and sulfur.
@@ -496,13 +509,43 @@ modes such as patrol, traffic, trade-route travel, follow, flee, or hostile
 intercept. These behaviors make local space feel active while keeping ship
 interaction lightweight.
 
-Fly near an NPC ship and press `Space`, or click a visible NPC ship, to inspect
-the contact in a movable, resizable stock egui Contact window. Nearby contacts
-can be identified from its interaction table,
-revealing faction, disposition, systems, cargo summary, and supported hooks such
-as hail, dock, trade, or conflict. Some hooks are visible before their full
-mechanics exist, so unavailable rows describe the current blocker. Identified
-non-hostile haulers with cargo expose a mobile Cargo market: open it from the
+Select an NPC ship with `Space` or a click to begin an automatic passive scan.
+`Space` can acquire the nearest contact anywhere inside scanner range, including
+hostile ships holding outside the smaller interaction radius, and mouse contact
+hit targets include extra padding for moving ships.
+Hostile interceptors are acquired automatically when they target the active ship
+and enter scanner range. A proximity alarm sounds on entry, the nearest hostile
+becomes the selected contact, and scanning starts without requiring a click or
+key press. Leaving scanner range arms the alarm again for a later re-entry.
+The movable, resizable Contact window shows the current stage, progress, range,
+power blocker, and scanner-depth limit. Keep the selected ship within 620 units
+of surface clearance: leaving range briefly pauses the scan, while a longer
+interruption or selecting another target loses partial progress for the current
+stage. Completed stages remain known for that content-pack ship archetype.
+
+Scanning reveals identity and disposition first, followed by hull telemetry,
+shields, weapon loadout, and detailed energy, readiness, ammo, and cargo data.
+Unknown fields remain labeled instead of exposing exact values. Hostile hull
+plates appear as a masked `?` bar while hull telemetry is unknown, then reveal
+the live hull fraction after the hull stage. Their shield bar appears only after
+the shield stage. Weapons can acquire and damage hostile contacts at any scan
+stage; scanning changes available information, never permission to fire.
+Scanning spends a small amount of ship energy but
+yields to automatic weapon fire; insufficient energy pauses progress. The base
+scanner can reach hull telemetry. Scanner Array upgrades add one combat scan
+stage and 15% speed per level, while Research rewards can add more depth or
+speed. Completed intelligence is saved; partial stage progress is not.
+Identity and hull telemetry are the fastest stages so an early hostile normally
+reveals its health plate before starter automatic turrets destroy it. The
+starter Redwake probe also has an easier scan signature than a standard ship.
+Starter and shipped content hull and shield capacities are tuned so ordinary
+turret combat generally lasts about 10–25 weapon impacts rather than ending in
+the first few shots; heavy specialist weapons can still end fights sooner.
+
+Identity unlocks supported hooks such as hail, dock, trade, or conflict. Some
+hooks are visible before their full mechanics exist, so unavailable rows describe
+the current blocker. Identified non-hostile haulers with cargo expose a mobile
+Cargo market: open it from the
 Trade row, choose a quantity with the `−` and `+` controls, then buy or sell
 that many units. The quantity controls use the current modifier step: a normal
 click changes it by 1, `Shift` changes it by 10, and `Ctrl` changes it by 20.

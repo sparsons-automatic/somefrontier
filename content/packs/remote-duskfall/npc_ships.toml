@@ -18,8 +18,9 @@ cargo_defaults = [
 ]
 credit_reward_min = 60
 credit_reward_max = 110
-hull_capacity = 36.0
-shield_capacity = 20.0
+hull_capacity = 180.0
+shield_capacity = 120.0
 energy_capacity = 40.0
+energy_recharge = 6.0
 weapon_slots = ["core:point_defense_turret"]
 summary = "A Redwake probe that shadows remote haulers and bleeds shields when it gets close."
