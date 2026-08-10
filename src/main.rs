@@ -7474,12 +7474,12 @@ fn egui_window_has_reachable_area(rect: egui::Rect, screen: [f32; 2]) -> bool {
     visible_width >= 64.0 && visible_height >= 24.0
 }
 
-fn compensate_egui_scroll_input(ctx: &egui::Context) {
+fn compensate_egui_scroll_input(_ctx: &egui::Context) {
     // egui-macroquad divides native wheel input by 90, matching Windows' raw
     // wheel units. Miniquad's Linux/X11 backend already reports normalized
     // notches. Correct the processed input that ScrollArea actually consumes.
     #[cfg(target_os = "linux")]
-    ctx.input_mut(|input| {
+    _ctx.input_mut(|input| {
         if input.raw_scroll_delta != egui::Vec2::ZERO {
             input.raw_scroll_delta *= EGUI_LINUX_WHEEL_DIVISOR;
             input.smooth_scroll_delta *= EGUI_LINUX_WHEEL_DIVISOR;
