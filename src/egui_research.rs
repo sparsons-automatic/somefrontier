@@ -441,7 +441,7 @@ fn draw_graph_edges(
         } else {
             Color32::from_rgba_premultiplied(112, 139, 147, 125)
         };
-        let stroke = Stroke::new(if related { 3.0 } else { 1.5 }, color);
+        let stroke = Stroke::new(if related { 3.0_f32 } else { 1.5_f32 }, color);
         let path = research_edge_path(*from, *to);
         for segment in path.points.windows(2) {
             ui.painter().line_segment([segment[0], segment[1]], stroke);
@@ -513,9 +513,9 @@ fn draw_graph_nodes(
         let selected = view.selected.as_deref() == Some(node.id.as_str());
         let (fill, state_border, text_color) = node.state.colors();
         let stroke = if selected {
-            Stroke::new(3.0, Color32::from_rgb(225, 245, 248))
+            Stroke::new(3.0_f32, Color32::from_rgb(225, 245, 248))
         } else {
-            Stroke::new(1.5, state_border)
+            Stroke::new(1.5_f32, state_border)
         };
         let label = RichText::new(format!(
             "{}  {}\n{}",
