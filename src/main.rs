@@ -108,6 +108,8 @@ const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
 const SAVE_VERSION: u32 = 5;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
+#[cfg(target_os = "linux")]
+const EGUI_LINUX_WHEEL_DIVISOR: f32 = 90.0;
 const GAME_DAY_SECONDS: f32 = 120.0;
 const PLANET_SEED_JITTER: f32 = 180.0;
 const PLANET_SEED_ROTATION: f32 = 0.22;
@@ -7472,6 +7474,26 @@ fn egui_window_has_reachable_area(rect: egui::Rect, screen: [f32; 2]) -> bool {
     visible_width >= 64.0 && visible_height >= 24.0
 }
 
+fn compensate_egui_scroll_input(ctx: &egui::Context) {
+    // egui-macroquad divides native wheel input by 90, matching Windows' raw
+    // wheel units. Miniquad's Linux/X11 backend already reports normalized
+    // notches. Correct the processed input that ScrollArea actually consumes.
+    #[cfg(target_os = "linux")]
+    ctx.input_mut(|input| {
+        if input.raw_scroll_delta != egui::Vec2::ZERO {
+            input.raw_scroll_delta *= EGUI_LINUX_WHEEL_DIVISOR;
+            input.smooth_scroll_delta *= EGUI_LINUX_WHEEL_DIVISOR;
+        }
+    });
+}
+
+fn egui_ui(mut add_contents: impl FnMut(&egui::Context)) {
+    egui_macroquad::ui(|ctx| {
+        compensate_egui_scroll_input(ctx);
+        add_contents(ctx);
+    });
+}
+
 fn queue_egui_layout_save(ctx: &egui::Context, dt: f32) {
     let Some(serialized) = ctx.memory(ron::to_string).ok() else {
         return;
@@ -7799,7 +7821,7 @@ fn draw_startup_loading_panel(
             })
         })
     });
-    egui_macroquad::ui(|ctx| {
+    egui_ui(|ctx| {
         egui_loading::draw(
             ctx,
             [screen_width(), screen_height()],
@@ -8112,7 +8134,7 @@ async fn main() {
                         let mut escape_actions = Vec::new();
                         let mut debug_actions = Vec::new();
                         let mut context_outcome = None;
-                        egui_macroquad::ui(|ctx| {
+                        egui_ui(|ctx| {
                             prepare_egui_layout(ctx, [screen_width(), screen_height()]);
                             if let Some(view) = &inventory_view {
                                 inventory_actions = egui_inventory::draw(
@@ -9201,7 +9223,7 @@ fn draw_title_menu(menu: &mut TitleMenu, background: &UniverseBackground) {
 
 fn draw_title_main_egui(menu: &mut TitleMenu) {
     let mut actions = Vec::new();
-    egui_macroquad::ui(|ctx| {
+    egui_ui(|ctx| {
         if menu.branding_egui_texture.is_none() {
             if let Some(image) = &menu.branding_egui_image {
                 menu.branding_egui_texture = Some(ctx.load_texture(
@@ -9249,7 +9271,7 @@ fn draw_title_main_egui(menu: &mut TitleMenu) {
 
 fn draw_title_submenu_egui(menu: &mut TitleMenu) {
     let mut actions = Vec::new();
-    egui_macroquad::ui(|ctx| {
+    egui_ui(|ctx| {
         ensure_title_ship_egui_textures(menu, ctx);
         let view = title_submenu_view(menu);
         actions = egui_title::draw(ctx, [screen_width(), screen_height()], &view);
@@ -21838,6 +21860,28 @@ mod tests {
         assert_eq!(parse_title_seed(""), None);
         assert_eq!(parse_title_seed("abc"), None);
         assert_eq!(parse_title_seed("18446744073709551616"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_egui_scroll_speed_restores_one_normal_step_per_wheel_notch() {
+        let ctx = egui::Context::default();
+        let observed = std::cell::Cell::new(egui::Vec2::ZERO);
+        let input = egui::RawInput {
+            events: vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, 1.0 / EGUI_LINUX_WHEEL_DIVISOR),
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+
+        let _ = ctx.run(input, |ctx| {
+            compensate_egui_scroll_input(ctx);
+            observed.set(ctx.input(|input| input.smooth_scroll_delta));
+        });
+
+        assert!((observed.get().y - 40.0).abs() < 0.001);
     }
 
     #[test]
