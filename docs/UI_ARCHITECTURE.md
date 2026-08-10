@@ -102,6 +102,24 @@ the gameplay layer, which retains prerequisite, credit, timer, save, and reward
 authority. The window participates in the shared pin, geometry persistence, and
 `Reset Menus` recovery paths without an additional graph or layout dependency.
 
+The Operations Log is a separate movable, pinnable egui window over the shared
+gameplay feedback stream. Gameplay systems continue to publish through one
+event path, so the compact Ship readout, contextual Planet, Station, Contact,
+and Research feedback, warning audio, and full history do not need duplicate
+messages. Each runtime event records elapsed world time, its original source,
+one broad category, one severity, and its message. The model deduplicates exact
+repeats, aggregates routine production and mining output, and discards the
+oldest entries beyond 200.
+
+The renderer receives a chronological presentation-only snapshot and emits
+typed actions for category filters, severity filters, reset, clear, and pinning.
+Filters change visibility rather than deleting events; clear is the only UI
+action that removes history. Egui's bottom-stick scroll state follows new events
+only while the player remains at the bottom, preserving position when older rows
+are being reviewed. Operations history and filter state are intentionally
+runtime-only and never enter world saves. Window geometry and pin state still
+use the shared global egui persistence and `Reset Menus` recovery path.
+
 The starmap deliberately remains a Macroquad 3D renderer rather than becoming an
 egui drawing surface. `M` composes the smaller left-biased map with an independent
 stock-egui Destinations window. Map hit-testing returns a planet index only to
@@ -185,6 +203,13 @@ Also check normal and high-DPI desktop scaling. Verify mouse scrolling remains i
 the hovered table, tooltips reveal clipped values, `Up`/`Down` changes the active
 production row, `Enter` queues it, production tabs remain reachable, and ship
 equipment dropdowns contain compatible cargo items.
+
+For the Operations Log, verify long messages wrap without hiding timestamps or
+text markers, category and severity toggles work at each matrix size, and a new
+event follows the bottom only when the log was already there. Scroll upward,
+generate another event, and confirm the reviewed rows remain stationary. Clear
+history, reset filters, pin the window, and use `Reset Menus` to verify each
+action retains its documented scope.
 
 ## Native And Web Builds
 
