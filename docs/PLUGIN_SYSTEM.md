@@ -458,8 +458,11 @@ Rules:
 - `station_visibility` rewards require a `target` that references an existing
   station.
 - `mining_speed_percent`, `smelting_speed_percent`,
-  `fabrication_speed_percent`, and `bonus_output_chance` rewards require a
-  positive `amount`.
+  `fabrication_speed_percent`, `bonus_output_chance`,
+  `combat_scan_speed_percent`, and `combat_scan_depth` rewards require a
+  positive `amount`. Combat scan depth is counted in whole stages; speed is a
+  percentage multiplier. Packs can combine these rewards with the base
+  `core:scanner_array` upgrade without replacing the scanning state machine.
 
 ## `stations.toml`
 
@@ -677,7 +680,7 @@ Rules:
 
 Weapon files define ship-mounted weapon equipment. The first supported weapon
 type is automatic turret defense: the player does not manually target or fire
-these weapons. The base game owns threat scanning, cooldowns, energy spending,
+these weapons. The base game owns threat scanning, cooldowns, weapon-capacitor spending,
 target resolution, projectile visuals, and damage application. Each weapon also
 points at an inventory install item, allowing crafted turret objects to be
 swapped into ship weapon slots through the ship Defense rail.
@@ -727,11 +730,14 @@ Rules:
   a crafting recipe. It is the inventory object consumed when this weapon is
   installed and returned when the weapon is swapped out.
 - `range`, `cooldown_seconds`, and `damage` must be positive.
-- `energy_cost` defaults to 0.0 and must not be negative.
+- `energy_cost` defaults to 0.0 and must not be negative. It spends the ship's
+  dedicated weapon capacitor, never its drive-energy pool. The capacitor uses
+  the authored ship energy capacity and reactor recharge values, while remaining
+  independently persisted at runtime.
 - `ammo_item` is optional and resolves like other pack-local item references.
   Omit it for energy weapons. When present, the player consumes the item from
   inventory and NPC ships consume it from their saved `cargo_defaults`.
-- `ammo_per_shot` defaults to 1 and must be positive. Ammunition and energy are
+- `ammo_per_shot` defaults to 1 and must be positive. Ammunition and capacitor energy are
   consumed only after a valid target is acquired and the shot actually fires.
   A weapon without enough ammunition reports `out of ammo` and does not spend
   energy or begin its cooldown.
@@ -920,11 +926,14 @@ NPC ship definitions provide data-driven non-player ship archetypes that can
 appear in local space independently of the player. The runtime derives a
 behavior mode from each ship's role, faction, and behavior tags, then moves the
 ship with lightweight steering and spacing rules. Players can inspect nearby
-NPC ships and identify contacts to reveal faction, disposition, systems, loadout,
-and action hooks. Configured turret weapons are active at runtime: non-hostile
-NPCs engage hostile threats, and hostile NPCs can fire on the player when in
-range. Full hailing, docking, and trade exchanges are owned by later base-game
-systems.
+NPC ships and progressively scan contacts to reveal identity/disposition, hull,
+shields, weapons, detailed telemetry, and action hooks. Completed stages are
+retained by the NPC definition's namespaced archetype ID. Configured turret
+weapons are active at runtime: non-hostile
+NPCs engage hostile threats, and hostile interceptors automatically trigger the
+player's proximity alarm, contact selection, and passive scan when they enter
+scanner range. Hostile NPCs can fire on the player when in weapon range. Full
+hailing, docking, and trade exchanges are owned by later base-game systems.
 
 ```toml
 [[npc_ships]]
@@ -939,6 +948,7 @@ role = "patrol"
 behavior_tags = ["security", "patrol", "non-hostile"]
 spawn_weight = 0.75
 spawn_count = 1
+scan_difficulty = 1.0
 mass = 42000.0
 cargo_capacity = 12000.0
 cargo_defaults = [
@@ -946,9 +956,10 @@ cargo_defaults = [
 ]
 credit_reward_min = 0
 credit_reward_max = 0
-hull_capacity = 82.0
-shield_capacity = 80.0
+hull_capacity = 220.0
+shield_capacity = 180.0
 energy_capacity = 90.0
+energy_recharge = 10.0
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
 summary = "Local patrol craft that gives the system an early moving security presence."
@@ -977,9 +988,18 @@ Rules:
   after shields are depleted.
 - `spawn_weight` defaults to 1.0 and must be positive.
 - `spawn_count` defaults to 1 and must be greater than zero.
-- `mass`, `cargo_capacity`, hull, shield, and energy capacities must be
-  positive. NPC mass participates in the same collision response and
-  target-relative damage model as player hull mass.
+- `scan_difficulty` defaults to 1.0 and must be positive. It multiplies the time
+  required for each intelligence stage without changing the ordered identity,
+  hull, shield, weapon, and detailed-telemetry reveal contract. Values below
+  1.0 are useful for fragile starter contacts that should reveal hull telemetry
+  before ordinary automatic weapons destroy them.
+- `mass`, `cargo_capacity`, hull, shield, energy capacity, and energy recharge
+  must be positive. `energy_recharge` defaults to 6.0 per second and replenishes
+  the NPC weapon capacitor during combat. NPC mass participates in the same collision response and
+  target-relative damage model as player hull mass. Authors should compare
+  combined durability with the damage of weapons likely to engage the ship;
+  ordinary encounters should generally survive 10–25 impacts, while explicitly
+  fragile drones or heavy specialist weapons may sit outside that band.
 - `cargo_defaults` defaults to an empty list. Entries resolve to namespaced item
   IDs and must reference loaded items; counts must be greater than zero. At
   runtime, destroyed NPC ships use these entries as automatic loot, adding each
@@ -1124,6 +1144,9 @@ Rules:
 - Each cost must have a positive `base_count`, a positive `per_level`, or both.
 - `per_levels` must be positive.
 - Costs that resolve to zero for an early level are hidden at runtime.
+- `core:scanner_array` retains its base-game meaning: each level adds one combat
+  scan stage and 15% combat scan speed, while every two levels add one planet
+  survey depth. Packs can author its costs but cannot redefine those mechanics.
 
 ## Universe and System Metadata
 

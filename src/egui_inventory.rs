@@ -54,6 +54,7 @@ pub struct ShipPane {
     pub hull: String,
     pub shield: String,
     pub energy: String,
+    pub weapon_energy: String,
     pub mass: String,
     pub engine: String,
     pub turn: String,
@@ -184,7 +185,8 @@ fn draw_ship_pane(ui: &mut egui::Ui, ship: &ShipPane, actions: &mut Vec<Inventor
         .show(ui, |ui| {
             ship_stat(ui, "Hull", &ship.hull);
             ship_stat(ui, "Shield", &ship.shield);
-            ship_stat(ui, "Energy", &ship.energy);
+            ship_stat(ui, "Drive energy", &ship.energy);
+            ship_stat(ui, "Weapon capacitor", &ship.weapon_energy);
             ship_stat(ui, "Mass", &ship.mass);
             ship_stat(ui, "Engine", &ship.engine);
             ship_stat(ui, "Turn", &ship.turn);

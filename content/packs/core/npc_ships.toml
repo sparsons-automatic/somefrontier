@@ -19,9 +19,10 @@ cargo_defaults = [
 ]
 credit_reward_min = 0
 credit_reward_max = 0
-hull_capacity = 70.0
-shield_capacity = 45.0
+hull_capacity = 180.0
+shield_capacity = 140.0
 energy_capacity = 60.0
+energy_recharge = 8.0
 shield_slots = ["balanced_shield_matrix"]
 summary = "Independent cargo skiff moving starter ore and components through Frontier local space."
 
@@ -46,9 +47,10 @@ cargo_defaults = [
 ]
 credit_reward_min = 0
 credit_reward_max = 0
-hull_capacity = 82.0
-shield_capacity = 80.0
+hull_capacity = 220.0
+shield_capacity = 180.0
 energy_capacity = 90.0
+energy_recharge = 10.0
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
 summary = "Local patrol craft that gives the system an early moving security presence."
@@ -66,6 +68,7 @@ faction = "redwake_raiders"
 behavior_tags = ["hostile", "probe"]
 spawn_weight = 0.45
 spawn_count = 1
+scan_difficulty = 0.65
 mass = 18000.0
 cargo_capacity = 2500.0
 cargo_defaults = [
@@ -74,8 +77,9 @@ cargo_defaults = [
 ]
 credit_reward_min = 35
 credit_reward_max = 70
-hull_capacity = 36.0
-shield_capacity = 20.0
+hull_capacity = 180.0
+shield_capacity = 120.0
 energy_capacity = 40.0
+energy_recharge = 6.0
 weapon_slots = ["point_defense_turret"]
 summary = "Light hostile probe that opens starter-zone PvE with automatic turret fire."

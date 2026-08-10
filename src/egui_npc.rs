@@ -28,6 +28,10 @@ pub struct NpcPaneView {
     pub proximity: String,
     pub identified: bool,
     pub hostile: bool,
+    pub intel_level: String,
+    pub scan_stage: String,
+    pub scan_progress: Option<f32>,
+    pub scan_status: String,
     pub identity: String,
     pub disposition: String,
     pub systems: String,
@@ -86,6 +90,19 @@ fn draw_contents(ui: &mut egui::Ui, view: &NpcPaneView, actions: &mut Vec<NpcUiA
             ui.colored_label(ui.visuals().error_fg_color, "Hostile");
         }
     });
+    ui.horizontal(|ui| {
+        ui.strong(format!("Intel: {}", view.intel_level));
+        ui.label(format!("Next: {}", view.scan_stage));
+    });
+    if let Some(progress) = view.scan_progress {
+        ui.add(
+            egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                .show_percentage()
+                .text(&view.scan_status),
+        );
+    } else {
+        ui.small(&view.scan_status);
+    }
 
     egui::Grid::new("npc-contact-facts")
         .num_columns(2)
@@ -136,7 +153,7 @@ fn draw_interactions(ui: &mut egui::Ui, view: &NpcPaneView, actions: &mut Vec<Np
         });
 
     if !view.identified {
-        ui.small("Approach and identify the contact to reveal its faction, loadout, and services.");
+        ui.small("Keep the selected contact in scanner range to reveal its identity and services.");
     }
 }
 

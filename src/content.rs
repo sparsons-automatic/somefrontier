@@ -189,6 +189,7 @@ pub struct NpcShipDef {
     pub behavior_tags: Vec<String>,
     pub spawn_weight: f32,
     pub spawn_count: u32,
+    pub scan_difficulty: f32,
     pub mass: f32,
     pub cargo_capacity: f32,
     pub cargo_defaults: Vec<StackDef>,
@@ -197,6 +198,7 @@ pub struct NpcShipDef {
     pub hull_capacity: f32,
     pub shield_capacity: f32,
     pub energy_capacity: f32,
+    pub energy_recharge: f32,
     pub shield_slots: Vec<String>,
     pub weapon_slots: Vec<String>,
     pub summary: Option<String>,
@@ -826,6 +828,8 @@ struct NpcShipFileDef {
     spawn_weight: f32,
     #[serde(default = "default_spawn_count")]
     spawn_count: u32,
+    #[serde(default = "default_npc_scan_difficulty")]
+    scan_difficulty: f32,
     mass: f32,
     cargo_capacity: f32,
     #[serde(default)]
@@ -837,6 +841,8 @@ struct NpcShipFileDef {
     hull_capacity: f32,
     shield_capacity: f32,
     energy_capacity: f32,
+    #[serde(default = "default_npc_energy_recharge")]
+    energy_recharge: f32,
     #[serde(default)]
     shield_slots: Vec<String>,
     #[serde(default)]
@@ -2027,6 +2033,13 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         if npc_ship.spawn_count == 0 {
             errors.push(format!("NPC ship `{id}` has zero spawn count"));
         }
+        validate_positive(
+            npc_ship.scan_difficulty,
+            "NPC ship",
+            &id,
+            "scan difficulty",
+            errors,
+        );
         validate_positive(npc_ship.mass, "NPC ship", &id, "mass", errors);
         validate_positive(
             npc_ship.cargo_capacity,
@@ -2059,6 +2072,13 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             "NPC ship",
             &id,
             "energy capacity",
+            errors,
+        );
+        validate_positive(
+            npc_ship.energy_recharge,
+            "NPC ship",
+            &id,
+            "energy recharge",
             errors,
         );
         let texture = npc_ship
@@ -2094,6 +2114,7 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     behavior_tags: npc_ship.behavior_tags,
                     spawn_weight: npc_ship.spawn_weight,
                     spawn_count: npc_ship.spawn_count,
+                    scan_difficulty: npc_ship.scan_difficulty,
                     mass: npc_ship.mass,
                     cargo_capacity: npc_ship.cargo_capacity,
                     cargo_defaults,
@@ -2102,6 +2123,7 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     hull_capacity: npc_ship.hull_capacity,
                     shield_capacity: npc_ship.shield_capacity,
                     energy_capacity: npc_ship.energy_capacity,
+                    energy_recharge: npc_ship.energy_recharge,
                     shield_slots: npc_ship
                         .shield_slots
                         .into_iter()
@@ -3800,7 +3822,9 @@ fn validate_research_reward(
         "mining_speed_percent"
         | "smelting_speed_percent"
         | "fabrication_speed_percent"
-        | "bonus_output_chance" => {
+        | "bonus_output_chance"
+        | "combat_scan_speed_percent"
+        | "combat_scan_depth" => {
             let Some(amount) = reward.amount else {
                 errors.push(format!(
                     "Research `{}` {} reward has no amount",
@@ -4093,6 +4117,14 @@ fn default_spawn_count() -> u32 {
     1
 }
 
+fn default_npc_scan_difficulty() -> f32 {
+    1.0
+}
+
+fn default_npc_energy_recharge() -> f32 {
+    6.0
+}
+
 fn default_station_icon() -> String {
     "station".to_string()
 }
@@ -4241,7 +4273,7 @@ mod tests {
             .get("core:hazard_shield_matrix")
             .is_some_and(|shield| {
                 shield.install_item == "core:hazard_shield_matrix"
-                    && shield.capacity == 85.0
+                    && shield.capacity == 170.0
                     && shield.recharge_delay == 3.0
                     && shield.recharge_rate == 6.0
                     && shield.damage_resistance == 0.05
@@ -4257,6 +4289,8 @@ mod tests {
                     && npc_ship.archetype == "patrol-cutter"
                     && npc_ship.role == "patrol"
                     && npc_ship.spawn_count == 1
+                    && npc_ship.scan_difficulty == 1.0
+                    && npc_ship.energy_recharge == 10.0
                     && npc_ship.credit_reward_min == 0
                     && npc_ship.credit_reward_max == 0
                     && npc_ship.cargo_defaults
@@ -4825,6 +4859,14 @@ summary = "Scanner recipe research."
 [[research.rewards]]
 kind = "recipe_unlock"
 target = "scanner_core"
+
+[[research.rewards]]
+kind = "combat_scan_speed_percent"
+amount = 20.0
+
+[[research.rewards]]
+kind = "combat_scan_depth"
+amount = 1.0
 "#,
         )
         .expect("research should be written");
@@ -4847,6 +4889,12 @@ target = "scanner_core"
                     && research.rewards.iter().any(|reward| {
                         reward.kind == "recipe_unlock"
                             && reward.target.as_deref() == Some("core:scanner_core")
+                    })
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "combat_scan_speed_percent" && reward.amount == Some(20.0)
+                    })
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "combat_scan_depth" && reward.amount == Some(1.0)
                     })
             }));
 
@@ -5547,6 +5595,7 @@ position = [40.0, -80.0]
 archetype = "test-courier"
 role = "hauler"
 behavior_tags = ["traffic"]
+scan_difficulty = 1.6
 mass = 500.0
 cargo_capacity = 100.0
 cargo_defaults = [
@@ -5555,6 +5604,7 @@ cargo_defaults = [
 hull_capacity = 25.0
 shield_capacity = 10.0
 energy_capacity = 20.0
+energy_recharge = 4.5
 "#,
         )
         .expect("npc ships should be written");
@@ -5614,8 +5664,13 @@ summary = "A station using a plugin-local asset."
         assert!(registry
             .npc_ships
             .get("asset-pack:local_npc")
-            .and_then(|npc_ship| npc_ship.texture.as_deref())
-            .is_some_and(|texture| texture.contains("asset-pack/./assets/ships/local-npc.png")));
+            .is_some_and(|npc_ship| {
+                npc_ship.scan_difficulty == 1.6
+                    && npc_ship.energy_recharge == 4.5
+                    && npc_ship.texture.as_deref().is_some_and(|texture| {
+                        texture.contains("asset-pack/./assets/ships/local-npc.png")
+                    })
+            }));
 
         fs::remove_dir_all(root).ok();
     }
@@ -5860,6 +5915,7 @@ role = "hostile"
 faction = "missing_npc_faction"
 spawn_weight = 1.0
 spawn_count = 0
+scan_difficulty = 0.0
 mass = 100.0
 cargo_capacity = 50.0
 cargo_defaults = [
@@ -5870,6 +5926,7 @@ credit_reward_max = 10
 hull_capacity = 25.0
 shield_capacity = 10.0
 energy_capacity = 20.0
+energy_recharge = 0.0
 shield_slots = ["missing_npc_shield"]
 weapon_slots = ["missing_npc_weapon"]
 "#,
@@ -5878,6 +5935,9 @@ weapon_slots = ["missing_npc_weapon"]
 
         let errors =
             load_content_packs(&root).expect_err("missing ship and power refs should fail");
+        assert!(errors.iter().any(|error| {
+            error == "NPC ship `bad-ship-pack:bad_npc` has non-positive energy recharge"
+        }));
         assert!(errors.iter().any(|error| {
             error
                 == "Power module `bad-ship-pack:bad_reactor` references missing install item `bad-ship-pack:missing_reactor`"
@@ -5919,6 +5979,9 @@ weapon_slots = ["missing_npc_weapon"]
         assert!(errors
             .iter()
             .any(|error| error == "NPC ship `bad-ship-pack:bad_npc` has zero spawn count"));
+        assert!(errors.iter().any(|error| {
+            error == "NPC ship `bad-ship-pack:bad_npc` has non-positive scan difficulty"
+        }));
         assert!(errors.iter().any(|error| {
             error == "NPC ship `bad-ship-pack:bad_npc` has a zero-count cargo default"
         }));

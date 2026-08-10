@@ -27,6 +27,7 @@ pub struct SelectedShip {
     pub hull: String,
     pub shields: String,
     pub energy: String,
+    pub weapon_energy: String,
     pub cargo: String,
     pub turrets: usize,
     pub active: bool,
@@ -147,7 +148,8 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
             fact_row(ui, "Distance", &selected.distance);
             fact_row(ui, "Hull condition", &selected.hull);
             fact_row(ui, "Shields", &selected.shields);
-            fact_row(ui, "Energy", &selected.energy);
+            fact_row(ui, "Drive energy", &selected.energy);
+            fact_row(ui, "Weapon capacitor", &selected.weapon_energy);
             fact_row(ui, "Cargo", &selected.cargo);
             fact_row(ui, "Turret banks", &selected.turrets.to_string());
         });

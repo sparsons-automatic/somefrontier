@@ -11,6 +11,7 @@ pub enum AudioCue {
     Confirm,
     Back,
     Warning,
+    ThreatAlarm,
     Ready,
     WeaponFire,
     ShieldImpact,
@@ -19,11 +20,12 @@ pub enum AudioCue {
 }
 
 impl AudioCue {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Select,
         Self::Confirm,
         Self::Back,
         Self::Warning,
+        Self::ThreatAlarm,
         Self::Ready,
         Self::WeaponFire,
         Self::ShieldImpact,
@@ -37,6 +39,7 @@ impl AudioCue {
             Self::Confirm => &["audio/ui/confirm.ogg"],
             Self::Back => &["audio/ui/back.ogg"],
             Self::Warning => &["audio/ui/error.ogg"],
+            Self::ThreatAlarm => &["audio/ui/error.ogg"],
             Self::Ready => &["audio/ui/open.ogg"],
             Self::WeaponFire => &[
                 "audio/effects/laser-small.ogg",
@@ -183,8 +186,9 @@ mod tests {
     fn cues_use_stable_manifest_paths() {
         assert_eq!(AudioCue::Select.paths()[0], "audio/ui/select.ogg");
         assert_eq!(AudioCue::Warning.paths()[0], "audio/ui/error.ogg");
+        assert_eq!(AudioCue::ThreatAlarm.paths()[0], "audio/ui/error.ogg");
         assert_eq!(AudioCue::WeaponFire.paths().len(), 3);
-        assert_eq!(AudioCue::ALL.len(), 9);
+        assert_eq!(AudioCue::ALL.len(), 10);
     }
 
     #[test]

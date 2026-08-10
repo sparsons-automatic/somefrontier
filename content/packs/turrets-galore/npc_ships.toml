@@ -18,8 +18,9 @@ cargo_defaults = [
 ]
 credit_reward_min = 0
 credit_reward_max = 0
-hull_capacity = 44.0
-shield_capacity = 16.0
+hull_capacity = 180.0
+shield_capacity = 120.0
 energy_capacity = 75.0
+energy_recharge = 8.0
 weapon_slots = ["sentinel_flak_turret"]
 summary = "A friendly test drone mounting a turret defined entirely by Turrets Galore."

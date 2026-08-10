@@ -105,9 +105,11 @@ const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const SAVE_VERSION: u32 = 2;
+const SAVE_VERSION: u32 = 5;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
+#[cfg(target_os = "linux")]
+const EGUI_LINUX_WHEEL_DIVISOR: f32 = 90.0;
 const GAME_DAY_SECONDS: f32 = 120.0;
 const PLANET_SEED_JITTER: f32 = 180.0;
 const PLANET_SEED_ROTATION: f32 = 0.22;
@@ -125,6 +127,9 @@ const KNOWN_SYSTEMS_PANEL_WIDTH: f32 = 280.0;
 const KNOWN_SYSTEM_ROW_HEIGHT: f32 = 70.0;
 const WARP_CHARGE_SECONDS: f32 = 2.0;
 const MAX_SCAN_LEVEL: u8 = 3;
+const COMBAT_SCAN_RANGE: f32 = 620.0;
+const COMBAT_SCAN_ENERGY_PER_SECOND: f32 = 2.0;
+const COMBAT_SCAN_INTERRUPTION_GRACE_SECONDS: f32 = 1.5;
 const OPERATION_HISTORY_LIMIT: usize = 200;
 const STARTER_SYSTEM_ID: &str = "core:frontier";
 const UI_FONT_PATH: &str = "assets/fonts/Junicode.ttf";
@@ -348,6 +353,9 @@ struct GameState {
     equipped_shields: Vec<ShieldSystem>,
     equipped_weapons: Vec<WeaponSystem>,
     npc_ships: Vec<NpcShip>,
+    combat_intel: HashMap<String, CombatIntelLevel>,
+    combat_scan: Option<CombatScanProgress>,
+    hostile_scanner_contacts: HashSet<String>,
     collision_cooldowns: HashMap<String, f32>,
     collision_contacts: HashSet<String>,
     collision_grace_remaining: f32,
@@ -1005,6 +1013,7 @@ struct ShipSystems {
     hull: ShipResource,
     shields: ShipResource,
     energy: ShipResource,
+    weapon_energy: ShipResource,
 }
 
 #[derive(Clone, Copy)]
@@ -1060,6 +1069,7 @@ struct NpcShip {
     route_index: usize,
     anchor: Vec2,
     identified: bool,
+    scan_difficulty: f32,
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
     trade_open: bool,
@@ -1070,10 +1080,71 @@ struct NpcShip {
     equipped_shields: Vec<ShieldSystem>,
     shield_recharge_delay_remaining: f32,
     energy: ShipResource,
+    energy_recharge: f32,
     shield_slots: Vec<String>,
     weapon_slots: Vec<String>,
     equipped_weapons: Vec<WeaponSystem>,
     summary: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum CombatIntelLevel {
+    #[default]
+    Unknown,
+    Identity,
+    Hull,
+    Shields,
+    Weapons,
+    Tactical,
+}
+
+impl CombatIntelLevel {
+    const MAX: Self = Self::Tactical;
+
+    fn from_u8(level: u8) -> Self {
+        match level {
+            1 => Self::Identity,
+            2 => Self::Hull,
+            3 => Self::Shields,
+            4 => Self::Weapons,
+            5.. => Self::Tactical,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Unknown => Some(Self::Identity),
+            Self::Identity => Some(Self::Hull),
+            Self::Hull => Some(Self::Shields),
+            Self::Shields => Some(Self::Weapons),
+            Self::Weapons => Some(Self::Tactical),
+            Self::Tactical => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::Identity => "Identity / disposition",
+            Self::Hull => "Hull telemetry",
+            Self::Shields => "Shield telemetry",
+            Self::Weapons => "Weapon loadout",
+            Self::Tactical => "Detailed combat telemetry",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CombatScanProgress {
+    npc: String,
+    stage: CombatIntelLevel,
+    progress: f32,
+    interruption_seconds: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1366,6 +1437,8 @@ struct SaveData {
     #[serde(default)]
     npc_cargo: Vec<SaveNpcCargo>,
     #[serde(default)]
+    combat_intel: Vec<SaveCombatIntel>,
+    #[serde(default)]
     system_destinations: Vec<SaveSystemDestination>,
     #[serde(default)]
     navigation_route: Vec<SaveNavigationStop>,
@@ -1424,6 +1497,8 @@ struct SaveShip {
     hull: SaveResource,
     shields: SaveResource,
     energy: SaveResource,
+    #[serde(default)]
+    weapon_energy: Option<SaveResource>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1454,6 +1529,12 @@ struct SaveMarketOffer {
 struct SaveNpcCargo {
     npc: String,
     cargo: Vec<SaveStack>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SaveCombatIntel {
+    npc: String,
+    level: u8,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1774,6 +1855,9 @@ impl GameState {
             equipped_shields,
             equipped_weapons,
             npc_ships,
+            combat_intel: HashMap::new(),
+            combat_scan: None,
+            hostile_scanner_contacts: HashSet::new(),
             collision_cooldowns: HashMap::new(),
             collision_contacts: HashSet::new(),
             collision_grace_remaining: COLLISION_GRACE_SECONDS,
@@ -1915,6 +1999,7 @@ impl GameState {
     }
 
     fn apply_save(&mut self, save: SaveData) {
+        let restore_legacy_npc_ammo = save.version < 5;
         let saved_owned_ships = save.owned_ships.clone();
         let saved_active_owned_ship_id = save.active_owned_ship_id.clone();
         let saved_next_owned_ship_sequence = save.next_owned_ship_sequence;
@@ -1985,6 +2070,11 @@ impl GameState {
         self.ship.systems.hull = ShipResource::from_save(save.ship.hull);
         self.ship.systems.shields = ShipResource::from_save(save.ship.shields);
         self.ship.systems.energy = ShipResource::from_save(save.ship.energy);
+        self.ship.systems.weapon_energy = save
+            .ship
+            .weapon_energy
+            .map(ShipResource::from_save)
+            .unwrap_or(self.ship.systems.weapon_energy);
         self.installed_power_modules = if save.installed_power_modules.is_empty() {
             default_installed_power_modules(&self.content_registry, &self.ship_id)
         } else {
@@ -2011,6 +2101,12 @@ impl GameState {
             self.world_elapsed_days,
         );
         apply_npc_cargo_save(&mut self.npc_ships, &save.npc_cargo, &self.content_registry);
+        if restore_legacy_npc_ammo {
+            restore_authored_npc_weapon_ammo(&mut self.npc_ships, &self.content_registry);
+        }
+        self.combat_intel = combat_intel_from_save(save.combat_intel);
+        self.combat_scan = None;
+        sync_npc_identification(&mut self.npc_ships, &self.combat_intel);
 
         self.inventory = Inventory::from_save(&self.content_registry, &save.inventory);
         apply_upgrade_save(&mut self.ship_upgrades, &save.upgrades);
@@ -2187,6 +2283,7 @@ impl GameState {
                 hull: self.ship.systems.hull.to_save(),
                 shields: self.ship.systems.shields.to_save(),
                 energy: self.ship.systems.energy.to_save(),
+                weapon_energy: Some(self.ship.systems.weapon_energy.to_save()),
             },
             inventory: self.inventory.to_save(),
             upgrades: self
@@ -2228,6 +2325,7 @@ impl GameState {
                 .collect(),
             market_offers: save_market_offers(&self.stations),
             npc_cargo: save_npc_cargo(&self.npc_ships),
+            combat_intel: save_combat_intel(&self.combat_intel),
             system_destinations: save_system_destinations(self),
             navigation_route: self
                 .navigation_route
@@ -2335,6 +2433,11 @@ impl GameState {
             .energy
             .current
             .min(self.ship.systems.energy.max)
+            .max(0.0);
+        self.ship.systems.weapon_energy.current = systems
+            .weapon_energy
+            .current
+            .min(self.ship.systems.weapon_energy.max)
             .max(0.0);
         if self.equipped_weapons.is_empty() {
             self.equipped_weapons = default_equipped_weapons(&self.content_registry, &self.ship_id);
@@ -2508,6 +2611,7 @@ fn save_ship_state(ship: &Ship) -> SaveShip {
         hull: ship.systems.hull.to_save(),
         shields: ship.systems.shields.to_save(),
         energy: ship.systems.energy.to_save(),
+        weapon_energy: Some(ship.systems.weapon_energy.to_save()),
     }
 }
 
@@ -2525,6 +2629,11 @@ fn apply_saved_ship_state(ship: &mut Ship, saved: &SaveShip) {
     ship.systems.hull = ShipResource::from_save(saved.hull.clone());
     ship.systems.shields = ShipResource::from_save(saved.shields.clone());
     ship.systems.energy = ShipResource::from_save(saved.energy.clone());
+    ship.systems.weapon_energy = saved
+        .weapon_energy
+        .clone()
+        .map(ShipResource::from_save)
+        .unwrap_or(ship.systems.weapon_energy);
 }
 
 fn owned_ship_sequence(instance_id: &str) -> Option<u64> {
@@ -3143,6 +3252,84 @@ fn apply_npc_cargo_save(
     }
 }
 
+fn restore_authored_npc_weapon_ammo(
+    npc_ships: &mut [NpcShip],
+    registry: &content::ContentRegistry,
+) {
+    for npc in npc_ships {
+        let Some(definition) = registry.npc_ships.get(&npc.id) else {
+            continue;
+        };
+        let ammo_ids = npc
+            .equipped_weapons
+            .iter()
+            .filter_map(|weapon| weapon.ammo_item.as_deref())
+            .collect::<HashSet<_>>();
+        for ammo_id in ammo_ids {
+            let current = npc
+                .cargo_defaults
+                .iter()
+                .filter(|stack| stack.item.id == ammo_id)
+                .map(|stack| stack.count)
+                .sum::<u32>();
+            if current > 0 {
+                continue;
+            }
+            let authored_count = definition
+                .cargo_defaults
+                .iter()
+                .filter(|stack| stack.item == ammo_id)
+                .map(|stack| stack.count)
+                .sum::<u32>();
+            let Some(item) = (authored_count > 0)
+                .then(|| registry_item(registry, ammo_id))
+                .flatten()
+            else {
+                continue;
+            };
+            npc.cargo_defaults.push(ItemStack {
+                item,
+                count: authored_count,
+            });
+        }
+    }
+}
+
+fn save_combat_intel(intel: &HashMap<String, CombatIntelLevel>) -> Vec<SaveCombatIntel> {
+    let mut saved = intel
+        .iter()
+        .filter(|(_, level)| **level > CombatIntelLevel::Unknown)
+        .map(|(npc, level)| SaveCombatIntel {
+            npc: npc.clone(),
+            level: level.as_u8(),
+        })
+        .collect::<Vec<_>>();
+    saved.sort_by(|left, right| left.npc.cmp(&right.npc));
+    saved
+}
+
+fn combat_intel_from_save(saved: Vec<SaveCombatIntel>) -> HashMap<String, CombatIntelLevel> {
+    let mut intel: HashMap<String, CombatIntelLevel> = HashMap::new();
+    for saved_entry in saved {
+        if saved_entry.npc.trim().is_empty() || saved_entry.level == 0 {
+            continue;
+        }
+        let level = CombatIntelLevel::from_u8(saved_entry.level);
+        intel
+            .entry(saved_entry.npc)
+            .and_modify(|known| *known = (*known).max(level))
+            .or_insert(level);
+    }
+    intel
+}
+
+fn sync_npc_identification(npc_ships: &mut [NpcShip], intel: &HashMap<String, CombatIntelLevel>) {
+    for npc in npc_ships {
+        npc.identified =
+            intel.get(&npc.id).copied().unwrap_or_default() >= CombatIntelLevel::Identity;
+    }
+}
+
 async fn make_npc_ships(
     content_registry: &content::ContentRegistry,
     transition_assets: &[TransitionAsset],
@@ -3198,6 +3385,7 @@ async fn make_npc_ships(
             route_index: npc_initial_route_index(&npc_ship_def.id),
             anchor: position,
             identified: false,
+            scan_difficulty: npc_ship_def.scan_difficulty,
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
             trade_open: false,
@@ -3211,6 +3399,7 @@ async fn make_npc_ships(
             ),
             shield_recharge_delay_remaining: 0.0,
             energy: ShipResource::full(npc_ship_def.energy_capacity),
+            energy_recharge: npc_ship_def.energy_recharge,
             shield_slots: npc_ship_def.shield_slots.clone(),
             weapon_slots: npc_ship_def.weapon_slots.clone(),
             equipped_weapons: equipped_weapons_from_ids(
@@ -3963,6 +4152,7 @@ impl ShipSystems {
             hull: ShipResource::full(100.0),
             shields: ShipResource::full(100.0),
             energy: ShipResource::full(attributes.energy_capacity),
+            weapon_energy: ShipResource::full(attributes.energy_capacity),
         }
     }
 
@@ -3971,6 +4161,7 @@ impl ShipSystems {
             hull: ShipResource::full(ship.hull_capacity),
             shields: ShipResource::full(ship.shield_capacity),
             energy: ShipResource::full(attributes.energy_capacity),
+            weapon_energy: ShipResource::full(attributes.energy_capacity),
         }
     }
 }
@@ -5616,7 +5807,9 @@ impl ShipUpgradeKind {
             Self::Shields => "+15 shield capacity",
             Self::DroneBay => "+10% survey drone return chance",
             Self::FuelSystems => "-10% warp charge time",
-            Self::ScannerArray => "+1 survey depth every 2 levels",
+            Self::ScannerArray => {
+                "+1 combat scan depth and +15% scan speed per level; +1 survey depth every 2 levels"
+            }
             Self::CargoHold => "+10 t cargo rating",
         }
     }
@@ -5977,6 +6170,8 @@ fn apply_ship_upgrade(ship: &mut Ship, kind: ShipUpgradeKind) {
             ship.attributes.energy_recharge += 3.0;
             ship.systems.energy.max += 15.0;
             ship.systems.energy.restore(15.0);
+            ship.systems.weapon_energy.max += 15.0;
+            ship.systems.weapon_energy.restore(15.0);
         }
         ShipUpgradeKind::Shields => {
             ship.systems.shields.max += 15.0;
@@ -7279,6 +7474,26 @@ fn egui_window_has_reachable_area(rect: egui::Rect, screen: [f32; 2]) -> bool {
     visible_width >= 64.0 && visible_height >= 24.0
 }
 
+fn compensate_egui_scroll_input(ctx: &egui::Context) {
+    // egui-macroquad divides native wheel input by 90, matching Windows' raw
+    // wheel units. Miniquad's Linux/X11 backend already reports normalized
+    // notches. Correct the processed input that ScrollArea actually consumes.
+    #[cfg(target_os = "linux")]
+    ctx.input_mut(|input| {
+        if input.raw_scroll_delta != egui::Vec2::ZERO {
+            input.raw_scroll_delta *= EGUI_LINUX_WHEEL_DIVISOR;
+            input.smooth_scroll_delta *= EGUI_LINUX_WHEEL_DIVISOR;
+        }
+    });
+}
+
+fn egui_ui(mut add_contents: impl FnMut(&egui::Context)) {
+    egui_macroquad::ui(|ctx| {
+        compensate_egui_scroll_input(ctx);
+        add_contents(ctx);
+    });
+}
+
 fn queue_egui_layout_save(ctx: &egui::Context, dt: f32) {
     let Some(serialized) = ctx.memory(ron::to_string).ok() else {
         return;
@@ -7606,7 +7821,7 @@ fn draw_startup_loading_panel(
             })
         })
     });
-    egui_macroquad::ui(|ctx| {
+    egui_ui(|ctx| {
         egui_loading::draw(
             ctx,
             [screen_width(), screen_height()],
@@ -7919,7 +8134,7 @@ async fn main() {
                         let mut escape_actions = Vec::new();
                         let mut debug_actions = Vec::new();
                         let mut context_outcome = None;
-                        egui_macroquad::ui(|ctx| {
+                        egui_ui(|ctx| {
                             prepare_egui_layout(ctx, [screen_width(), screen_height()]);
                             if let Some(view) = &inventory_view {
                                 inventory_actions = egui_inventory::draw(
@@ -9008,7 +9223,7 @@ fn draw_title_menu(menu: &mut TitleMenu, background: &UniverseBackground) {
 
 fn draw_title_main_egui(menu: &mut TitleMenu) {
     let mut actions = Vec::new();
-    egui_macroquad::ui(|ctx| {
+    egui_ui(|ctx| {
         if menu.branding_egui_texture.is_none() {
             if let Some(image) = &menu.branding_egui_image {
                 menu.branding_egui_texture = Some(ctx.load_texture(
@@ -9056,7 +9271,7 @@ fn draw_title_main_egui(menu: &mut TitleMenu) {
 
 fn draw_title_submenu_egui(menu: &mut TitleMenu) {
     let mut actions = Vec::new();
-    egui_macroquad::ui(|ctx| {
+    egui_ui(|ctx| {
         ensure_title_ship_egui_textures(menu, ctx);
         let view = title_submenu_view(menu);
         actions = egui_title::draw(ctx, [screen_width(), screen_height()], &view);
@@ -9584,8 +9799,10 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_inactive_owned_ship_systems(game, dt);
     update_npc_ships(game, dt);
     update_hostile_npc_pressure(game, dt);
+    update_hostile_scanner_contacts(game);
     update_weapon_systems(game, dt);
     remove_destroyed_npc_ships(game);
+    update_combat_scan(game, dt);
 
     let mut egui_pointer_captured = false;
     egui_macroquad::cfg(|ctx| egui_pointer_captured = ctx.wants_pointer_input());
@@ -9719,11 +9936,13 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
 
     if game.fleet_open {
-        game.ship
-            .systems
-            .energy
-            .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
+        let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
+        game.ship.systems.energy.restore(recharge);
+        game.ship.systems.weapon_energy.restore(recharge);
     } else if game.orbiting_planet.is_some() {
+        let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
+        game.ship.systems.energy.restore(recharge);
+        game.ship.systems.weapon_energy.restore(recharge);
         update_ship_orbit(game);
     } else if game.follow_target.is_some() {
         if movement_input_pressed() {
@@ -10761,10 +10980,9 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
     } else {
         game.ship.position += movement;
     }
-    game.ship
-        .systems
-        .energy
-        .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
+    let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
+    game.ship.systems.energy.restore(recharge);
+    game.ship.systems.weapon_energy.restore(recharge);
 }
 
 fn complete_ship_approach(game: &mut GameState, target: ApproachTarget) {
@@ -10859,10 +11077,9 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
     } else {
         game.ship.position = next_position;
     }
-    game.ship
-        .systems
-        .energy
-        .restore(ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt);
+    let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
+    game.ship.systems.energy.restore(recharge);
+    game.ship.systems.weapon_energy.restore(recharge);
     let in_range =
         game.ship.position.distance(npc_ship.position) <= npc_ship_interaction_radius(npc_ship);
     if in_range && !npc_ship.identified {
@@ -11577,7 +11794,7 @@ fn select_nearby_destination(game: &mut GameState) {
         None
     };
     game.selected_npc_ship = if game.selected_planet.is_none() && game.selected_station.is_none() {
-        ship_over_npc_ship_index(game)
+        nearest_scannable_npc_ship_index(game)
     } else {
         None
     };
@@ -11636,20 +11853,240 @@ fn identify_selected_npc_ship(game: &mut GameState) -> bool {
     let Some(npc_ship_index) = game.selected_npc_ship else {
         return false;
     };
-    let Some(name) = game.npc_ships.get_mut(npc_ship_index).and_then(|npc_ship| {
-        if !npc_ship_is_in_system(npc_ship, &game.current_system_id)
-            || !npc_ship_in_interaction_range(&game.ship, npc_ship)
-        {
-            None
-        } else {
-            npc_ship.identified = true;
-            Some(npc_ship.name.clone())
-        }
-    }) else {
+    let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
         return false;
     };
-    push_operation_feedback(game, "Contact", format!("Identified {name}"));
+    if !npc_ship_is_in_system(npc_ship, &game.current_system_id)
+        || !npc_ship_in_combat_scan_range(&game.ship, npc_ship)
+    {
+        return false;
+    }
+    ensure_combat_scan_target(game, npc_ship_index);
     true
+}
+
+fn npc_intel_level(game: &GameState, npc_ship: &NpcShip) -> CombatIntelLevel {
+    game.combat_intel
+        .get(&npc_ship.id)
+        .copied()
+        .unwrap_or_default()
+}
+
+fn combat_scan_depth(game: &GameState) -> CombatIntelLevel {
+    let upgrade_depth = ship_upgrade_level(&game.ship_upgrades, ShipUpgradeKind::ScannerArray);
+    let research_depth = completed_research_reward_amount(
+        &game.content_registry,
+        &game.completed_research,
+        "combat_scan_depth",
+    )
+    .floor()
+    .max(0.0) as u32;
+    CombatIntelLevel::from_u8(
+        2_u32
+            .saturating_add(upgrade_depth)
+            .saturating_add(research_depth)
+            .min(CombatIntelLevel::MAX.as_u8() as u32) as u8,
+    )
+}
+
+fn combat_scan_speed(game: &GameState) -> f32 {
+    let upgrade_level = ship_upgrade_level(&game.ship_upgrades, ShipUpgradeKind::ScannerArray);
+    let research_percent = completed_research_reward_amount(
+        &game.content_registry,
+        &game.completed_research,
+        "combat_scan_speed_percent",
+    );
+    (1.0 + upgrade_level as f32 * 0.15 + research_percent / 100.0).max(0.1)
+}
+
+fn combat_scan_stage_seconds(stage: CombatIntelLevel) -> f32 {
+    match stage {
+        CombatIntelLevel::Identity => 1.25,
+        CombatIntelLevel::Hull => 1.5,
+        CombatIntelLevel::Shields => 2.5,
+        CombatIntelLevel::Weapons => 3.5,
+        CombatIntelLevel::Tactical => 4.5,
+        CombatIntelLevel::Unknown => 1.0,
+    }
+}
+
+fn npc_ship_in_combat_scan_range(ship: &Ship, npc_ship: &NpcShip) -> bool {
+    npc_ship_surface_distance(ship, npc_ship) <= COMBAT_SCAN_RANGE
+}
+
+fn update_hostile_scanner_contacts(game: &mut GameState) -> bool {
+    let mut contacts = game
+        .npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc)| {
+            npc.behavior == NpcBehaviorMode::HostileIntercept
+                && npc_ship_is_hostile(&game.content_registry, npc)
+                && npc_ship_is_in_system(npc, &game.current_system_id)
+                && npc_ship_in_combat_scan_range(&game.ship, npc)
+        })
+        .map(|(index, npc)| {
+            (
+                index,
+                npc.id.clone(),
+                npc_ship_surface_distance(&game.ship, npc),
+            )
+        })
+        .collect::<Vec<_>>();
+    contacts.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
+
+    let current = contacts
+        .iter()
+        .map(|(_, id, _)| id.clone())
+        .collect::<HashSet<_>>();
+    let new_contact = contacts
+        .iter()
+        .find(|(_, id, _)| !game.hostile_scanner_contacts.contains(id))
+        .map(|(index, _, _)| *index);
+    game.hostile_scanner_contacts = current;
+
+    let selected_threat_is_scannable = game.selected_npc_ship.is_some_and(|index| {
+        contacts
+            .iter()
+            .any(|(contact_index, _, _)| *contact_index == index)
+    });
+    let target = if selected_threat_is_scannable {
+        game.selected_npc_ship
+    } else {
+        contacts.first().map(|(index, _, _)| *index)
+    };
+
+    if let Some(index) = target {
+        game.selected_planet = None;
+        game.selected_station = None;
+        game.selected_station_service = None;
+        game.selected_npc_ship = Some(index);
+        if let Some(npc) = game.npc_ships.get_mut(index) {
+            npc.trade_open = false;
+        }
+        ensure_combat_scan_target(game, index);
+    }
+    if new_contact.is_some() {
+        game.audio.play(audio::AudioCue::ThreatAlarm);
+    }
+    new_contact.is_some()
+}
+
+fn ensure_combat_scan_target(game: &mut GameState, npc_index: usize) {
+    let Some(npc) = game.npc_ships.get(npc_index) else {
+        return;
+    };
+    let known = npc_intel_level(game, npc);
+    let Some(stage) = known.next() else {
+        game.combat_scan = None;
+        return;
+    };
+    if game
+        .combat_scan
+        .as_ref()
+        .is_some_and(|scan| scan.npc == npc.id && scan.stage == stage)
+    {
+        return;
+    }
+    game.combat_scan = Some(CombatScanProgress {
+        npc: npc.id.clone(),
+        stage,
+        progress: 0.0,
+        interruption_seconds: 0.0,
+    });
+}
+
+fn update_combat_scan(game: &mut GameState, dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+    let Some(npc_index) = game.selected_npc_ship else {
+        game.combat_scan = None;
+        return;
+    };
+    let Some(npc) = game.npc_ships.get(npc_index) else {
+        game.combat_scan = None;
+        return;
+    };
+    if !npc_ship_is_in_system(npc, &game.current_system_id) {
+        game.combat_scan = None;
+        return;
+    }
+
+    ensure_combat_scan_target(game, npc_index);
+    let Some(scan) = game.combat_scan.as_ref() else {
+        return;
+    };
+    if scan.stage > combat_scan_depth(game) {
+        return;
+    }
+
+    let in_range = game
+        .npc_ships
+        .get(npc_index)
+        .is_some_and(|npc| npc_ship_in_combat_scan_range(&game.ship, npc));
+    if !in_range {
+        if let Some(scan) = game.combat_scan.as_mut() {
+            scan.interruption_seconds += dt;
+            if scan.interruption_seconds >= COMBAT_SCAN_INTERRUPTION_GRACE_SECONDS {
+                scan.progress = 0.0;
+            }
+        }
+        return;
+    }
+
+    let energy_cost = COMBAT_SCAN_ENERGY_PER_SECOND * dt;
+    if game.ship.systems.energy.current + f32::EPSILON < energy_cost {
+        return;
+    }
+
+    let (difficulty, distance) = game
+        .npc_ships
+        .get(npc_index)
+        .map(|npc| {
+            (
+                npc.scan_difficulty.max(0.1),
+                npc_ship_surface_distance(&game.ship, npc),
+            )
+        })
+        .unwrap_or((1.0, COMBAT_SCAN_RANGE));
+    let range_factor = (1.0 - 0.35 * (distance / COMBAT_SCAN_RANGE)).clamp(0.5, 1.0);
+    let stage_seconds = game
+        .combat_scan
+        .as_ref()
+        .map(|scan| combat_scan_stage_seconds(scan.stage))
+        .unwrap_or(1.0);
+    let progress_delta = dt * combat_scan_speed(game) * range_factor / (stage_seconds * difficulty);
+    game.ship.systems.energy.spend(energy_cost);
+
+    let completed = if let Some(scan) = game.combat_scan.as_mut() {
+        scan.interruption_seconds = 0.0;
+        scan.progress = (scan.progress + progress_delta).min(1.0);
+        (scan.progress >= 1.0).then(|| (scan.npc.clone(), scan.stage))
+    } else {
+        None
+    };
+    let Some((npc_id, stage)) = completed else {
+        return;
+    };
+
+    game.combat_intel.insert(npc_id.clone(), stage);
+    if let Some(npc) = game.npc_ships.iter_mut().find(|npc| npc.id == npc_id) {
+        npc.identified = stage >= CombatIntelLevel::Identity;
+    }
+    game.combat_scan = None;
+    game.save_dirty = true;
+    let name = game
+        .npc_ships
+        .iter()
+        .find(|npc| npc.id == npc_id)
+        .map(|npc| npc.name.as_str())
+        .unwrap_or(npc_id.as_str());
+    push_operation_feedback(
+        game,
+        "Contact",
+        format!("{} scan complete: {name}", stage.label()),
+    );
 }
 
 fn remember_current_system_destination(game: &mut GameState) {
@@ -12041,6 +12478,7 @@ fn npc_interaction_rows(
     npc_ship: &NpcShip,
 ) -> Vec<NpcInteractionRow> {
     let in_range = npc_ship_in_interaction_range(ship, npc_ship);
+    let in_scan_range = npc_ship_in_combat_scan_range(ship, npc_ship);
     let identified = npc_ship.identified;
     let hostile = npc_ship_is_hostile(content_registry, npc_ship);
     let trade_role = npc_ship_can_trade(content_registry, npc_ship);
@@ -12050,15 +12488,15 @@ fn npc_interaction_rows(
             action: NpcInteractionAction::Identify,
             state: if identified {
                 NpcInteractionState::Complete
-            } else if in_range {
+            } else if in_scan_range {
                 NpcInteractionState::Available
             } else {
                 NpcInteractionState::Unavailable
             },
             status: if identified {
                 "Known"
-            } else if in_range {
-                "Ready"
+            } else if in_scan_range {
+                "Scanning"
             } else {
                 "Approach"
             },
@@ -12925,6 +13363,11 @@ fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
 
         let energy_recharge = ship_energy_recharge(&owned.ship, &owned.installed_power_modules);
         owned.ship.systems.energy.restore(energy_recharge * dt);
+        owned
+            .ship
+            .systems
+            .weapon_energy
+            .restore(energy_recharge * dt);
 
         if owned.ship.systems.shields.current >= owned.ship.systems.shields.max {
             owned.shield_recharge_delay_remaining = 0.0;
@@ -13805,7 +14248,7 @@ fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
         }
 
         let weapon = &mut game.equipped_weapons[weapon_index];
-        if game.ship.systems.energy.current < weapon.energy_cost {
+        if game.ship.systems.weapon_energy.current < weapon.energy_cost {
             weapon.status = WeaponStatus::InsufficientEnergy;
             continue;
         }
@@ -13823,7 +14266,7 @@ fn update_player_weapon_systems(game: &mut GameState, dt: f32) {
         if let Some(ammo_item) = ammo_item.as_deref() {
             game.inventory.remove_item_id(ammo_item, ammo_per_shot);
         }
-        game.ship.systems.energy.spend(weapon.energy_cost);
+        game.ship.systems.weapon_energy.spend(weapon.energy_cost);
         weapon.cooldown_remaining = weapon.cooldown_seconds;
         weapon.status = WeaponStatus::Fired;
         game.weapon_fire_events.push(weapon_fire_event(
@@ -13893,7 +14336,7 @@ fn fire_inactive_owned_ship_weapon(
     ) else {
         return false;
     };
-    if owned.ship.systems.energy.current < weapon.energy_cost {
+    if owned.ship.systems.weapon_energy.current < weapon.energy_cost {
         game.owned_ships[owned_index].equipped_weapons[weapon_index].status =
             WeaponStatus::InsufficientEnergy;
         return true;
@@ -13937,7 +14380,7 @@ fn fire_inactive_owned_ship_weapon(
     );
 
     let owned = &mut game.owned_ships[owned_index];
-    owned.ship.systems.energy.spend(energy_cost);
+    owned.ship.systems.weapon_energy.spend(energy_cost);
     if let Some(ammo_item) = ammo_item.as_deref() {
         owned.inventory.remove_item_id(ammo_item, ammo_per_shot);
     }
@@ -13959,6 +14402,8 @@ fn update_npc_weapon_systems(game: &mut GameState, dt: f32) {
         }
 
         let hostile = npc_ship_is_hostile(&game.content_registry, &game.npc_ships[npc_index]);
+        let recharge = game.npc_ships[npc_index].energy_recharge * dt;
+        game.npc_ships[npc_index].energy.restore(recharge);
         let weapon_count = game.npc_ships[npc_index].equipped_weapons.len();
         for weapon_index in 0..weapon_count {
             if !game.npc_ships[npc_index].equipped_weapons[weapon_index].resolved {
@@ -14606,6 +15051,8 @@ fn integrate_ship_control(ship: &mut Ship, dt: f32, energy_recharge: f32, contro
         return;
     }
 
+    ship.systems.weapon_energy.restore(energy_recharge * dt);
+
     let turn = f32::from(control.turn_right) - f32::from(control.turn_left);
     let target_turn_rate = turn * ship.max_turn_rate();
     let turn_response = if turn != 0.0 { 10.0 } else { 7.5 };
@@ -14723,7 +15170,14 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, panel_corner: O
         .iter()
         .filter(|npc_ship| npc_ship.system == game.current_system_id)
     {
-        draw_npc_ship(&game.content_registry, center, ship, npc_ship, zoom);
+        draw_npc_ship(
+            &game.content_registry,
+            center,
+            ship,
+            npc_ship,
+            npc_intel_level(game, npc_ship),
+            zoom,
+        );
     }
     for threat in game
         .defense_threats
@@ -14788,6 +15242,7 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, panel_corner: O
         selected_planet: game.selected_planet,
         selected_station: game.selected_station,
         selected_npc_ship: game.selected_npc_ship,
+        contact_scan_status: selected_contact_hud_status(game),
         destination_planet: game.destination_planet,
         orbiting_planet: game.orbiting_planet,
         current_system_id: &game.current_system_id,
@@ -15246,7 +15701,7 @@ fn clicked_npc_ship_index(
 }
 
 fn npc_ship_click_radius(npc_ship: &NpcShip, zoom: f32) -> f32 {
-    (npc_ship.radius * zoom).clamp(14.0, 36.0) + 6.0
+    (npc_ship.radius * zoom).clamp(22.0, 42.0) + 14.0
 }
 
 fn clicked_starmap_planet_index(mouse: Vec2, game: &GameState) -> Option<usize> {
@@ -15363,13 +15818,13 @@ fn ship_over_station_index(game: &GameState) -> Option<usize> {
         })
 }
 
-fn ship_over_npc_ship_index(game: &GameState) -> Option<usize> {
+fn nearest_scannable_npc_ship_index(game: &GameState) -> Option<usize> {
     game.npc_ships
         .iter()
         .enumerate()
         .filter(|(_, npc_ship)| npc_ship_is_in_system(npc_ship, &game.current_system_id))
         .filter_map(|(index, npc_ship)| {
-            npc_ship_in_interaction_range(&game.ship, npc_ship)
+            npc_ship_in_combat_scan_range(&game.ship, npc_ship)
                 .then_some((index, npc_ship_surface_distance(&game.ship, npc_ship)))
         })
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
@@ -15732,6 +16187,7 @@ fn draw_npc_ship(
     center: Vec2,
     ship: &Ship,
     npc_ship: &NpcShip,
+    intel_level: CombatIntelLevel,
     zoom: f32,
 ) {
     let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
@@ -15746,11 +16202,16 @@ fn draw_npc_ship(
         return;
     }
 
-    let color = npc_ship
-        .faction
-        .as_deref()
-        .map(|faction| faction_color(content_registry, faction, 235))
-        .unwrap_or_else(|| npc_ship_role_color(&npc_ship.role));
+    let identified = intel_level >= CombatIntelLevel::Identity;
+    let color = if identified {
+        npc_ship
+            .faction
+            .as_deref()
+            .map(|faction| faction_color(content_registry, faction, 235))
+            .unwrap_or_else(|| npc_ship_role_color(&npc_ship.role))
+    } else {
+        Color::from_rgba(148, 174, 184, 220)
+    };
     draw_circle_lines(
         screen_pos.x,
         screen_pos.y,
@@ -15779,17 +16240,20 @@ fn draw_npc_ship(
         );
     }
 
-    let status = format!(
-        "{}  {}  {}  {}",
-        npc_ship.name,
-        local_content_id(&npc_ship.id),
-        npc_ship.archetype,
-        npc_ship
-            .faction
-            .as_deref()
-            .map(|faction| faction_name(content_registry, faction))
-            .unwrap_or(npc_ship.role.as_str())
-    );
+    let status = if identified {
+        format!(
+            "{}  {}  {}",
+            npc_ship.name,
+            npc_ship.archetype,
+            npc_ship
+                .faction
+                .as_deref()
+                .map(|faction| faction_name(content_registry, faction))
+                .unwrap_or(npc_ship.role.as_str())
+        )
+    } else {
+        "Unknown contact".to_string()
+    };
     draw_text(
         &fit_debug_text(&status, 230.0, 14),
         screen_pos.x + size * 0.44,
@@ -15797,26 +16261,42 @@ fn draw_npc_ship(
         14.0,
         color,
     );
-    let cargo_units = npc_ship
-        .cargo_defaults
-        .iter()
-        .map(|stack| stack.count)
-        .sum::<u32>();
-    let metadata = format!(
-        "{}  cargo {}/{}  tags {}  H{:.0} S{:.0} E{:.0}  loadout {}/{}",
-        npc_ship.behavior.label(),
-        cargo_units,
-        format_mass(npc_ship.cargo_capacity),
-        npc_ship.behavior_tags.len(),
-        npc_ship.hull.max,
-        npc_ship.shields.max,
-        npc_ship.energy.max,
-        npc_ship.shield_slots.len(),
-        npc_ship
-            .equipped_weapons
-            .len()
-            .max(npc_ship.weapon_slots.len())
-    );
+    let metadata = match intel_level {
+        CombatIntelLevel::Unknown => "Select to begin passive scan".to_string(),
+        CombatIntelLevel::Identity => "Hull telemetry pending".to_string(),
+        CombatIntelLevel::Hull => format!(
+            "Hull {:.0}/{:.0} · shield telemetry pending",
+            npc_ship.hull.current, npc_ship.hull.max
+        ),
+        CombatIntelLevel::Shields => format!(
+            "Hull {:.0}/{:.0} · shields {:.0}/{:.0}",
+            npc_ship.hull.current,
+            npc_ship.hull.max,
+            npc_ship.shields.current,
+            npc_ship.shields.max
+        ),
+        CombatIntelLevel::Weapons => format!(
+            "Hull {:.0}/{:.0} · shields {:.0}/{:.0} · weapons {}",
+            npc_ship.hull.current,
+            npc_ship.hull.max,
+            npc_ship.shields.current,
+            npc_ship.shields.max,
+            npc_ship
+                .equipped_weapons
+                .len()
+                .max(npc_ship.weapon_slots.len())
+        ),
+        CombatIntelLevel::Tactical => format!(
+            "H {:.0}/{:.0} · S {:.0}/{:.0} · E {:.0}/{:.0} · cargo {}",
+            npc_ship.hull.current,
+            npc_ship.hull.max,
+            npc_ship.shields.current,
+            npc_ship.shields.max,
+            npc_ship.energy.current,
+            npc_ship.energy.max,
+            format_mass(npc_ship.cargo_capacity)
+        ),
+    };
     draw_text(
         &fit_debug_text(&metadata, 230.0, 12),
         screen_pos.x + size * 0.44,
@@ -15824,13 +16304,138 @@ fn draw_npc_ship(
         12.0,
         Color { a: 0.78, ..color },
     );
-    if !npc_ship.summary.is_empty() {
+    if identified && !npc_ship.summary.is_empty() {
         draw_text(
             &fit_debug_text(&npc_ship.summary, 230.0, 12),
             screen_pos.x + size * 0.44,
             screen_pos.y + 35.0,
             12.0,
             Color { a: 0.62, ..color },
+        );
+    }
+    if npc_health_plate_should_draw(content_registry, npc_ship) {
+        draw_npc_health_plate(
+            screen_pos,
+            size,
+            npc_ship,
+            npc_health_plate_visibility(content_registry, npc_ship, intel_level),
+        );
+    }
+}
+
+fn npc_health_plate_should_draw(
+    content_registry: &content::ContentRegistry,
+    npc_ship: &NpcShip,
+) -> bool {
+    npc_ship.behavior == NpcBehaviorMode::HostileIntercept
+        && npc_ship_is_hostile(content_registry, npc_ship)
+}
+
+fn npc_health_plate_visibility(
+    content_registry: &content::ContentRegistry,
+    npc_ship: &NpcShip,
+    intel_level: CombatIntelLevel,
+) -> (bool, bool) {
+    let hull =
+        npc_ship_is_hostile(content_registry, npc_ship) && intel_level >= CombatIntelLevel::Hull;
+    let shields = hull && intel_level >= CombatIntelLevel::Shields;
+    (hull, shields)
+}
+
+fn draw_npc_health_plate(
+    screen_pos: Vec2,
+    ship_size: f32,
+    npc_ship: &NpcShip,
+    visibility: (bool, bool),
+) {
+    let width = 84.0;
+    let height = 5.0;
+    let x = screen_pos.x - width * 0.5;
+    let hull_y = screen_pos.y - ship_size * 0.72 - 12.0;
+    if !visibility.0 {
+        draw_text(
+            "?",
+            x - 11.0,
+            hull_y + height,
+            10.0,
+            Color::from_rgba(210, 230, 230, 220),
+        );
+        draw_rectangle(x, hull_y, width, height, Color::from_rgba(18, 25, 30, 220));
+        for marker in 0..7 {
+            let marker_x = x + 7.0 + marker as f32 * 12.0;
+            draw_line(
+                marker_x,
+                hull_y + 1.0,
+                marker_x + 3.0,
+                hull_y + height - 1.0,
+                1.0,
+                Color::from_rgba(126, 146, 154, 180),
+            );
+        }
+        draw_rectangle_lines(
+            x,
+            hull_y,
+            width,
+            height,
+            1.0,
+            Color::from_rgba(210, 230, 230, 180),
+        );
+        return;
+    }
+    draw_text(
+        "H",
+        x - 11.0,
+        hull_y + height,
+        10.0,
+        Color::from_rgba(210, 230, 230, 220),
+    );
+    draw_rectangle(x, hull_y, width, height, Color::from_rgba(18, 25, 30, 220));
+    draw_rectangle(
+        x,
+        hull_y,
+        width * npc_ship.hull.fraction(),
+        height,
+        Color::from_rgba(126, 214, 137, 245),
+    );
+    draw_rectangle_lines(
+        x,
+        hull_y,
+        width,
+        height,
+        1.0,
+        Color::from_rgba(210, 230, 230, 180),
+    );
+
+    if visibility.1 {
+        let shield_y = hull_y - 8.0;
+        draw_text(
+            "S",
+            x - 11.0,
+            shield_y + height,
+            10.0,
+            Color::from_rgba(210, 230, 230, 220),
+        );
+        draw_rectangle(
+            x,
+            shield_y,
+            width,
+            height,
+            Color::from_rgba(18, 25, 30, 220),
+        );
+        draw_rectangle(
+            x,
+            shield_y,
+            width * npc_ship.shields.fraction(),
+            height,
+            Color::from_rgba(91, 184, 229, 245),
+        );
+        draw_rectangle_lines(
+            x,
+            shield_y,
+            width,
+            height,
+            1.0,
+            Color::from_rgba(210, 230, 230, 180),
         );
     }
 }
@@ -15897,9 +16502,10 @@ fn draw_weapon_fire_event(
     let to = world_to_screen(event.to, center, ship, zoom);
     let alpha = (event.timer / event.duration.max(f32::EPSILON)).clamp(0.0, 1.0);
     let travel = 1.0 - alpha;
-    let beam = weapon_effect_color(event.beam_color, alpha);
-    let core = weapon_effect_color(event.core_color, alpha);
-    let impact = weapon_effect_color(event.impact_color, alpha * 0.9);
+    let (beam_color, core_color, impact_color) = weapon_fire_render_palette(event);
+    let beam = weapon_effect_color(beam_color, alpha);
+    let core = weapon_effect_color(core_color, alpha);
+    let impact = weapon_effect_color(impact_color, alpha * 0.9);
     let path_direction = match event.origin {
         WeaponFireOrigin::Player => 1.0,
         WeaponFireOrigin::Npc => -1.0,
@@ -15981,6 +16587,17 @@ fn draw_weapon_fire_event(
     if travel > 0.72 {
         let flare = ((travel - 0.72) / 0.28).clamp(0.0, 1.0) * alpha;
         draw_circle(to.x, to.y, 8.0 + flare * 13.0, Color { a: flare, ..impact });
+    }
+}
+
+fn weapon_fire_render_palette(event: &WeaponFireEvent) -> ([u8; 4], [u8; 4], [u8; 4]) {
+    match event.origin {
+        WeaponFireOrigin::Player => (event.beam_color, event.core_color, event.impact_color),
+        WeaponFireOrigin::Npc => (
+            [255, 142, 72, 255],
+            [255, 232, 180, 255],
+            [255, 92, 72, 255],
+        ),
     }
 }
 
@@ -18793,15 +19410,19 @@ fn content_object_detail(
                         "Spawn",
                         format!("{} x{}", value.spawn_weight, value.spawn_count),
                     ),
+                    field("Scan difficulty", format!("{:.2}x", value.scan_difficulty)),
                     field(
                         "Mass / cargo",
                         format!("{} t / {} t", value.mass, value.cargo_capacity),
                     ),
                     field(
-                        "Hull / shield / energy",
+                        "Hull / shield / weapon energy",
                         format!(
-                            "{} / {} / {}",
-                            value.hull_capacity, value.shield_capacity, value.energy_capacity
+                            "{} / {} / {} (+{}/s)",
+                            value.hull_capacity,
+                            value.shield_capacity,
+                            value.energy_capacity,
+                            value.energy_recharge
                         ),
                     ),
                     field("Behavior tags", joined(&value.behavior_tags)),
@@ -19336,6 +19957,10 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
                 "{:.0}/{:.0}",
                 ship.systems.energy.current, ship.systems.energy.max
             ),
+            weapon_energy: format!(
+                "{:.0}/{:.0}",
+                ship.systems.weapon_energy.current, ship.systems.weapon_energy.max
+            ),
             cargo: format!(
                 "{} / {}",
                 format_mass(inventory.total_mass()),
@@ -19413,6 +20038,10 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
             proximity: "Unavailable".to_string(),
             identified: false,
             hostile: false,
+            intel_level: "Unknown".to_string(),
+            scan_stage: "Unavailable".to_string(),
+            scan_progress: None,
+            scan_status: "No contact selected".to_string(),
             identity: "Unknown".to_string(),
             disposition: "Unknown".to_string(),
             systems: "Unknown".to_string(),
@@ -19431,7 +20060,8 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
         };
     };
 
-    let identified = npc.identified;
+    let intel_level = npc_intel_level(game, npc);
+    let identified = intel_level >= CombatIntelLevel::Identity;
     let hostile = npc_ship_is_hostile(&game.content_registry, npc);
     let in_range = npc_ship_in_interaction_range(&game.ship, npc);
     let trade_available =
@@ -19479,10 +20109,23 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
         })
         .collect();
 
-    let defenses = if identified {
-        npc.equipped_weapons
-            .iter()
-            .map(|weapon| {
+    let mut defenses = Vec::new();
+    if intel_level >= CombatIntelLevel::Shields {
+        if npc.equipped_shields.is_empty() {
+            defenses.push("Shield system · none".to_string());
+        } else {
+            defenses.extend(
+                npc.equipped_shields
+                    .iter()
+                    .map(|shield| format!("Shield · {}", shield.name)),
+            );
+        }
+    }
+    if intel_level >= CombatIntelLevel::Weapons {
+        if npc.equipped_weapons.is_empty() {
+            defenses.push("Weapon loadout · none".to_string());
+        } else if intel_level >= CombatIntelLevel::Tactical {
+            defenses.extend(npc.equipped_weapons.iter().map(|weapon| {
                 let mut defense = format!(
                     "{} · {} · range {:.0} · damage {:.0}",
                     weapon.name,
@@ -19494,17 +20137,22 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
                     defense.push_str(&format!(" · ammo {ammo}"));
                 }
                 defense
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+            }));
+        } else {
+            defenses.extend(
+                npc.equipped_weapons
+                    .iter()
+                    .map(|weapon| format!("Weapon · {}", weapon.name)),
+            );
+        }
+    }
     let cargo_units = npc
         .cargo_defaults
         .iter()
         .map(|stack| stack.count)
         .sum::<u32>();
 
+    let (scan_stage, scan_progress, scan_status) = combat_scan_presentation(game, npc);
     egui_npc::NpcPaneView {
         pinned: egui_pane_pinned(EguiPane::Contact),
         name: if identified {
@@ -19526,14 +20174,24 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
             "{} · {:.0}u · {}",
             if in_range {
                 "Interaction range"
+            } else if npc_ship_in_combat_scan_range(&game.ship, npc) {
+                "Scanner range"
             } else {
                 "Approach"
             },
             npc_ship_surface_distance(&game.ship, npc),
-            npc.behavior.label()
+            if identified {
+                npc.behavior.label()
+            } else {
+                "tracking"
+            }
         ),
         identified,
-        hostile,
+        hostile: identified && hostile,
+        intel_level: intel_level.label().to_string(),
+        scan_stage,
+        scan_progress,
+        scan_status,
         identity: if identified {
             format!(
                 "{} / {} / {}",
@@ -19542,7 +20200,7 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
                 npc.role
             )
         } else {
-            "Run identification scan from interaction range".to_string()
+            "Keep the selected contact within scanner range".to_string()
         },
         disposition: if identified {
             npc.faction
@@ -19558,9 +20216,9 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
         } else {
             "Unknown".to_string()
         },
-        systems: if identified {
+        systems: if intel_level >= CombatIntelLevel::Tactical {
             format!(
-                "Hull {:.0}/{:.0} · Shield {:.0}/{:.0} · Energy {:.0}/{:.0}",
+                "Hull {:.0}/{:.0} · Shield {:.0}/{:.0} · Weapon capacitor {:.0}/{:.0}",
                 npc.hull.current,
                 npc.hull.max,
                 npc.shields.current,
@@ -19568,21 +20226,37 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
                 npc.energy.current,
                 npc.energy.max
             )
+        } else if intel_level >= CombatIntelLevel::Shields {
+            format!(
+                "Hull {:.0}/{:.0} · Shield {:.0}/{:.0} · Weapon capacitor unknown",
+                npc.hull.current, npc.hull.max, npc.shields.current, npc.shields.max
+            )
+        } else if intel_level >= CombatIntelLevel::Hull {
+            format!(
+                "Hull {:.0}/{:.0} · Shield unknown · Energy unknown",
+                npc.hull.current, npc.hull.max
+            )
         } else {
             "Unscanned".to_string()
         },
-        loadout: if identified {
+        loadout: if intel_level >= CombatIntelLevel::Weapons {
             format!(
-                "{} shield · {} turret · cargo {}",
+                "{} shield · {} turret{}",
                 npc.shield_slots.len(),
-                npc.equipped_weapons.len(),
-                format_mass(npc.cargo_capacity)
+                npc.equipped_weapons.len().max(npc.weapon_slots.len()),
+                if intel_level >= CombatIntelLevel::Tactical {
+                    format!(" · cargo {}", format_mass(npc.cargo_capacity))
+                } else {
+                    String::new()
+                }
             )
+        } else if intel_level >= CombatIntelLevel::Shields {
+            format!("{} shield · weapons unknown", npc.shield_slots.len())
         } else {
             "Unknown".to_string()
         },
         defenses,
-        cargo_summary: if identified {
+        cargo_summary: if intel_level >= CombatIntelLevel::Tactical {
             format!(
                 "{} manifest item(s) · {} unit(s)",
                 npc.cargo_defaults.len(),
@@ -19614,6 +20288,46 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
             })
             .map(|entry| format!("{} / {}", entry.category, entry.message)),
     }
+}
+
+fn combat_scan_presentation(game: &GameState, npc: &NpcShip) -> (String, Option<f32>, String) {
+    let known = npc_intel_level(game, npc);
+    let Some(next) = known.next() else {
+        return (
+            "Complete".to_string(),
+            None,
+            "All combat telemetry available".to_string(),
+        );
+    };
+    if next > combat_scan_depth(game) {
+        return (
+            next.label().to_string(),
+            None,
+            format!(
+                "Scanner depth limited to {}",
+                combat_scan_depth(game).label()
+            ),
+        );
+    }
+
+    let progress = game
+        .combat_scan
+        .as_ref()
+        .filter(|scan| scan.npc == npc.id && scan.stage == next)
+        .map(|scan| scan.progress)
+        .unwrap_or(0.0);
+    let status = if !npc_ship_in_combat_scan_range(&game.ship, npc) {
+        format!(
+            "Out of scanner range · {:.0}u / {:.0}u",
+            npc_ship_surface_distance(&game.ship, npc),
+            COMBAT_SCAN_RANGE
+        )
+    } else if game.ship.systems.energy.current < COMBAT_SCAN_ENERGY_PER_SECOND {
+        "Insufficient energy · scan paused".to_string()
+    } else {
+        format!("Scanning {}", next.label())
+    };
+    (next.label().to_string(), Some(progress), status)
 }
 
 fn active_production_rows(game: &GameState) -> (&[Recipe], &[CraftSetting]) {
@@ -19723,6 +20437,7 @@ fn ship_pane_view(game: &GameState) -> egui_inventory::ShipPane {
         hull: format!("{:.0}%", game.ship.systems.hull.fraction() * 100.0),
         shield: format!("{:.0}%", game.ship.systems.shields.fraction() * 100.0),
         energy: format!("{:.0}%", game.ship.systems.energy.fraction() * 100.0),
+        weapon_energy: format!("{:.0}%", game.ship.systems.weapon_energy.fraction() * 100.0),
         mass: format_mass(game.ship.attributes.mass),
         engine: format!("{:.0}", game.ship.forward_acceleration()),
         turn: format!("{:.1}", game.ship.turn_acceleration()),
@@ -20638,6 +21353,12 @@ fn research_reward_label(
         "bonus_output_chance" => {
             format!("Bonus output chance +{:.0}%", reward.amount.unwrap_or(0.0))
         }
+        "combat_scan_speed_percent" => {
+            format!("Combat scan speed +{:.0}%", reward.amount.unwrap_or(0.0))
+        }
+        "combat_scan_depth" => {
+            format!("Combat scan depth +{:.0}", reward.amount.unwrap_or(0.0))
+        }
         _ => reward.kind.clone(),
     }
 }
@@ -20813,6 +21534,7 @@ struct HudView<'a> {
     selected_planet: Option<usize>,
     selected_station: Option<usize>,
     selected_npc_ship: Option<usize>,
+    contact_scan_status: Option<String>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
     current_system_id: &'a str,
@@ -20832,6 +21554,7 @@ fn draw_hud(view: HudView<'_>) {
         selected_planet,
         selected_station,
         selected_npc_ship,
+        contact_scan_status,
         destination_planet,
         orbiting_planet,
         current_system_id,
@@ -20871,9 +21594,10 @@ fn draw_hud(view: HudView<'_>) {
     );
     draw_text(
         &format!(
-            "shield {:>3.0}%   energy {:>3.0}%   hull {:>3.0}%",
+            "S {:>3.0}%   D {:>3.0}%   W {:>3.0}%   H {:>3.0}%",
             ship.systems.shields.fraction() * 100.0,
             ship.systems.energy.fraction() * 100.0,
+            ship.systems.weapon_energy.fraction() * 100.0,
             ship.systems.hull.fraction() * 100.0
         ),
         34.0,
@@ -20977,13 +21701,11 @@ fn draw_hud(view: HudView<'_>) {
             &format!(
                 "contact {:>4.0}u   {}",
                 distance,
-                if npc_ship.identified {
-                    "identified"
-                } else if in_range {
-                    "scan"
+                contact_scan_status.as_deref().unwrap_or(if in_range {
+                    "scanning"
                 } else {
                     "approach"
-                }
+                })
             ),
             34.0,
             184.0,
@@ -21024,6 +21746,32 @@ fn draw_hud(view: HudView<'_>) {
     }
 }
 
+fn selected_contact_hud_status(game: &GameState) -> Option<String> {
+    let npc = game
+        .selected_npc_ship
+        .and_then(|index| game.npc_ships.get(index))?;
+    let known = npc_intel_level(game, npc);
+    if let Some(scan) = game
+        .combat_scan
+        .as_ref()
+        .filter(|scan| scan.npc == npc.id && scan.stage <= combat_scan_depth(game))
+    {
+        return Some(format!("scan {}%", (scan.progress * 100.0).round() as u32));
+    }
+    if known == CombatIntelLevel::MAX {
+        Some("full intel".to_string())
+    } else if known
+        .next()
+        .is_some_and(|next| next > combat_scan_depth(game))
+    {
+        Some(format!("intel {} · depth limit", known.as_u8()))
+    } else if known >= CombatIntelLevel::Identity {
+        Some(format!("intel {}", known.as_u8()))
+    } else {
+        Some("scanning".to_string())
+    }
+}
+
 fn draw_interaction_prompt(game: &GameState) {
     if game.map_open || game.research_open || game.upgrades_open || game.content_open {
         return;
@@ -21053,7 +21801,7 @@ fn draw_interaction_prompt(game: &GameState) {
         } else {
             "Space inspect station"
         }
-    } else if let Some(npc_ship_index) = ship_over_npc_ship_index(game) {
+    } else if let Some(npc_ship_index) = nearest_scannable_npc_ship_index(game) {
         let Some(npc_ship) = game.npc_ships.get(npc_ship_index) else {
             return;
         };
@@ -21112,6 +21860,28 @@ mod tests {
         assert_eq!(parse_title_seed(""), None);
         assert_eq!(parse_title_seed("abc"), None);
         assert_eq!(parse_title_seed("18446744073709551616"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_egui_scroll_speed_restores_one_normal_step_per_wheel_notch() {
+        let ctx = egui::Context::default();
+        let observed = std::cell::Cell::new(egui::Vec2::ZERO);
+        let input = egui::RawInput {
+            events: vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, 1.0 / EGUI_LINUX_WHEEL_DIVISOR),
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+
+        let _ = ctx.run(input, |ctx| {
+            compensate_egui_scroll_input(ctx);
+            observed.set(ctx.input(|input| input.smooth_scroll_delta));
+        });
+
+        assert!((observed.get().y - 40.0).abs() < 0.001);
     }
 
     #[test]
@@ -21606,6 +22376,7 @@ mod tests {
         game.ship.angular_velocity = f32::INFINITY;
         game.ship.systems.hull.current = f32::NAN;
         game.ship.systems.shields.max = f32::INFINITY;
+        game.ship.systems.weapon_energy.current = f32::NAN;
         game.shield_recharge_delay_remaining = f32::INFINITY;
         game.smelt_recipes = make_smelting_recipes(&game.content_registry);
         game.smelt_settings = vec![
@@ -21629,6 +22400,12 @@ mod tests {
         assert_eq!(restored.ship.angular_velocity, 0.0);
         assert_eq!(restored.ship.hull.current, restored.ship.hull.max);
         assert_eq!(restored.ship.shields.max, 1.0);
+        let weapon_energy = restored
+            .ship
+            .weapon_energy
+            .as_ref()
+            .expect("weapon capacitor should be saved");
+        assert_eq!(weapon_energy.current, weapon_energy.max);
         assert_eq!(restored.shield_recharge_delay_remaining, 0.0);
         assert!(restored
             .smelt_settings
@@ -21650,15 +22427,15 @@ mod tests {
         assert_eq!(ship.reverse_acceleration(), STARTER_REVERSE_ACCELERATION);
         assert_eq!(ship.turn_acceleration(), STARTER_TURN_ACCELERATION);
         assert_eq!(ship.attributes.linear_drag, STARTER_LINEAR_DRAG);
-        assert_eq!(ship.systems.hull.max, 100.0);
-        assert_eq!(ship.systems.shields.max, 100.0);
+        assert_eq!(ship.systems.hull.max, 200.0);
+        assert_eq!(ship.systems.shields.max, 200.0);
         assert_eq!(ship.systems.energy.max, 100.0);
 
         let shields = equipped_shields_from_ids(&registry, &ship_def.shield_slots);
         assert_eq!(shields.len(), 1);
         assert_eq!(shields[0].name, "Balanced Shield Matrix");
         assert_eq!(shields[0].install_item, "core:balanced_shield_matrix");
-        assert_eq!(shields[0].capacity, 100.0);
+        assert_eq!(shields[0].capacity, 200.0);
         assert_eq!(shields[0].recharge_delay, 4.0);
         assert_eq!(shields[0].recharge_rate, 7.5);
         assert_eq!(shields[0].damage_resistance, 0.10);
@@ -22285,12 +23062,13 @@ mod tests {
         game.credits = 20_000;
         acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
         let fleet_position = game.owned_ships[1].ship.position;
-        game.owned_ships[1].ship.systems.energy.current = 100.0;
+        game.owned_ships[1].ship.systems.energy.current = 0.0;
+        game.owned_ships[1].ship.systems.weapon_energy.current = 100.0;
         game.npc_ships = vec![test_npc_ship(
             NpcBehaviorMode::HostileIntercept,
             fleet_position + vec2(100.0, 0.0),
         )];
-        let starting_energy = game.owned_ships[1].ship.systems.energy.current;
+        let starting_weapon_energy = game.owned_ships[1].ship.systems.weapon_energy.current;
 
         update_inactive_owned_ship_weapon_systems(&mut game, 0.1);
 
@@ -22302,7 +23080,8 @@ mod tests {
             game.owned_ships[1].equipped_weapons[1].status,
             WeaponStatus::OutOfAmmo
         );
-        assert!(game.owned_ships[1].ship.systems.energy.current < starting_energy);
+        assert_eq!(game.owned_ships[1].ship.systems.energy.current, 0.0);
+        assert!(game.owned_ships[1].ship.systems.weapon_energy.current < starting_weapon_energy);
         assert_eq!(game.weapon_fire_events.len(), 1);
         finish_weapon_fire_events(&mut game);
         assert!(game.npc_ships[0].shields.current < game.npc_ships[0].shields.max);
@@ -22367,6 +23146,8 @@ mod tests {
         acquire_owned_ship(&mut game, 0, "turrets-galore:twinspire_gunship");
         switch_active_owned_ship(&mut game, 1);
         game.ship.systems.hull.current = 64.0;
+        game.ship.systems.energy.current = 12.0;
+        game.ship.systems.weapon_energy.current = 37.0;
         let save = game.to_save();
 
         let registry = content::load_content_packs(Path::new("content/packs"))
@@ -22378,6 +23159,8 @@ mod tests {
         assert_eq!(restored.active_owned_ship_id, "ship-2");
         assert_eq!(restored.ship_id, "turrets-galore:twinspire_gunship");
         assert_eq!(restored.ship.systems.hull.current, 64.0);
+        assert_eq!(restored.ship.systems.energy.current, 12.0);
+        assert_eq!(restored.ship.systems.weapon_energy.current, 37.0);
     }
 
     #[test]
@@ -22388,6 +23171,7 @@ mod tests {
         game.ship.position = vec2(345.0, -90.0);
         let mut save = game.to_save();
         save.version = 1;
+        save.ship.weapon_energy = None;
         save.owned_ships.clear();
         save.active_owned_ship_id.clear();
 
@@ -22399,6 +23183,10 @@ mod tests {
         assert_eq!(restored.owned_ships.len(), 1);
         assert_eq!(restored.active_owned_ship_id, "ship-1");
         assert_eq!(restored.ship.position, vec2(345.0, -90.0));
+        assert_eq!(
+            restored.ship.systems.weapon_energy.current,
+            restored.ship.systems.weapon_energy.max
+        );
     }
 
     #[test]
@@ -22710,7 +23498,7 @@ mod tests {
             .expect("crafted shield should install into the shield slot");
 
         assert_eq!(game.equipped_shields[0].id, "core:hazard_shield_matrix");
-        assert_eq!(game.ship.systems.shields.max, 85.0);
+        assert_eq!(game.ship.systems.shields.max, 170.0);
         assert_eq!(game.inventory.count(&install_item), 0);
         assert_eq!(game.inventory.count(&previous_item), 1);
         assert!(game.save_dirty);
@@ -22740,19 +23528,19 @@ mod tests {
         update_orbital_hazards(&mut game, 1.0);
 
         assert_eq!(game.equipped_shields[0].damage_resistance, 0.05);
-        assert_eq!(game.ship.systems.shields.current, 80.5);
+        assert_eq!(game.ship.systems.shields.current, 165.5);
         assert_eq!(game.shield_recharge_delay_remaining, 3.0);
 
         update_shield_recharge(&mut game, 1.0);
-        assert_eq!(game.ship.systems.shields.current, 80.5);
+        assert_eq!(game.ship.systems.shields.current, 165.5);
         assert_eq!(game.shield_recharge_delay_remaining, 2.0);
 
         update_shield_recharge(&mut game, 2.0);
-        assert_eq!(game.ship.systems.shields.current, 80.5);
+        assert_eq!(game.ship.systems.shields.current, 165.5);
         assert_eq!(game.shield_recharge_delay_remaining, 0.0);
 
         update_shield_recharge(&mut game, 1.0);
-        assert_eq!(game.ship.systems.shields.current, 85.0);
+        assert_eq!(game.ship.systems.shields.current, 170.0);
     }
 
     #[test]
@@ -22783,7 +23571,8 @@ mod tests {
         update_weapon_systems(&mut game, 0.1);
 
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
-        assert_eq!(game.ship.systems.energy.current, 93.0);
+        assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert_eq!(game.ship.systems.weapon_energy.current, 93.0);
         assert_eq!(game.defense_threats[0].hull.current, 24.0);
         assert_eq!(game.defense_threats[1].hull.current, 36.0);
         assert_eq!(game.weapon_fire_events.len(), 1);
@@ -22801,7 +23590,8 @@ mod tests {
             &game.content_registry,
             &["core:point_defense_turret".to_string()],
         );
-        game.ship.systems.energy.current = 100.0;
+        game.ship.systems.energy.current = 0.0;
+        game.ship.systems.weapon_energy.current = 100.0;
         game.defense_threats = vec![test_defense_threat(
             "core:hostile",
             ThreatDisposition::Hostile,
@@ -22828,6 +23618,7 @@ mod tests {
             &["core:point_defense_turret".to_string()],
         );
         game.ship.systems.energy.current = 100.0;
+        let weapon_energy = game.ship.systems.weapon_energy.current;
         game.defense_threats = vec![test_defense_threat(
             "core:hostile",
             ThreatDisposition::Hostile,
@@ -22842,6 +23633,7 @@ mod tests {
 
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::OutOfAmmo);
         assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert_eq!(game.ship.systems.weapon_energy.current, weapon_energy);
         assert!(game.weapon_fire_events.is_empty());
     }
 
@@ -22854,7 +23646,7 @@ mod tests {
             &game.content_registry,
             &["turrets-galore:ember_lance_turret".to_string()],
         );
-        game.ship.systems.energy.current = 100.0;
+        game.ship.systems.energy.current = 0.0;
         game.npc_ships = vec![test_npc_ship(
             NpcBehaviorMode::HostileIntercept,
             vec2(120.0, 0.0),
@@ -22866,7 +23658,8 @@ mod tests {
         update_weapon_systems(&mut game, 0.1);
 
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
-        assert_eq!(game.ship.systems.energy.current, 85.0);
+        assert_eq!(game.ship.systems.energy.current, 0.0);
+        assert_eq!(game.ship.systems.weapon_energy.current, 85.0);
         assert_eq!(game.weapon_fire_events.len(), 1);
     }
 
@@ -22897,7 +23690,7 @@ mod tests {
     }
 
     #[test]
-    fn defensive_turret_requires_energy_to_fire() {
+    fn defensive_turret_requires_weapon_capacitor_to_fire() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
@@ -22905,7 +23698,8 @@ mod tests {
             &game.content_registry,
             &["core:point_defense_turret".to_string()],
         );
-        game.ship.systems.energy.current = 1.0;
+        game.ship.systems.energy.current = 100.0;
+        game.ship.systems.weapon_energy.current = 1.0;
         game.defense_threats = vec![test_defense_threat(
             "core:hostile",
             ThreatDisposition::Hostile,
@@ -22919,7 +23713,8 @@ mod tests {
             game.equipped_weapons[0].status,
             WeaponStatus::InsufficientEnergy
         );
-        assert_eq!(game.ship.systems.energy.current, 1.0);
+        assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert_eq!(game.ship.systems.weapon_energy.current, 1.0);
         assert_eq!(game.defense_threats[0].hull.current, 36.0);
         assert!(game.weapon_fire_events.is_empty());
     }
@@ -22961,7 +23756,7 @@ mod tests {
     }
 
     #[test]
-    fn defensive_turrets_fire_at_hostile_npc_ships() {
+    fn defensive_turrets_fire_at_unscanned_hostile_npc_ships() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
@@ -22977,10 +23772,28 @@ mod tests {
         hostile.hull = ShipResource::full(50.0);
         game.npc_ships = vec![hostile];
 
+        assert_eq!(
+            npc_intel_level(&game, &game.npc_ships[0]),
+            CombatIntelLevel::Unknown
+        );
+        assert!(npc_health_plate_should_draw(
+            &game.content_registry,
+            &game.npc_ships[0]
+        ));
+        assert_eq!(
+            npc_health_plate_visibility(
+                &game.content_registry,
+                &game.npc_ships[0],
+                CombatIntelLevel::Unknown
+            ),
+            (false, false)
+        );
+
         update_weapon_systems(&mut game, 0.1);
 
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
-        assert_eq!(game.ship.systems.energy.current, 93.0);
+        assert_eq!(game.ship.systems.energy.current, 100.0);
+        assert_eq!(game.ship.systems.weapon_energy.current, 93.0);
         assert_eq!(game.npc_ships[0].shields.current, 25.0);
         assert_eq!(game.weapon_fire_events.len(), 1);
         finish_weapon_fire_events(&mut game);
@@ -23155,7 +23968,7 @@ mod tests {
             "core:interceptor_round",
             2,
         );
-        patrol.energy.current = 40.0;
+        patrol.energy = ShipResource::full(40.0);
         game.npc_ships = vec![patrol];
         game.defense_threats = vec![test_defense_threat(
             "core:hostile",
@@ -23200,7 +24013,7 @@ mod tests {
             "core:interceptor_round",
             2,
         );
-        probe.energy.current = 40.0;
+        probe.energy = ShipResource::full(40.0);
         game.npc_ships = vec![probe];
         game.ship.position = Vec2::ZERO;
         game.ship.systems.shields.current = 100.0;
@@ -23219,6 +24032,39 @@ mod tests {
         assert_eq!(game.ship.systems.shields.current, 82.0);
         assert_eq!(game.ship.systems.hull.current, 100.0);
         assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn hostile_npc_weapon_capacitor_recharges_for_sustained_combat() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string()];
+        probe.equipped_weapons = equipped_weapons_from_ids(
+            &game.content_registry,
+            &["core:point_defense_turret".to_string()],
+        );
+        stock_test_npc_ammo(
+            &mut probe,
+            &game.content_registry,
+            "core:interceptor_round",
+            60,
+        );
+        probe.energy.current = 0.0;
+        probe.energy_recharge = 6.0;
+        game.npc_ships = vec![probe];
+
+        for _ in 0..60 {
+            update_npc_weapon_systems(&mut game, 0.25);
+        }
+
+        assert!(
+            game.weapon_fire_events.len() >= 6,
+            "NPC fired only {} times during sustained combat",
+            game.weapon_fire_events.len()
+        );
     }
 
     #[test]
@@ -23312,6 +24158,14 @@ mod tests {
         ];
 
         assert_eq!(incoming_weapon_fire_count(&ship, &events), 1);
+        assert_ne!(
+            weapon_fire_render_palette(&events[0]),
+            weapon_fire_render_palette(&events[1])
+        );
+        assert_eq!(
+            weapon_fire_render_palette(&events[0]).0,
+            [255, 142, 72, 255]
+        );
     }
 
     #[test]
@@ -24083,18 +24937,22 @@ mod tests {
     }
 
     #[test]
-    fn npc_ship_range_selection_and_identification_hooks_work() {
+    fn space_selects_hostile_standoff_contacts_inside_scanner_range() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
-        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(360.0, 0.0))];
         game.ship.position = Vec2::ZERO;
 
-        assert!(npc_ship_in_interaction_range(
+        assert!(!npc_ship_in_interaction_range(
             &game.ship,
             &game.npc_ships[0]
         ));
-        assert_eq!(ship_over_npc_ship_index(&game), Some(0));
+        assert!(npc_ship_in_combat_scan_range(
+            &game.ship,
+            &game.npc_ships[0]
+        ));
+        assert_eq!(nearest_scannable_npc_ship_index(&game), Some(0));
 
         select_nearby_destination(&mut game);
 
@@ -24104,11 +24962,17 @@ mod tests {
         assert!(!game.npc_ships[0].identified);
 
         assert!(identify_selected_npc_ship(&mut game));
+        assert!(!game.npc_ships[0].identified);
+        update_combat_scan(&mut game, 5.0);
         assert!(game.npc_ships[0].identified);
+        assert_eq!(
+            game.combat_intel.get("core:test_npc"),
+            Some(&CombatIntelLevel::Identity)
+        );
     }
 
     #[test]
-    fn npc_identification_requires_interaction_range() {
+    fn npc_identification_requires_scanner_range() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
@@ -24121,6 +24985,296 @@ mod tests {
         ));
         assert!(!identify_selected_npc_ship(&mut game));
         assert!(!game.npc_ships[0].identified);
+    }
+
+    #[test]
+    fn combat_scan_progresses_automatically_and_spends_energy() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        game.selected_npc_ship = Some(0);
+        let starting_energy = game.ship.systems.energy.current;
+
+        update_combat_scan(&mut game, 0.4);
+
+        assert!(!game.npc_ships[0].identified);
+        assert!(game
+            .combat_scan
+            .as_ref()
+            .is_some_and(|scan| scan.stage == CombatIntelLevel::Identity && scan.progress > 0.0));
+        assert!(game.ship.systems.energy.current < starting_energy);
+
+        update_combat_scan(&mut game, 1.0);
+
+        assert!(game.npc_ships[0].identified);
+        assert_eq!(
+            game.combat_intel.get("core:test_npc"),
+            Some(&CombatIntelLevel::Identity)
+        );
+        assert!(operation_feedback_contains(
+            &game,
+            "Contact",
+            "Identity / disposition scan complete"
+        ));
+
+        update_combat_scan(&mut game, 2.0);
+        assert_eq!(
+            game.combat_intel.get("core:test_npc"),
+            Some(&CombatIntelLevel::Hull)
+        );
+    }
+
+    #[test]
+    fn authored_scan_difficulty_scales_stage_progress() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut npc = test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0));
+        npc.scan_difficulty = 2.0;
+        game.npc_ships = vec![npc];
+        game.selected_npc_ship = Some(0);
+
+        update_combat_scan(&mut game, 0.5);
+        let difficult_progress = game
+            .combat_scan
+            .as_ref()
+            .expect("scan should start")
+            .progress;
+
+        game.combat_scan = None;
+        game.npc_ships[0].scan_difficulty = 1.0;
+        game.ship.systems.energy.current = game.ship.systems.energy.max;
+        update_combat_scan(&mut game, 0.5);
+        let normal_progress = game
+            .combat_scan
+            .as_ref()
+            .expect("scan should restart")
+            .progress;
+
+        assert!(normal_progress > difficult_progress);
+    }
+
+    #[test]
+    fn starter_hostile_probe_reveals_hull_before_its_expected_turret_kill_window() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let probe_difficulty = registry
+            .npc_ships
+            .get("core:redwake_probe")
+            .expect("starter probe should exist")
+            .scan_difficulty;
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(420.0, 0.0));
+        probe.id = "core:redwake_probe".to_string();
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string(), "probe".to_string()];
+        probe.scan_difficulty = probe_difficulty;
+        game.npc_ships = vec![probe];
+        game.selected_npc_ship = Some(0);
+
+        let mut elapsed = 0.0;
+        while npc_intel_level(&game, &game.npc_ships[0]) < CombatIntelLevel::Hull && elapsed < 5.0 {
+            update_combat_scan(&mut game, 0.1);
+            elapsed += 0.1;
+        }
+
+        assert_eq!(
+            npc_intel_level(&game, &game.npc_ships[0]),
+            CombatIntelLevel::Hull
+        );
+        assert!(elapsed < 4.0, "hull scan took {elapsed:.1}s");
+    }
+
+    #[test]
+    fn hostile_interceptor_entry_auto_selects_and_starts_scanning_once_per_entry() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let friendly = test_npc_ship(NpcBehaviorMode::Patrol, vec2(100.0, 0.0));
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(420.0, 0.0));
+        hostile.id = "core:auto_scan_hostile".to_string();
+        hostile.role = "hostile".to_string();
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        game.npc_ships = vec![friendly, hostile];
+        game.selected_npc_ship = Some(0);
+
+        assert!(update_hostile_scanner_contacts(&mut game));
+        assert_eq!(game.selected_npc_ship, Some(1));
+        assert!(game.combat_scan.as_ref().is_some_and(|scan| {
+            scan.npc == "core:auto_scan_hostile" && scan.stage == CombatIntelLevel::Identity
+        }));
+        assert!(!update_hostile_scanner_contacts(&mut game));
+
+        game.npc_ships[1].position = vec2(2_000.0, 0.0);
+        assert!(!update_hostile_scanner_contacts(&mut game));
+        assert!(game.hostile_scanner_contacts.is_empty());
+
+        game.npc_ships[1].position = vec2(420.0, 0.0);
+        assert!(update_hostile_scanner_contacts(&mut game));
+    }
+
+    #[test]
+    fn starter_combat_durability_targets_ten_to_twenty_five_standard_hits() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let ship = registry
+            .ships
+            .get("core:frontier_cargo_ship_01")
+            .expect("starter ship should exist");
+        let shield = registry
+            .shields
+            .get("core:balanced_shield_matrix")
+            .expect("starter shield should exist");
+        let probe = registry
+            .npc_ships
+            .get("core:redwake_probe")
+            .expect("starter hostile should exist");
+        let weapon = registry
+            .weapons
+            .get("core:point_defense_turret")
+            .expect("starter turret should exist");
+
+        let player_hits = ((ship.hull_capacity + shield.capacity) / weapon.damage).ceil() as u32;
+        let probe_hits =
+            ((probe.hull_capacity + probe.shield_capacity) / weapon.damage).ceil() as u32;
+
+        assert!(
+            (10..=25).contains(&player_hits),
+            "player takes {player_hits} hits"
+        );
+        assert!(
+            (10..=25).contains(&probe_hits),
+            "probe takes {probe_hits} hits"
+        );
+    }
+
+    #[test]
+    fn combat_scan_resets_partial_progress_after_range_interruption_and_target_loss() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        game.selected_npc_ship = Some(0);
+
+        update_combat_scan(&mut game, 0.4);
+        let partial = game
+            .combat_scan
+            .as_ref()
+            .expect("scan should start")
+            .progress;
+        game.npc_ships[0].position = vec2(2_000.0, 0.0);
+
+        update_combat_scan(&mut game, 1.0);
+        assert_eq!(
+            game.combat_scan
+                .as_ref()
+                .expect("grace keeps scan")
+                .progress,
+            partial
+        );
+        update_combat_scan(&mut game, 0.6);
+        assert_eq!(
+            game.combat_scan
+                .as_ref()
+                .expect("scan target remains")
+                .progress,
+            0.0
+        );
+
+        game.selected_npc_ship = None;
+        update_combat_scan(&mut game, 0.1);
+        assert!(game.combat_scan.is_none());
+    }
+
+    #[test]
+    fn combat_scan_pauses_without_power_and_respects_depth_gates() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        game.selected_npc_ship = Some(0);
+        game.ship.systems.energy.current = 0.0;
+
+        update_combat_scan(&mut game, 1.0);
+        assert_eq!(
+            game.combat_scan
+                .as_ref()
+                .expect("scan should be pending")
+                .progress,
+            0.0
+        );
+
+        game.combat_intel
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Hull);
+        game.combat_scan = None;
+        game.ship.systems.energy.current = game.ship.systems.energy.max;
+        update_combat_scan(&mut game, 5.0);
+        assert_eq!(
+            game.combat_intel.get("core:test_npc"),
+            Some(&CombatIntelLevel::Hull)
+        );
+        assert!(game
+            .combat_scan
+            .as_ref()
+            .is_some_and(|scan| scan.stage == CombatIntelLevel::Shields));
+
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::ScannerArray)
+            .expect("scanner upgrade should exist")
+            .level = 1;
+        update_combat_scan(&mut game, 5.0);
+        assert_eq!(
+            game.combat_intel.get("core:test_npc"),
+            Some(&CombatIntelLevel::Shields)
+        );
+    }
+
+    #[test]
+    fn research_rewards_increase_combat_scan_depth_and_speed() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let base_depth = combat_scan_depth(&game);
+        let base_speed = combat_scan_speed(&game);
+
+        game.completed_research
+            .push("core:advanced_scanner_core".to_string());
+
+        assert!(combat_scan_depth(&game) > base_depth);
+        assert!(combat_scan_speed(&game) > base_speed);
+    }
+
+    #[test]
+    fn combat_intel_round_trips_and_legacy_saves_default_to_unknown() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        game.combat_intel
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Weapons);
+
+        let serialized = toml::to_string(&game.to_save()).expect("save should serialize");
+        let saved = toml::from_str::<SaveData>(&serialized).expect("save should deserialize");
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, vec2(120.0, 0.0))];
+        restored.apply_save(saved);
+
+        assert_eq!(
+            restored.combat_intel.get("core:test_npc"),
+            Some(&CombatIntelLevel::Weapons)
+        );
+        assert!(restored.npc_ships[0].identified);
+
+        let mut legacy = restored.to_save();
+        legacy.version = 2;
+        legacy.combat_intel.clear();
+        restored.apply_save(legacy);
+        assert!(restored.combat_intel.is_empty());
+        assert!(!restored.npc_ships[0].identified);
     }
 
     #[test]
@@ -24457,7 +25611,8 @@ mod tests {
         let rendered_size = (npc.radius * 2.0_f32).clamp(22.0, 72.0);
 
         assert!(click_radius >= rendered_size * 0.5);
-        assert!(click_radius <= rendered_size * 0.5 + 6.0);
+        assert!(click_radius <= rendered_size * 0.5 + 14.0);
+        assert!(npc_ship_click_radius(&npc, 0.35) >= 36.0);
     }
 
     #[test]
@@ -24821,6 +25976,16 @@ mod tests {
             &registry,
         );
         assert!(restored_depleted.cargo_defaults.is_empty());
+
+        let mut legacy_probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, Vec2::ZERO);
+        legacy_probe.id = "core:redwake_probe".to_string();
+        legacy_probe.equipped_weapons =
+            equipped_weapons_from_ids(&registry, &["core:point_defense_turret".to_string()]);
+        restore_authored_npc_weapon_ammo(std::slice::from_mut(&mut legacy_probe), &registry);
+        assert_eq!(
+            npc_weapon_ammo_count(&legacy_probe, &legacy_probe.equipped_weapons[0]),
+            Some(60)
+        );
     }
 
     #[test]
@@ -27307,6 +28472,7 @@ mod tests {
             route_index: 0,
             anchor: position,
             identified: false,
+            scan_difficulty: 1.0,
             cargo_capacity: 100.0,
             cargo_defaults: Vec::new(),
             trade_open: false,
@@ -27317,6 +28483,7 @@ mod tests {
             equipped_shields: Vec::new(),
             shield_recharge_delay_remaining: 0.0,
             energy: ShipResource::full(20.0),
+            energy_recharge: 6.0,
             shield_slots: Vec::new(),
             weapon_slots: Vec::new(),
             equipped_weapons: Vec::new(),
@@ -27453,6 +28620,8 @@ mod tests {
         game.credits = 10_000;
 
         apply_npc_ui_actions(&mut game, vec![egui_npc::NpcUiAction::Interaction(0)], 10);
+        assert!(!game.npc_ships[0].identified);
+        update_combat_scan(&mut game, 5.0);
         assert!(game.npc_ships[0].identified);
 
         apply_npc_ui_actions(&mut game, vec![egui_npc::NpcUiAction::Interaction(1)], 10);
@@ -27490,6 +28659,8 @@ mod tests {
         hostile.identified = true;
         hostile.behavior_tags = vec!["hostile".to_string()];
         game.npc_ships = vec![hostile];
+        game.combat_intel
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Identity);
         game.selected_npc_ship = Some(0);
         game.ship.position = Vec2::ZERO;
 
@@ -27502,6 +28673,88 @@ mod tests {
         assert!(!view.interactions[1].enabled);
         assert_eq!(view.interactions[3].status, "Hostile");
         assert!(!view.interactions[3].enabled);
+    }
+
+    #[test]
+    fn npc_contact_projection_and_health_plates_follow_intel_stages() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut hostile = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
+        hostile.role = "hostile".to_string();
+        hostile.behavior_tags = vec!["hostile".to_string()];
+        hostile.weapon_slots = vec!["core:point_defense_turret".to_string()];
+        hostile.equipped_weapons =
+            equipped_weapons_from_ids(&game.content_registry, &hostile.weapon_slots);
+        game.npc_ships = vec![hostile];
+        game.selected_npc_ship = Some(0);
+
+        let unknown = npc_pane_view(&game, 1);
+        assert_eq!(unknown.name, "Unidentified transponder");
+        assert_eq!(
+            unknown.identity,
+            "Keep the selected contact within scanner range"
+        );
+        assert_eq!(unknown.systems, "Unscanned");
+        assert_eq!(unknown.loadout, "Unknown");
+        assert_eq!(unknown.cargo_summary, "Unknown");
+        assert!(unknown.defenses.is_empty());
+        assert!(!unknown.hostile);
+        assert!(npc_health_plate_should_draw(
+            &game.content_registry,
+            &game.npc_ships[0]
+        ));
+        assert_eq!(
+            npc_health_plate_visibility(
+                &game.content_registry,
+                &game.npc_ships[0],
+                CombatIntelLevel::Unknown
+            ),
+            (false, false)
+        );
+
+        game.combat_intel
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Hull);
+        sync_npc_identification(&mut game.npc_ships, &game.combat_intel);
+        let hull = npc_pane_view(&game, 1);
+        assert!(hull.hostile);
+        assert!(hull.systems.contains("Hull 50/50"));
+        assert!(hull.systems.contains("Shield unknown"));
+        assert_eq!(hull.loadout, "Unknown");
+        assert_eq!(
+            npc_health_plate_visibility(
+                &game.content_registry,
+                &game.npc_ships[0],
+                CombatIntelLevel::Hull
+            ),
+            (true, false)
+        );
+
+        game.combat_intel
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Weapons);
+        let weapons = npc_pane_view(&game, 1);
+        assert!(weapons.systems.contains("Shield 25/25"));
+        assert!(weapons
+            .defenses
+            .iter()
+            .any(|line| line.contains("Point Defense Turret")));
+        assert!(weapons.defenses.iter().all(|line| !line.contains("damage")));
+        assert_eq!(weapons.cargo_summary, "Unknown");
+        assert_eq!(
+            npc_health_plate_visibility(
+                &game.content_registry,
+                &game.npc_ships[0],
+                CombatIntelLevel::Weapons
+            ),
+            (true, true)
+        );
+
+        game.combat_intel
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Tactical);
+        let tactical = npc_pane_view(&game, 1);
+        assert!(tactical.systems.contains("Weapon capacitor 20/20"));
+        assert!(tactical.cargo_summary.contains("manifest item"));
+        assert!(tactical.defenses.iter().any(|line| line.contains("damage")));
     }
 
     fn assert_vec2_near(actual: Vec2, expected: Vec2) {
@@ -27558,6 +28811,9 @@ mod tests {
             equipped_shields: Vec::new(),
             equipped_weapons: Vec::new(),
             npc_ships: Vec::new(),
+            combat_intel: HashMap::new(),
+            combat_scan: None,
+            hostile_scanner_contacts: HashSet::new(),
             collision_cooldowns: HashMap::new(),
             collision_contacts: HashSet::new(),
             collision_grace_remaining: 0.0,

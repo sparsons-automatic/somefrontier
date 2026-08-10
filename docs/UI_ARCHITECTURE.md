@@ -108,6 +108,47 @@ the gameplay layer, which retains prerequisite, credit, timer, save, and reward
 authority. The window participates in the shared pin, geometry persistence, and
 `Reset Menus` recovery paths without an additional graph or layout dependency.
 
+Combat scanning is a gameplay-owned staged state machine rather than an egui
+timer. The selected live NPC supplies per-contact range, difficulty, and current
+telemetry; a save-backed intelligence ledger records only the highest completed
+stage by namespaced NPC archetype. Partial progress, current hull/shield/energy,
+weapon readiness, and ammunition are never persisted as learned snapshots.
+Scanner Array levels and validated Research rewards determine maximum depth and
+speed, while combat resolution remains authoritative regardless of what the
+player can see.
+
+Player and owned-ship runtime systems keep drive energy and weapon-capacitor
+energy as separate resources. Flight control and passive scanning spend drive
+energy; automatic weapons consult and spend only the capacitor. Both resources
+serialize independently, with legacy saves receiving a full capacitor derived
+from their resolved hull. Ship and Fleet panes label both pools explicitly.
+The save-version migration also restores authored ammunition for armed NPCs
+whose older persistent cargo record was depleted; current-version saves retain
+normal NPC ammunition consumption without repeated refills.
+
+Hostile-intercept contacts entering scanner range are acquired by the gameplay
+layer before this update runs: entry-edge tracking emits one proximity alarm,
+selects the nearest current threat, and starts the same scan state machine used
+by manual selection. The entry set is runtime-only and is cleared naturally
+when contacts leave range, change systems, or are destroyed.
+
+One reveal projection drives the Macroquad contact label and hostile health
+plate, compact HUD status, context/interaction availability, and egui Contact
+facts. This prevents an unknown surface from leaking a faction color, name,
+capacity, or loadout that another surface hides. The Contact renderer receives
+only prepared labels, optional scan progress, blockers, and permitted facts;
+typed actions still return to gameplay code. Visual testing should cover every
+intel stage. Hostile interceptors draw a masked `?` plate before hull telemetry
+is known, without using the live health fraction; the normal hull and shield
+fills appear only at their corresponding reveal stages. Weapon targeting never
+reads the intelligence ledger, so unknown contacts remain valid combat targets.
+Visual testing should also cover range interruption and reacquisition,
+insufficient power, scanner
+depth limits, save/reload, hostile hull-only plates, shield-enabled plates, and
+unknown contacts at representative zooms and window sizes. Include a moving
+hostile at its authored standoff distance: both `Space` acquisition and the
+padded pointer hit target should select it before the starter turret kill window.
+
 The Operations Log is a separate movable, pinnable egui window over the shared
 gameplay feedback stream. Gameplay systems continue to publish through one
 event path, so the compact Ship readout, contextual Planet, Station, Contact,
