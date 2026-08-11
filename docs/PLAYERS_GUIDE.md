@@ -123,7 +123,9 @@ Drag the map panel's header to move it, or its lower-right corner to resize it.
 Its 3D camera tracks the panel's aspect ratio so planets remain spherical at
 wide, tall, and compact sizes. The chosen position and size are remembered
 across launches, kept within the visible display, and restored to their defaults
-by `Reset Menus`.
+by `Reset Menus`. The map is anchored to the active system: ordinary ship
+acceleration, coasting, and turning move only the ship marker, while planets
+remain stable except for their deliberately authored orbital motion.
 Clicking a planet selects it without changing course; choose `Fly Now` to begin
 a physical autopilot approach or `Add Stop` to append it to the itinerary.
 Numbered planet markers show itinerary order on the map. Systems tagged as
@@ -144,6 +146,12 @@ Pin the Destinations window before closing the map to keep route progress and
 controls visible during flight. Its position, size, collapsed state, and pin
 participate in the same persistence and `Reset Menus` behavior as other egui
 windows.
+
+To verify starmap stability, open the map while stopped and watch a few planet
+markers, then accelerate, coast, and turn with the map still open. Repeat after
+closing and reopening the map, and after panning, zooming, resizing the map, and
+pinning Destinations. Planet markers should never bob or drift with ship motion;
+only the ship marker and slow authored planet orbits should move.
 
 Known system rows include route readiness guidance. If a remote route is not
 ready, the row calls out the missing fuel and can point at a local station that
