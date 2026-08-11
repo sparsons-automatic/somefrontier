@@ -15988,19 +15988,14 @@ fn clicked_starmap_planet_index(mouse: Vec2, game: &GameState) -> Option<usize> 
     }
 
     let camera = starmap_camera(x, y, width, height);
+    let transform = starmap_transform(game);
     game.planets
         .iter()
         .enumerate()
         .filter(|(index, _)| planet_in_active_system(game, *index))
         .filter(|(index, planet)| planet_matches_starmap_filter(game, *index, planet))
         .filter_map(|(index, planet)| {
-            let screen_pos = starmap_planet_screen_pos(
-                &game.ship,
-                planet,
-                &camera,
-                game.starmap_zoom,
-                game.starmap_pan,
-            );
+            let screen_pos = starmap_planet_screen_pos(planet, &camera, transform);
             let hit_radius = starmap_planet_hit_radius(planet, game.starmap_zoom);
             (mouse.distance(screen_pos) <= hit_radius)
                 .then_some((index, mouse.distance_squared(screen_pos)))
@@ -17561,6 +17556,7 @@ fn draw_save_confirmation(timer: f32, manual: bool) {
 
 fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     let (x, y, width, height) = starmap_panel_rect(game);
+    let transform = starmap_transform(game);
 
     draw_rectangle(
         0.0,
@@ -17598,15 +17594,13 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
         .filter(|(index, planet)| planet_matches_starmap_filter(game, *index, planet))
     {
         draw_starmap_planet_3d(
-            &game.ship,
             planet,
             game.destination_planet == Some(index),
             game.starmap_selected_planet == Some(index),
-            game.starmap_zoom,
-            game.starmap_pan,
+            transform,
         );
     }
-    draw_starmap_ship_3d(&game.ship, game.starmap_zoom, game.starmap_pan);
+    draw_starmap_ship_3d(&game.ship, transform);
 
     set_default_camera();
 
@@ -17737,9 +17731,8 @@ fn known_system_row_rect(game: &GameState, index: usize) -> Rect {
 }
 
 fn starmap_camera(x: f32, y: f32, width: f32, height: f32) -> Camera3D {
-    let orbit = get_time() as f32 * 0.08;
     Camera3D {
-        position: vec3(orbit.sin() * 260.0, 430.0, 760.0 + orbit.cos() * 160.0),
+        position: vec3(260.0, 430.0, 760.0),
         target: vec3(0.0, 18.0, 0.0),
         up: vec3(0.0, 1.0, 0.0),
         fovy: 46.0_f32.to_radians(),
@@ -17751,6 +17744,7 @@ fn starmap_camera(x: f32, y: f32, width: f32, height: f32) -> Camera3D {
 }
 
 fn draw_starmap_planet_markers(game: &GameState, camera: &Camera3D) {
+    let transform = starmap_transform(game);
     for (index, planet) in game
         .planets
         .iter()
@@ -17758,13 +17752,7 @@ fn draw_starmap_planet_markers(game: &GameState, camera: &Camera3D) {
         .filter(|(index, _)| planet_in_active_system(game, *index))
         .filter(|(index, planet)| planet_matches_starmap_filter(game, *index, planet))
     {
-        let screen_pos = starmap_planet_screen_pos(
-            &game.ship,
-            planet,
-            camera,
-            game.starmap_zoom,
-            game.starmap_pan,
-        );
+        let screen_pos = starmap_planet_screen_pos(planet, camera, transform);
         let radius = starmap_planet_hit_radius(planet, game.starmap_zoom);
         let is_destination = game.destination_planet == Some(index);
         let is_selected = game.starmap_selected_planet == Some(index);
@@ -17815,12 +17803,9 @@ fn draw_starmap_route_3d(game: &GameState) {
         return;
     };
 
-    let ship_pos = starmap_ship_position(game.starmap_pan);
-    let planet_pos = world_to_starmap_3d(
-        planet.position - game.ship.position,
-        game.starmap_zoom,
-        game.starmap_pan,
-    );
+    let transform = starmap_transform(game);
+    let ship_pos = transform.ship_position(game.ship.position);
+    let planet_pos = transform.planet_position(planet.position);
     let segments = 28;
     for i in 0..segments {
         if i % 2 == 1 {
@@ -17837,17 +17822,14 @@ fn draw_starmap_route_3d(game: &GameState) {
 }
 
 fn draw_starmap_planet_3d(
-    ship: &Ship,
     planet: &Planet,
     is_destination: bool,
     is_selected: bool,
-    zoom: f32,
-    pan: Vec2,
+    transform: StarmapTransform,
 ) {
-    let relative = planet.position - ship.position;
-    let position = world_to_starmap_3d(relative, zoom, pan);
+    let position = transform.planet_position(planet.position);
     let floor = vec3(position.x, 0.0, position.z);
-    let radius = starmap_planet_radius(planet, zoom) * 0.64;
+    let radius = starmap_planet_radius(planet, transform.zoom) * 0.64;
     let color = if is_destination {
         Color::from_rgba(82, 194, 214, 235)
     } else if is_selected {
@@ -17873,9 +17855,9 @@ fn draw_starmap_planet_3d(
     }
 }
 
-fn draw_starmap_ship_3d(ship: &Ship, zoom: f32, pan: Vec2) {
-    let origin = starmap_ship_position(pan);
-    let ship_scale = zoom.clamp(0.75, 1.6);
+fn draw_starmap_ship_3d(ship: &Ship, transform: StarmapTransform) {
+    let origin = transform.ship_position(ship.position);
+    let ship_scale = transform.zoom.clamp(0.75, 1.6);
     let nose = origin + vec3(0.0, 32.0, -18.0) * ship_scale;
     let tail = origin + vec3(0.0, 14.0, 18.0) * ship_scale;
     let left = origin + vec3(-14.0, 12.0, 10.0) * ship_scale;
@@ -17892,19 +17874,16 @@ fn draw_starmap_ship_3d(ship: &Ship, zoom: f32, pan: Vec2) {
     draw_line_3d(left, tail, Color::from_rgba(150, 221, 226, 220));
     draw_line_3d(right, tail, Color::from_rgba(150, 221, 226, 220));
     draw_starmap_ring_at_3d(
-        starmap_floor_position(pan),
+        transform.floor_position(ship.position),
         (28.0 + ship.velocity.length().min(900.0) * 0.01) * ship_scale,
         Color::from_rgba(150, 221, 226, 135),
     );
 }
 
 fn draw_starmap_orbit_guides(game: &GameState) {
+    let transform = starmap_transform(game);
     for guide in active_orbit_guides(&game.planets, &game.current_system_id) {
-        let center = world_to_starmap_floor(
-            guide.center - game.ship.position,
-            game.starmap_zoom,
-            game.starmap_pan,
-        );
+        let center = transform.floor_position(guide.center);
         let semi_major = guide.radius * STARMAP_SCALE * game.starmap_zoom;
         let semi_minor = guide.semi_minor * STARMAP_SCALE * game.starmap_zoom;
         draw_starmap_ellipse_at_3d(
@@ -17951,23 +17930,52 @@ fn starmap_ellipse_point(
     center + vec3(rotated.x, 0.0, rotated.y)
 }
 
-fn world_to_starmap_3d(relative: Vec2, zoom: f32, pan: Vec2) -> Vec3 {
-    let horizontal = relative * STARMAP_SCALE * zoom + pan;
-    let height = ((relative.x * 0.0043).sin() + (relative.y * 0.0031).cos()) * 34.0 + 48.0;
-    vec3(horizontal.x, height.max(14.0), horizontal.y)
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StarmapTransform {
+    origin: Vec2,
+    zoom: f32,
+    pan: Vec2,
 }
 
-fn world_to_starmap_floor(relative: Vec2, zoom: f32, pan: Vec2) -> Vec3 {
-    let horizontal = relative * STARMAP_SCALE * zoom + pan;
-    vec3(horizontal.x, 0.0, horizontal.y)
+impl StarmapTransform {
+    fn relative_position(self, world_position: Vec2) -> Vec2 {
+        world_position - self.origin
+    }
+
+    fn horizontal_position(self, world_position: Vec2) -> Vec2 {
+        self.relative_position(world_position) * STARMAP_SCALE * self.zoom + self.pan
+    }
+
+    fn planet_position(self, world_position: Vec2) -> Vec3 {
+        let relative = self.relative_position(world_position);
+        let horizontal = self.horizontal_position(world_position);
+        let height = ((relative.x * 0.0043).sin() + (relative.y * 0.0031).cos()) * 34.0 + 48.0;
+        vec3(horizontal.x, height.max(14.0), horizontal.y)
+    }
+
+    fn floor_position(self, world_position: Vec2) -> Vec3 {
+        let horizontal = self.horizontal_position(world_position);
+        vec3(horizontal.x, 0.0, horizontal.y)
+    }
+
+    fn ship_position(self, world_position: Vec2) -> Vec3 {
+        let floor = self.floor_position(world_position);
+        vec3(floor.x, 18.0, floor.z)
+    }
 }
 
-fn starmap_ship_position(pan: Vec2) -> Vec3 {
-    vec3(pan.x, 18.0, pan.y)
-}
-
-fn starmap_floor_position(pan: Vec2) -> Vec3 {
-    vec3(pan.x, 0.0, pan.y)
+fn starmap_transform(game: &GameState) -> StarmapTransform {
+    let origin = game
+        .content_registry
+        .systems
+        .get(&game.current_system_id)
+        .map(|system| vec2(system.arrival[0], system.arrival[1]))
+        .unwrap_or(Vec2::ZERO);
+    StarmapTransform {
+        origin,
+        zoom: game.starmap_zoom,
+        pan: game.starmap_pan,
+    }
 }
 
 fn starmap_planet_radius(planet: &Planet, zoom: f32) -> f32 {
@@ -17979,16 +17987,11 @@ fn starmap_planet_hit_radius(planet: &Planet, zoom: f32) -> f32 {
 }
 
 fn starmap_planet_screen_pos(
-    ship: &Ship,
     planet: &Planet,
     camera: &Camera3D,
-    zoom: f32,
-    pan: Vec2,
+    transform: StarmapTransform,
 ) -> Vec2 {
-    starmap_world_to_screen(
-        world_to_starmap_3d(planet.position - ship.position, zoom, pan),
-        camera,
-    )
+    starmap_world_to_screen(transform.planet_position(planet.position), camera)
 }
 
 fn starmap_world_to_screen(position: Vec3, camera: &Camera3D) -> Vec2 {
@@ -28657,6 +28660,117 @@ mod tests {
             Some((None, vec2(900.0, 600.0)))
         );
         assert_eq!(parse_starmap_panel_geometry("120 80 900\n"), None);
+    }
+
+    #[test]
+    fn starmap_planet_positions_do_not_follow_ship_flight() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(
+            registry,
+            vec![test_planet(
+                "core:stable-map-world",
+                STARTER_SYSTEM_ID,
+                vec2(4_200.0, -1_800.0),
+                true,
+            )],
+        );
+        game.starmap_zoom = 1.35;
+        game.starmap_pan = vec2(42.0, -18.0);
+
+        let before_transform = starmap_transform(&game);
+        let before_planet = before_transform.planet_position(game.planets[0].position);
+        let before_ship = before_transform.ship_position(game.ship.position);
+
+        game.ship.position = vec2(2_600.0, -3_100.0);
+        game.ship.velocity = vec2(480.0, -220.0);
+        game.ship.angle = 1.7;
+
+        let after_transform = starmap_transform(&game);
+        let after_planet = after_transform.planet_position(game.planets[0].position);
+        let after_ship = after_transform.ship_position(game.ship.position);
+
+        assert_eq!(after_transform, before_transform);
+        assert_eq!(after_planet, before_planet);
+        assert_ne!(after_ship, before_ship);
+    }
+
+    #[test]
+    fn starmap_camera_is_fixed_across_frames_and_uses_panel_aspect_ratio() {
+        let first = starmap_camera(24.0, 40.0, 900.0, 600.0);
+        let repeated = starmap_camera(24.0, 40.0, 900.0, 600.0);
+        let tall = starmap_camera(24.0, 40.0, 540.0, 720.0);
+
+        assert_eq!(first.position, vec3(260.0, 430.0, 760.0));
+        assert_eq!(repeated.position, first.position);
+        assert_eq!(repeated.target, first.target);
+        assert_eq!(repeated.up, first.up);
+        assert_eq!(repeated.fovy, first.fovy);
+        assert_eq!(repeated.aspect, first.aspect);
+        assert_eq!(repeated.viewport, first.viewport);
+        assert_eq!(first.aspect, Some(1.5));
+        assert_eq!(tall.aspect, Some(0.75));
+        assert_eq!(tall.position, first.position);
+    }
+
+    #[test]
+    fn starmap_pan_and_zoom_are_the_only_view_transform_inputs() {
+        let world_position = vec2(3_200.0, -2_400.0);
+        let base = StarmapTransform {
+            origin: vec2(-800.0, -400.0),
+            zoom: 1.0,
+            pan: Vec2::ZERO,
+        };
+        let panned = StarmapTransform {
+            pan: vec2(75.0, -35.0),
+            ..base
+        };
+        let zoomed = StarmapTransform { zoom: 2.0, ..base };
+
+        let base_planet = base.planet_position(world_position);
+        let panned_planet = panned.planet_position(world_position);
+        let zoomed_planet = zoomed.planet_position(world_position);
+
+        assert_eq!(panned_planet.x - base_planet.x, 75.0);
+        assert_eq!(panned_planet.z - base_planet.z, -35.0);
+        assert_eq!(panned_planet.y, base_planet.y);
+        assert_eq!(zoomed_planet.x, base_planet.x * 2.0);
+        assert_eq!(zoomed_planet.z, base_planet.z * 2.0);
+        assert_eq!(zoomed_planet.y, base_planet.y);
+    }
+
+    #[test]
+    fn starmap_preserves_authored_orbit_motion_across_frame_rates() {
+        let mut projections = Vec::new();
+        for frames_per_second in [30, 60, 144] {
+            let registry = content::load_content_packs(Path::new("content/packs"))
+                .expect("content packs should load and validate");
+            let mut planet = test_planet("core:map-orbiter", STARTER_SYSTEM_ID, Vec2::ZERO, true);
+            planet.motion = PlanetMotion::Orbit(OrbitMotion {
+                center: vec2(200.0, -100.0),
+                anchor_planet: None,
+                radius: 800.0,
+                semi_minor: 620.0,
+                axis_rotation: 0.4,
+                period_days: content::MIN_ORBIT_PERIOD_DAYS,
+                phase: 0.2,
+            });
+            planet.position = runtime_planet_position(&planet, 0.0);
+            let mut game = test_game_with_systems(registry, vec![planet]);
+            let initial = starmap_transform(&game).planet_position(game.planets[0].position);
+            let dt = 1.0 / frames_per_second as f32;
+            for _ in 0..frames_per_second * 10 {
+                advance_world_time_and_planets(&mut game, dt);
+            }
+            let advanced = starmap_transform(&game).planet_position(game.planets[0].position);
+
+            assert_ne!(advanced, initial);
+            projections.push(advanced);
+        }
+
+        for projection in &projections[1..] {
+            assert!(projections[0].distance(*projection) < 0.01);
+        }
     }
 
     #[test]
