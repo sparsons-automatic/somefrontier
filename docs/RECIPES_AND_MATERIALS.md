@@ -74,14 +74,14 @@ larger drone/drive parts range from 35-48 kg.
 
 | Item | Tier | Source | Used For |
 |---|---|---|---|
-| Iron ore | Raw resource | Ferric Copper Planetoid, Cobalt Scar Planetoid | Iron plates |
+| Iron ore | Raw resource | Ferric Copper Planetoid, Cobalt Scar Planetoid | Iron plates; Auto Repair (5 hull) |
 | Copper ore | Raw resource | Ferric Copper Planetoid, Argent Relay Rock | Copper plates |
 | Nickel ore | Raw resource | Nickel-Iron Shard, Cobalt Scar Planetoid, Platinum Wake Debris | Future structural alloys |
 | Silicon ore | Raw resource | Silicate Glass World | Future electronics and scanners |
 | Aluminum ore | Raw resource | Pale Silica Reach, Basalt Magnesium World | Aluminum plates and lightweight frames |
 | Magnesium ore | Raw resource | Kestrel Titanium Moon, Basalt Magnesium World | Lightweight alloys and industrial upgrades |
 | Lithium ore | Raw resource | Brine Spark Body | Lithium cells and drone power |
-| Titanium ore | Raw resource | Kestrel Titanium Moon, Thorium Quiet Moon | Titanium plates and stronger upgrades |
+| Titanium ore | Raw resource | Kestrel Titanium Moon, Thorium Quiet Moon | Titanium plates, stronger upgrades, and Auto Repair (20 hull) |
 | Cobalt ore | Raw resource | Ember Nickel Drift, Kestrel Titanium Moon, Cobalt Scar Planetoid, Uranium Blackstone, Platinum Wake Debris | Cobalt alloys and high-performance parts |
 | Silver ore | Raw resource | Auric Needle Cluster, Argent Relay Rock | Silver contacts and advanced electronics |
 | Gold ore | Raw resource | Auric Needle Cluster | Gold conductors and precision electronics |

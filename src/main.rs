@@ -105,7 +105,7 @@ const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const SAVE_VERSION: u32 = 5;
+const SAVE_VERSION: u32 = 6;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
 #[cfg(target_os = "linux")]
@@ -130,6 +130,8 @@ const MAX_SCAN_LEVEL: u8 = 3;
 const COMBAT_SCAN_RANGE: f32 = 620.0;
 const COMBAT_SCAN_ENERGY_PER_SECOND: f32 = 2.0;
 const COMBAT_SCAN_INTERRUPTION_GRACE_SECONDS: f32 = 1.5;
+const AUTO_REPAIR_CYCLE_SECONDS: f32 = 2.0;
+const AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS: f32 = 8.0;
 const OPERATION_HISTORY_LIMIT: usize = 200;
 const STARTER_SYSTEM_ID: &str = "core:frontier";
 const UI_FONT_PATH: &str = "assets/fonts/Junicode.ttf";
@@ -426,6 +428,9 @@ struct GameState {
     inventory_scroll: f32,
     upgrades_scroll: f32,
     shield_recharge_delay_remaining: f32,
+    auto_repair_enabled: bool,
+    auto_repair_cycle_progress: f32,
+    auto_repair_damage_lockout_remaining: f32,
     last_window_size: (i32, i32),
     window_save_delay: Option<f32>,
     save_delay: Option<f32>,
@@ -1400,6 +1405,9 @@ struct OwnedShip {
     inventory: Inventory,
     upgrades: [ShipUpgrade; SHIP_UPGRADE_COUNT],
     shield_recharge_delay_remaining: f32,
+    auto_repair_enabled: bool,
+    auto_repair_cycle_progress: f32,
+    auto_repair_damage_lockout_remaining: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1484,6 +1492,12 @@ struct SaveOwnedShip {
     installed_power_modules: Vec<String>,
     shield_slots: Vec<String>,
     shield_recharge_delay_remaining: f32,
+    #[serde(default)]
+    auto_repair_enabled: bool,
+    #[serde(default)]
+    auto_repair_cycle_progress: f32,
+    #[serde(default)]
+    auto_repair_damage_lockout_remaining: f32,
     weapon_slot_loadout: Vec<Option<String>>,
 }
 
@@ -1934,6 +1948,9 @@ impl GameState {
             inventory_scroll: 0.0,
             upgrades_scroll: 0.0,
             shield_recharge_delay_remaining: 0.0,
+            auto_repair_enabled: false,
+            auto_repair_cycle_progress: 0.0,
+            auto_repair_damage_lockout_remaining: 0.0,
             last_window_size: current_window_size(),
             window_save_delay: None,
             save_delay: Some(AUTOSAVE_SECONDS),
@@ -2475,6 +2492,9 @@ impl GameState {
             inventory: self.inventory.clone(),
             upgrades: self.ship_upgrades,
             shield_recharge_delay_remaining: self.shield_recharge_delay_remaining,
+            auto_repair_enabled: self.auto_repair_enabled,
+            auto_repair_cycle_progress: self.auto_repair_cycle_progress,
+            auto_repair_damage_lockout_remaining: self.auto_repair_damage_lockout_remaining,
         }
     }
 
@@ -2508,6 +2528,9 @@ impl GameState {
         self.inventory = owned.inventory;
         self.ship_upgrades = owned.upgrades;
         self.shield_recharge_delay_remaining = owned.shield_recharge_delay_remaining;
+        self.auto_repair_enabled = owned.auto_repair_enabled;
+        self.auto_repair_cycle_progress = owned.auto_repair_cycle_progress;
+        self.auto_repair_damage_lockout_remaining = owned.auto_repair_damage_lockout_remaining;
         self.selected_owned_ship_index = index;
         self.destination_planet = destination_planet_for_system(
             &self.planets,
@@ -2547,6 +2570,13 @@ impl OwnedShip {
                 .collect(),
             shield_recharge_delay_remaining: finite_nonnegative_or(
                 self.shield_recharge_delay_remaining,
+                0.0,
+            ),
+            auto_repair_enabled: self.auto_repair_enabled,
+            auto_repair_cycle_progress: finite_nonnegative_or(self.auto_repair_cycle_progress, 0.0)
+                .min(AUTO_REPAIR_CYCLE_SECONDS),
+            auto_repair_damage_lockout_remaining: finite_nonnegative_or(
+                self.auto_repair_damage_lockout_remaining,
                 0.0,
             ),
             weapon_slot_loadout: self
@@ -2596,6 +2626,16 @@ impl OwnedShip {
             upgrades,
             shield_recharge_delay_remaining: finite_nonnegative_or(
                 saved.shield_recharge_delay_remaining,
+                0.0,
+            ),
+            auto_repair_enabled: saved.auto_repair_enabled,
+            auto_repair_cycle_progress: finite_nonnegative_or(
+                saved.auto_repair_cycle_progress,
+                0.0,
+            )
+            .min(AUTO_REPAIR_CYCLE_SECONDS),
+            auto_repair_damage_lockout_remaining: finite_nonnegative_or(
+                saved.auto_repair_damage_lockout_remaining,
                 0.0,
             ),
         }
@@ -4728,6 +4768,7 @@ fn apply_owned_ship_weapon_damage(owned: &mut OwnedShip, amount: f32) -> bool {
     );
     if application.changed() {
         owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
+        reset_owned_auto_repair_after_damage(owned);
     }
     application.changed()
 }
@@ -4741,8 +4782,12 @@ fn apply_shield_hazard_drain(game: &mut GameState, amount: f32) {
     if damage <= 0.0 {
         return;
     }
+    let before = game.ship.systems.shields.current;
     game.ship.systems.shields.spend(damage);
-    game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+    if game.ship.systems.shields.current < before {
+        game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        reset_active_auto_repair_after_damage(game);
+    }
 }
 
 fn ship_pressure_damage_after_resistance(game: &GameState, damage: f32) -> f32 {
@@ -4760,6 +4805,7 @@ fn apply_ship_pressure_damage(game: &mut GameState, amount: f32) -> bool {
     let changed = application.changed();
     if changed {
         game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        reset_active_auto_repair_after_damage(game);
         game.save_dirty = true;
     }
     changed
@@ -4776,6 +4822,7 @@ fn apply_ship_weapon_damage(game: &mut GameState, amount: f32) -> bool {
     let changed = application.changed();
     if changed {
         game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        reset_active_auto_repair_after_damage(game);
         game.save_dirty = true;
     }
     changed
@@ -5202,6 +5249,7 @@ fn apply_active_ship_collision_damage(game: &mut GameState, amount: f32) -> Dama
     );
     if application.changed() {
         game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        reset_active_auto_repair_after_damage(game);
     }
     application
 }
@@ -5216,6 +5264,7 @@ fn apply_owned_ship_collision_damage(owned: &mut OwnedShip, amount: f32) -> Dama
     );
     if application.changed() {
         owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
+        reset_owned_auto_repair_after_damage(owned);
     }
     application
 }
@@ -5949,6 +5998,169 @@ fn cargo_rating_kg(ship: &Ship, upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) ->
         + ship_upgrade_level(upgrades, ShipUpgradeKind::CargoHold) as f32 * 10_000.0
 }
 
+#[derive(Clone)]
+struct AutoRepairMaterial {
+    item: ItemRef,
+    hull_points: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum AutoRepairStatus {
+    Locked,
+    Disabled,
+    HullNominal,
+    DamageLockout(f32),
+    OutOfMaterials,
+    Repairing {
+        material_name: String,
+        hull_points: f32,
+        progress: f32,
+    },
+}
+
+fn auto_repair_materials(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+) -> Vec<AutoRepairMaterial> {
+    let mut materials = completed_research
+        .iter()
+        .filter_map(|research_id| registry.research.get(research_id))
+        .flat_map(|research| research.rewards.iter())
+        .filter(|reward| reward.kind == "auto_repair_material")
+        .filter_map(|reward| {
+            let item = registry_item(registry, reward.target.as_deref()?)?;
+            let hull_points = reward.amount?;
+            (hull_points.is_finite() && hull_points > 0.0)
+                .then_some(AutoRepairMaterial { item, hull_points })
+        })
+        .collect::<Vec<_>>();
+    materials.sort_by(|left, right| {
+        right
+            .hull_points
+            .total_cmp(&left.hull_points)
+            .then_with(|| left.item.id.cmp(&right.item.id))
+    });
+    materials
+}
+
+fn auto_repair_material_for_inventory(
+    materials: &[AutoRepairMaterial],
+    inventory: &Inventory,
+    missing_hull: f32,
+) -> Option<AutoRepairMaterial> {
+    let available = materials
+        .iter()
+        .filter(|material| inventory.count(&material.item) > 0);
+    available
+        .clone()
+        .filter(|material| material.hull_points <= missing_hull)
+        .max_by(|left, right| left.hull_points.total_cmp(&right.hull_points))
+        .or_else(|| available.min_by(|left, right| left.hull_points.total_cmp(&right.hull_points)))
+        .cloned()
+}
+
+fn auto_repair_status(game: &GameState) -> AutoRepairStatus {
+    let materials = auto_repair_materials(&game.content_registry, &game.completed_research);
+    if materials.is_empty() {
+        return AutoRepairStatus::Locked;
+    }
+    if !game.auto_repair_enabled {
+        return AutoRepairStatus::Disabled;
+    }
+    let missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).max(0.0);
+    if missing_hull <= f32::EPSILON {
+        return AutoRepairStatus::HullNominal;
+    }
+    if game.auto_repair_damage_lockout_remaining > 0.0 {
+        return AutoRepairStatus::DamageLockout(game.auto_repair_damage_lockout_remaining);
+    }
+    let Some(material) =
+        auto_repair_material_for_inventory(&materials, &game.inventory, missing_hull)
+    else {
+        return AutoRepairStatus::OutOfMaterials;
+    };
+    AutoRepairStatus::Repairing {
+        material_name: material.item.name,
+        hull_points: material.hull_points,
+        progress: (game.auto_repair_cycle_progress / AUTO_REPAIR_CYCLE_SECONDS).clamp(0.0, 1.0),
+    }
+}
+
+fn reset_active_auto_repair_after_damage(game: &mut GameState) {
+    game.auto_repair_cycle_progress = 0.0;
+    game.auto_repair_damage_lockout_remaining = AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS;
+}
+
+fn reset_owned_auto_repair_after_damage(owned: &mut OwnedShip) {
+    owned.auto_repair_cycle_progress = 0.0;
+    owned.auto_repair_damage_lockout_remaining = AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS;
+}
+
+fn update_auto_repair(game: &mut GameState, dt: f32) {
+    let dt = finite_nonnegative_or(dt, 0.0);
+    let previous_lockout = game.auto_repair_damage_lockout_remaining;
+    game.auto_repair_damage_lockout_remaining =
+        (game.auto_repair_damage_lockout_remaining - dt).max(0.0);
+    if game.auto_repair_damage_lockout_remaining != previous_lockout {
+        game.save_dirty = true;
+    }
+    let repair_dt = if previous_lockout > 0.0 {
+        (dt - previous_lockout).max(0.0)
+    } else {
+        dt
+    };
+    let materials = auto_repair_materials(&game.content_registry, &game.completed_research);
+    if !game.auto_repair_enabled || materials.is_empty() {
+        return;
+    }
+    let mut missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).max(0.0);
+    if missing_hull <= f32::EPSILON {
+        if game.auto_repair_cycle_progress > 0.0 {
+            game.auto_repair_cycle_progress = 0.0;
+            game.save_dirty = true;
+        }
+        return;
+    }
+    if game.auto_repair_damage_lockout_remaining > 0.0 {
+        return;
+    }
+    if auto_repair_material_for_inventory(&materials, &game.inventory, missing_hull).is_none() {
+        return;
+    }
+
+    game.auto_repair_cycle_progress += repair_dt;
+    game.save_dirty = true;
+    while game.auto_repair_cycle_progress >= AUTO_REPAIR_CYCLE_SECONDS {
+        let Some(material) =
+            auto_repair_material_for_inventory(&materials, &game.inventory, missing_hull)
+        else {
+            break;
+        };
+        game.auto_repair_cycle_progress -= AUTO_REPAIR_CYCLE_SECONDS;
+        game.inventory.remove_item(&material.item, 1);
+        let repaired = material.hull_points.min(missing_hull);
+        game.ship.systems.hull.restore(repaired);
+        missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).max(0.0);
+        game.save_dirty = true;
+        push_aggregate_operation_feedback(
+            game,
+            "Repair",
+            format!("auto-repair:{}", material.item.id),
+            1,
+            |count| {
+                format!(
+                    "Auto Repair restored hull using {count} {} ({:.0} hull capacity each)",
+                    material.item.name, material.hull_points
+                )
+            },
+        );
+        if missing_hull <= f32::EPSILON {
+            game.auto_repair_cycle_progress = 0.0;
+            break;
+        }
+    }
+}
+
 fn can_afford_cost(inventory: &Inventory, cost: &[ItemStack]) -> bool {
     cost.iter()
         .all(|stack| inventory.count(&stack.item) >= stack.count)
@@ -6043,9 +6255,8 @@ fn operation_category(source: &str) -> egui_operations::OperationCategory {
             OperationCategory::Travel
         }
         "trade" | "market" | "vendor" => OperationCategory::Trade,
-        "combat" | "collision" | "weapon" | "weapons" | "shield" | "shields" | "loot" => {
-            OperationCategory::Combat
-        }
+        "combat" | "collision" | "weapon" | "weapons" | "shield" | "shields" | "loot"
+        | "repair" => OperationCategory::Combat,
         "research" => OperationCategory::Research,
         "system" | "save" | "content" | "warning" => OperationCategory::System,
         _ => OperationCategory::General,
@@ -6090,6 +6301,7 @@ fn operation_severity(source: &str, message: &str) -> egui_operations::Operation
         "accepted",
         "acquired",
         "transferred",
+        "restored",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
@@ -6603,6 +6815,9 @@ fn acquire_owned_ship(game: &mut GameState, station_index: usize, ship_id: &str)
         inventory: Inventory::empty(),
         upgrades: make_ship_upgrades(),
         shield_recharge_delay_remaining: 0.0,
+        auto_repair_enabled: false,
+        auto_repair_cycle_progress: 0.0,
+        auto_repair_damage_lockout_remaining: 0.0,
     };
     game.credits -= price;
     game.owned_ships.push(owned);
@@ -9997,6 +10212,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         update_ship(&mut game.ship, dt, energy_recharge);
     }
     update_ship_collisions(game, dt);
+    update_auto_repair(game, dt);
     if game_save_snapshot(game) != save_snapshot {
         game.save_dirty = true;
     }
@@ -13395,11 +13611,17 @@ fn update_shield_recharge(game: &mut GameState, dt: f32) {
 }
 
 fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
+    let mut auto_repair_state_changed = false;
     for owned in &mut game.owned_ships {
-        if owned.instance_id == game.active_owned_ship_id
-            || owned.system_id != game.current_system_id
-            || owned.ship.systems.hull.current <= 0.0
+        if owned.instance_id == game.active_owned_ship_id || owned.ship.systems.hull.current <= 0.0
         {
+            continue;
+        }
+        let previous_lockout = owned.auto_repair_damage_lockout_remaining;
+        owned.auto_repair_damage_lockout_remaining =
+            (owned.auto_repair_damage_lockout_remaining - dt).max(0.0);
+        auto_repair_state_changed |= owned.auto_repair_damage_lockout_remaining != previous_lockout;
+        if owned.system_id != game.current_system_id {
             continue;
         }
 
@@ -13422,6 +13644,9 @@ fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
         }
         let shield_recharge = owned_ship_shield_recharge_rate(owned);
         owned.ship.systems.shields.restore(shield_recharge * dt);
+    }
+    if auto_repair_state_changed {
+        game.save_dirty = true;
     }
 }
 
@@ -20477,6 +20702,33 @@ fn ship_pane_view(game: &GameState) -> egui_inventory::ShipPane {
             )
         })
         .collect();
+    let repair_status = match auto_repair_status(game) {
+        AutoRepairStatus::Locked => "Locked · research Autonomous Hull Patching".to_string(),
+        AutoRepairStatus::Disabled => "Ready · disabled".to_string(),
+        AutoRepairStatus::HullNominal => "Hull nominal · standing by".to_string(),
+        AutoRepairStatus::DamageLockout(seconds) => {
+            format!("Paused after damage · {:.1}s", seconds)
+        }
+        AutoRepairStatus::OutOfMaterials => {
+            "Paused · no supported raw repair material in cargo".to_string()
+        }
+        AutoRepairStatus::Repairing {
+            material_name,
+            hull_points,
+            progress,
+        } => format!(
+            "Repairing · {}% · {material_name} restores {hull_points:.0} hull",
+            (progress * 100.0).round()
+        ),
+    };
+    let repair_toggle =
+        (!matches!(auto_repair_status(game), AutoRepairStatus::Locked)).then(|| {
+            if game.auto_repair_enabled {
+                "Disable Auto Repair".to_string()
+            } else {
+                "Enable Auto Repair".to_string()
+            }
+        });
 
     egui_inventory::ShipPane {
         ship_name,
@@ -20497,6 +20749,8 @@ fn ship_pane_view(game: &GameState) -> egui_inventory::ShipPane {
         mass: format_mass(game.ship.attributes.mass),
         engine: format!("{:.0}", game.ship.forward_acceleration()),
         turn: format!("{:.1}", game.ship.turn_acceleration()),
+        auto_repair_status: repair_status,
+        auto_repair_toggle: repair_toggle,
         power,
         shields,
         weapons,
@@ -20625,6 +20879,24 @@ fn apply_inventory_ui_actions(
                 } else {
                     audio::AudioCue::Warning
                 });
+            }
+            egui_inventory::InventoryUiAction::ToggleAutoRepair => {
+                if auto_repair_materials(&game.content_registry, &game.completed_research)
+                    .is_empty()
+                {
+                    game.audio.play(audio::AudioCue::Warning);
+                } else {
+                    game.auto_repair_enabled = !game.auto_repair_enabled;
+                    game.auto_repair_cycle_progress = 0.0;
+                    game.save_dirty = true;
+                    let state = if game.auto_repair_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    push_operation_feedback(game, "Repair", format!("Auto Repair {state}"));
+                    game.audio.play(audio::AudioCue::Confirm);
+                }
             }
             egui_inventory::InventoryUiAction::OpenUpgrades => {
                 game.upgrades_open = true;
@@ -21414,6 +21686,18 @@ fn research_reward_label(
         }
         "combat_scan_depth" => {
             format!("Combat scan depth +{:.0}", reward.amount.unwrap_or(0.0))
+        }
+        "auto_repair_material" => {
+            let material = reward
+                .target
+                .as_deref()
+                .and_then(|item_id| registry.items.get(item_id))
+                .map(|item| item.name.as_str())
+                .unwrap_or("raw material");
+            format!(
+                "Auto Repair: {material} restores {:.0} hull",
+                reward.amount.unwrap_or(0.0)
+            )
         }
         _ => reward.kind.clone(),
     }
@@ -22434,6 +22718,8 @@ mod tests {
         game.ship.systems.shields.max = f32::INFINITY;
         game.ship.systems.weapon_energy.current = f32::NAN;
         game.shield_recharge_delay_remaining = f32::INFINITY;
+        game.auto_repair_cycle_progress = f32::NAN;
+        game.auto_repair_damage_lockout_remaining = f32::INFINITY;
         game.smelt_recipes = make_smelting_recipes(&game.content_registry);
         game.smelt_settings = vec![
             CraftSetting {
@@ -22463,6 +22749,11 @@ mod tests {
             .expect("weapon capacitor should be saved");
         assert_eq!(weapon_energy.current, weapon_energy.max);
         assert_eq!(restored.shield_recharge_delay_remaining, 0.0);
+        assert_eq!(restored.owned_ships[0].auto_repair_cycle_progress, 0.0);
+        assert_eq!(
+            restored.owned_ships[0].auto_repair_damage_lockout_remaining,
+            0.0
+        );
         assert!(restored
             .smelt_settings
             .iter()
@@ -26989,6 +27280,197 @@ mod tests {
     }
 
     #[test]
+    fn auto_repair_is_research_gated_and_consumes_active_ship_materials_over_time() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.systems.hull.current = 50.0;
+        game.ship.systems.shields.current = 40.0;
+        game.inventory.add_item(iron.clone(), 1);
+
+        assert_eq!(auto_repair_status(&game), AutoRepairStatus::Locked);
+        assert!(ship_pane_view(&game).auto_repair_status.contains("Locked"));
+        apply_inventory_ui_actions(
+            &mut game,
+            vec![egui_inventory::InventoryUiAction::ToggleAutoRepair],
+            1,
+        );
+        assert!(!game.auto_repair_enabled);
+
+        game.completed_research
+            .push("core:autonomous_hull_patching".to_string());
+        assert_eq!(auto_repair_status(&game), AutoRepairStatus::Disabled);
+        apply_inventory_ui_actions(
+            &mut game,
+            vec![egui_inventory::InventoryUiAction::ToggleAutoRepair],
+            1,
+        );
+        assert!(game.auto_repair_enabled);
+        assert!(ship_pane_view(&game)
+            .auto_repair_status
+            .contains("Repairing"));
+
+        update_auto_repair(&mut game, 1.0);
+        assert_eq!(game.ship.systems.hull.current, 50.0);
+        assert_eq!(game.inventory.count(&iron), 1);
+        update_auto_repair(&mut game, 1.0);
+
+        assert_eq!(game.ship.systems.hull.current, 55.0);
+        assert_eq!(game.ship.systems.shields.current, 40.0);
+        assert_eq!(game.inventory.count(&iron), 0);
+        assert_eq!(auto_repair_status(&game), AutoRepairStatus::OutOfMaterials);
+        assert!(operation_feedback_contains(
+            &game,
+            "Repair",
+            "using 1 Iron ore"
+        ));
+    }
+
+    #[test]
+    fn auto_repair_chooses_efficient_materials_caps_hull_and_uses_no_energy() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let titanium = required_item(&registry, "core:titanium_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.completed_research
+            .push("core:autonomous_hull_patching".to_string());
+        game.auto_repair_enabled = true;
+        game.ship.systems.hull.current = 70.0;
+        game.ship.systems.energy.current = 0.0;
+        game.ship.systems.weapon_energy.current = 0.0;
+        game.inventory.add_item(iron.clone(), 2);
+        game.inventory.add_item(titanium.clone(), 1);
+
+        update_auto_repair(&mut game, AUTO_REPAIR_CYCLE_SECONDS);
+        assert_eq!(game.ship.systems.hull.current, 90.0);
+        assert_eq!(game.inventory.count(&titanium), 0);
+        assert_eq!(game.inventory.count(&iron), 2);
+
+        update_auto_repair(&mut game, AUTO_REPAIR_CYCLE_SECONDS * 2.0);
+        assert_eq!(game.ship.systems.hull.current, game.ship.systems.hull.max);
+        assert_eq!(game.inventory.count(&iron), 0);
+        assert_eq!(game.ship.systems.energy.current, 0.0);
+        assert_eq!(game.ship.systems.weapon_energy.current, 0.0);
+    }
+
+    #[test]
+    fn damage_resets_and_pauses_auto_repair_without_touching_progress_for_free() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.completed_research
+            .push("core:autonomous_hull_patching".to_string());
+        game.auto_repair_enabled = true;
+        game.auto_repair_cycle_progress = 1.5;
+        game.ship.systems.hull.current = 80.0;
+        game.ship.systems.shields.current = 20.0;
+        game.inventory.add_item(iron.clone(), 1);
+
+        assert!(apply_ship_weapon_damage(&mut game, 1.0));
+        assert_eq!(game.auto_repair_cycle_progress, 0.0);
+        assert_eq!(
+            game.auto_repair_damage_lockout_remaining,
+            AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS
+        );
+        update_auto_repair(&mut game, AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS - 0.1);
+        assert_eq!(game.ship.systems.hull.current, 80.0);
+        assert_eq!(game.inventory.count(&iron), 1);
+        assert!(matches!(
+            auto_repair_status(&game),
+            AutoRepairStatus::DamageLockout(_)
+        ));
+
+        update_auto_repair(&mut game, 0.1);
+        update_auto_repair(&mut game, AUTO_REPAIR_CYCLE_SECONDS);
+        assert_eq!(game.ship.systems.hull.current, 85.0);
+        assert_eq!(game.inventory.count(&iron), 0);
+
+        game.ship.systems.hull.current = 60.0;
+        game.inventory.add_item(iron.clone(), 3);
+        assert!(apply_ship_weapon_damage(&mut game, 1.0));
+        update_auto_repair(
+            &mut game,
+            AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS + AUTO_REPAIR_CYCLE_SECONDS,
+        );
+        assert_eq!(game.ship.systems.hull.current, 65.0);
+        assert_eq!(game.inventory.count(&iron), 2);
+    }
+
+    #[test]
+    fn auto_repair_state_follows_owned_ship_switching_and_save_load() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.completed_research
+            .push("core:autonomous_hull_patching".to_string());
+        let mut second = game.capture_active_owned_ship();
+        second.instance_id = "ship-2".to_string();
+        second.callsign = "Second ship".to_string();
+        game.owned_ships.push(second);
+        game.next_owned_ship_sequence = 3;
+        game.auto_repair_enabled = true;
+        game.auto_repair_cycle_progress = 0.75;
+        game.auto_repair_damage_lockout_remaining = 3.0;
+
+        assert!(switch_active_owned_ship(&mut game, 1));
+        assert!(!game.auto_repair_enabled);
+        game.auto_repair_enabled = true;
+        game.auto_repair_cycle_progress = 1.25;
+        game.auto_repair_damage_lockout_remaining = 5.0;
+        assert!(switch_active_owned_ship(&mut game, 0));
+        assert!(game.auto_repair_enabled);
+        assert_eq!(game.auto_repair_cycle_progress, 0.75);
+        assert_eq!(game.auto_repair_damage_lockout_remaining, 3.0);
+        assert!(switch_active_owned_ship(&mut game, 1));
+
+        let save = game.to_save();
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert_eq!(restored.active_owned_ship_id, "ship-2");
+        assert!(restored.auto_repair_enabled);
+        assert_eq!(restored.auto_repair_cycle_progress, 1.25);
+        assert_eq!(restored.auto_repair_damage_lockout_remaining, 5.0);
+        assert!(restored.owned_ships[0].auto_repair_enabled);
+        assert_eq!(restored.owned_ships[0].auto_repair_cycle_progress, 0.75);
+    }
+
+    #[test]
+    fn version_five_save_defaults_auto_repair_state_to_disabled() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.auto_repair_enabled = true;
+        game.auto_repair_cycle_progress = 1.0;
+        game.auto_repair_damage_lockout_remaining = 4.0;
+        let serialized = toml::to_string_pretty(&game.to_save()).expect("save should serialize");
+        let legacy = serialized
+            .replace("version = 6", "version = 5")
+            .lines()
+            .filter(|line| {
+                !line.starts_with("auto_repair_enabled")
+                    && !line.starts_with("auto_repair_cycle_progress")
+                    && !line.starts_with("auto_repair_damage_lockout_remaining")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let save = toml::from_str::<SaveData>(&legacy).expect("version five save should parse");
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert!(!restored.auto_repair_enabled);
+        assert_eq!(restored.auto_repair_cycle_progress, 0.0);
+        assert_eq!(restored.auto_repair_damage_lockout_remaining, 0.0);
+    }
+
+    #[test]
     fn debug_console_completes_research_nodes() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -29062,6 +29544,9 @@ mod tests {
             inventory_scroll: 0.0,
             upgrades_scroll: 0.0,
             shield_recharge_delay_remaining: 0.0,
+            auto_repair_enabled: false,
+            auto_repair_cycle_progress: 0.0,
+            auto_repair_damage_lockout_remaining: 0.0,
             last_window_size: (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
             window_save_delay: None,
             save_delay: None,

@@ -3849,6 +3849,46 @@ fn validate_research_reward(
                 ));
             }
         }
+        "auto_repair_material" => {
+            let Some(target) = reward.target.as_deref() else {
+                errors.push(format!(
+                    "Research `{}` auto_repair_material reward has no target",
+                    research.id
+                ));
+                return;
+            };
+            validate_reference(
+                registry.items.contains_key(target),
+                "Research",
+                &research.id,
+                "auto repair material",
+                target,
+                errors,
+            );
+            if registry
+                .items
+                .get(target)
+                .is_some_and(|item| item.tier != "raw_resource")
+            {
+                errors.push(format!(
+                    "Research `{}` auto repair material `{target}` is not a raw_resource item",
+                    research.id
+                ));
+            }
+            let Some(amount) = reward.amount else {
+                errors.push(format!(
+                    "Research `{}` auto_repair_material reward has no amount",
+                    research.id
+                ));
+                return;
+            };
+            if !amount.is_finite() || amount <= 0.0 {
+                errors.push(format!(
+                    "Research `{}` auto_repair_material reward has non-positive amount",
+                    research.id
+                ));
+            }
+        }
         _ => {
             errors.push(format!(
                 "Research `{}` has unsupported reward kind `{}`",
@@ -4392,6 +4432,23 @@ mod tests {
                     && research.rewards.len() == 1
                     && research.rewards[0].kind == "mining_speed_percent"
                     && research.rewards[0].amount == Some(5.0)
+            }));
+        assert!(registry
+            .research
+            .get("core:autonomous_hull_patching")
+            .is_some_and(|research| {
+                research.tier == 3
+                    && research.requires == ["core:yield_optimization_i"]
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "auto_repair_material"
+                            && reward.target.as_deref() == Some("core:iron_ore")
+                            && reward.amount == Some(5.0)
+                    })
+                    && research.rewards.iter().any(|reward| {
+                        reward.kind == "auto_repair_material"
+                            && reward.target.as_deref() == Some("core:titanium_ore")
+                            && reward.amount == Some(20.0)
+                    })
             }));
         assert!(registry
             .research
@@ -4975,6 +5032,16 @@ amount = -1.0
 
 [[research.rewards]]
 kind = "unknown_reward"
+
+[[research.rewards]]
+kind = "auto_repair_material"
+target = "core_item"
+amount = -2.0
+
+[[research.rewards]]
+kind = "auto_repair_material"
+target = "missing_material"
+amount = 5.0
 "#,
         )
         .expect("research should be written");
@@ -5002,6 +5069,15 @@ kind = "unknown_reward"
         }));
         assert!(errors.iter().any(|error| {
             error == "Research `core:bad_node` has unsupported reward kind `unknown_reward`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` auto repair material `core:core_item` is not a raw_resource item"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` auto_repair_material reward has non-positive amount"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` references missing auto repair material `core:missing_material`"
         }));
 
         fs::remove_dir_all(root).ok();
