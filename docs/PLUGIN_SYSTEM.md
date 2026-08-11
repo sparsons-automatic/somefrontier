@@ -847,7 +847,9 @@ ship grid; it does not need to be nominated in `starter.toml` to be selectable.
 id = "frontier_cargo_ship_01"
 name = "Frontier Cargo Ship"
 texture = "./assets/ships/frontier-cargo-ship-01.png"
+radius = 22.0
 mass = 85000.0
+cargo_capacity = 20000.0
 forward_acceleration = 350.0
 reverse_acceleration = 320.0
 turn_acceleration = 5.2
@@ -874,7 +876,14 @@ Rules:
   transparent margins from the source asset. Do not pre-rotate an asset merely
   to compensate for the New Game card. A missing or unreadable image leaves the
   ship selectable and uses the engine's fallback presentation.
-- `mass`, acceleration, energy, drag, hull, and shield values must be positive.
+- `radius`, `mass`, `cargo_capacity`, acceleration, energy, drag, hull, and
+  shield values must be positive. `radius` defaults to `22.0` and
+  `cargo_capacity` defaults to `20000.0` for compatibility with older packs.
+- `radius` is the gameplay collision and interaction footprint. Rendering,
+  docking, approach clearance, fleet spacing, weapon targeting, and local-space
+  selection scale with it.
+- `cargo_capacity` is the hull's base capacity in kilograms. Cargo Hold upgrades
+  add 10,000 kg per level to that base.
 - `mass` participates in collision response and damage. Heavier ships change
   velocity less in ship-to-ship contact, while lighter ships take a larger share
   of the impact consequence. Collision thresholds and restitution remain global
@@ -1439,8 +1448,8 @@ Reject startup when:
 - A ship references a missing power module.
 - A ship references a missing shield.
 - A ship references a missing weapon.
-- A ship has an empty name or non-positive mass, acceleration, energy, drag,
-  hull, or shield values.
+- A ship has an empty name or non-positive radius, mass, cargo capacity,
+  acceleration, energy, drag, hull, or shield values.
 - A ship declares a zero `purchase_price`.
 - Starter configuration references a missing ship.
 - A faction has an empty name or kind, or an unsupported default disposition.
@@ -1541,7 +1550,9 @@ struct ShipDef {
     id: String,
     name: String,
     texture: Option<String>,
+    radius: f32,
     mass: f32,
+    cargo_capacity: f32,
     forward_acceleration: f32,
     reverse_acceleration: f32,
     turn_acceleration: f32,

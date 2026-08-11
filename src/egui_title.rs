@@ -135,6 +135,10 @@ pub struct ShipChoice {
     pub hull: f32,
     pub shields: f32,
     pub weapon_banks: usize,
+    pub cargo_capacity: f32,
+    pub mass: f32,
+    pub forward_acceleration: f32,
+    pub turn_acceleration: f32,
     pub texture: Option<TextureId>,
 }
 
@@ -333,6 +337,15 @@ fn draw_new_game(
                                     ui.label(format!(
                                         "Hull {:.0}  ·  Shield {:.0}",
                                         ship.hull, ship.shields
+                                    ));
+                                    ui.label(format!(
+                                        "Cargo {:.0} t  ·  Mass {:.0} t",
+                                        ship.cargo_capacity / 1_000.0,
+                                        ship.mass / 1_000.0
+                                    ));
+                                    ui.small(format!(
+                                        "Thrust {:.0}  ·  Turn {:.1}",
+                                        ship.forward_acceleration, ship.turn_acceleration
                                     ));
                                     ui.horizontal(|ui| {
                                         ui.label(format!(

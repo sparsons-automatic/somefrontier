@@ -43,6 +43,10 @@ pub struct ShipOffer {
     pub name: String,
     pub price: u32,
     pub affordable: bool,
+    pub cargo_capacity: String,
+    pub mass: String,
+    pub forward_acceleration: f32,
+    pub turn_acceleration: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +218,13 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
             ui.label("No hulls are currently offered.");
         }
         for offer in &shipyard.offers {
+            ui.small(format!(
+                "Cargo {} · Mass {} · Thrust {:.0} · Turn {:.1}",
+                offer.cargo_capacity,
+                offer.mass,
+                offer.forward_acceleration,
+                offer.turn_acceleration
+            ));
             if ui
                 .add_enabled(
                     offer.affordable,
