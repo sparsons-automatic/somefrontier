@@ -103,6 +103,28 @@ kind = "bonus_output_chance"
 amount = 3.0
 
 [[research]]
+id = "autonomous_hull_patching"
+name = "Autonomous Hull Patching"
+tier = 3
+column = 3
+row = 2
+price = 1400
+duration_seconds = 30.0
+requires = ["yield_optimization_i"]
+revealed_by = ["yield_optimization_i"]
+summary = "Automated damage-control rigs consume carried raw metals to restore hull integrity after incoming fire subsides."
+
+[[research.rewards]]
+kind = "auto_repair_material"
+target = "iron_ore"
+amount = 5.0
+
+[[research.rewards]]
+kind = "auto_repair_material"
+target = "titanium_ore"
+amount = 20.0
+
+[[research]]
 id = "fusion_drive_core"
 name = "Fusion Drive Core"
 tier = 3

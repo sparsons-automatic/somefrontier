@@ -430,6 +430,11 @@ summary = "Unlocks the advanced scanner core recipe."
 [[research.rewards]]
 kind = "recipe_unlock"
 target = "advanced_scanner_core"
+
+[[research.rewards]]
+kind = "auto_repair_material"
+target = "core:iron_ore"
+amount = 5.0
 ```
 
 Rules:
@@ -463,6 +468,15 @@ Rules:
   positive `amount`. Combat scan depth is counted in whole stages; speed is a
   percentage multiplier. Packs can combine these rewards with the base
   `core:scanner_array` upgrade without replacing the scanning state machine.
+- `auto_repair_material` requires an item `target` whose tier is
+  `raw_resource` and a positive `amount` specifying hull points restored per
+  consumed unit. A research node may repeat the reward for several materials.
+  Completed rewards collectively unlock the Ship-pane Auto Repair toggle and
+  supply its available material choices. Runtime repair is active-ship-only,
+  hull-only, runs in two-second cycles, and pauses for eight seconds after any
+  successful shield or hull damage. It consumes no ship energy. When several
+  materials are aboard, the runtime prefers the largest repair unit that will
+  not be wasted, then the smallest available unit for minor damage.
 
 ## `stations.toml`
 

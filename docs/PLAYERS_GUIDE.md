@@ -311,6 +311,17 @@ background while you keep flying, mining, trading, or producing.
 Research can unlock production recipes and other progression hooks. Locked
 production rows become available once the required research node is completed.
 
+`Autonomous Hull Patching` branches from Yield Optimization. After completing
+it, open the Ship window and enable Auto Repair. The system repairs only the
+active ship's hull in two-second cycles; it never restores shields. Iron ore
+restores 5 hull per unit and titanium ore restores 20 hull per unit. The system
+chooses the largest unit it can use without waste, falling back to the smallest
+available unit for minor damage. Any shield or hull damage resets the cycle and
+pauses repairs for eight seconds, so sustained combat cannot repair through
+incoming fire. Missing materials also pause progress. Auto Repair consumes no
+drive energy or weapon capacitor, and each owned ship remembers its own setting
+and progress through control switching and save/load.
+
 ## Ship Upgrades
 
 Open inventory, then choose `Inspect ship upgrades` in the Ship Pane. The
@@ -459,7 +470,9 @@ contract descriptions. Services remain accessible as native selectable buttons.
 
 Garage services provide a Maintenance action. When docked and carrying enough
 credits, repair restores damaged hull and shields; the price is based on the
-amount of damage. Freight Lock services provide hauling contracts: accept one,
+amount of damage. This remains the immediate way to restore both systems;
+research-gated Auto Repair is slower, hull-only, and consumes carried raw ore.
+Freight Lock services provide hauling contracts: accept one,
 carry the requested cargo to its target station, and return to the contract
 desk to collect the reward. Archive scan desks provide survey contracts: scan
 the named planet, then return to the archive. The station panel shows contract

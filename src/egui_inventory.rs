@@ -58,6 +58,8 @@ pub struct ShipPane {
     pub mass: String,
     pub engine: String,
     pub turn: String,
+    pub auto_repair_status: String,
+    pub auto_repair_toggle: Option<String>,
     pub power: Vec<String>,
     pub shields: Vec<EquipmentSlot>,
     pub weapons: Vec<EquipmentSlot>,
@@ -87,6 +89,7 @@ pub enum InventoryUiAction {
     QueueRecipe { row: usize },
     InstallShield { slot: usize, shield_id: String },
     InstallWeapon { slot: usize, weapon_id: String },
+    ToggleAutoRepair,
     OpenUpgrades,
     ToggleShipPin,
     ToggleProductionPin,
@@ -195,6 +198,13 @@ fn draw_ship_pane(ui: &mut egui::Ui, ship: &ShipPane, actions: &mut Vec<Inventor
     section_label(ui, "Power");
     for line in &ship.power {
         truncated_label(ui, line);
+    }
+    section_label(ui, "Auto Repair");
+    truncated_label(ui, &ship.auto_repair_status);
+    if let Some(label) = &ship.auto_repair_toggle {
+        if ui.button(label).clicked() {
+            actions.push(InventoryUiAction::ToggleAutoRepair);
+        }
     }
     section_label(ui, "Shield systems");
     for (slot_index, slot) in ship.shields.iter().enumerate() {
