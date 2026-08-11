@@ -2,7 +2,9 @@
 id = "frontier_cargo_ship_01"
 name = "Frontier Cargo Ship"
 texture = "./assets/ships/frontier-cargo-ship-01.png"
+radius = 22.0
 mass = 85000.0
+cargo_capacity = 20000.0
 forward_acceleration = 350.0
 reverse_acceleration = 320.0
 turn_acceleration = 5.2
@@ -15,3 +17,23 @@ purchase_price = 8500
 power_modules = ["compact_fission_cell"]
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
+
+[[ships]]
+id = "frontier_longhauler"
+name = "Frontier Longhauler"
+texture = "./assets/ships/frontier-freehauler.png"
+radius = 36.0
+mass = 175000.0
+cargo_capacity = 90000.0
+forward_acceleration = 210.0
+reverse_acceleration = 145.0
+turn_acceleration = 2.4
+energy_capacity = 155.0
+energy_recharge = 5.5
+linear_drag = 0.986
+hull_capacity = 460.0
+shield_capacity = 260.0
+purchase_price = 32000
+power_modules = ["compact_fission_cell"]
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret", "point_defense_turret"]

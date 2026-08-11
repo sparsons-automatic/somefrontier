@@ -10,7 +10,8 @@ future plans unless a feature is already visible in-game.
 Choose both a ship and world seed from the New Game screen. Click a card in the
 scrollable ship grid, or use the arrow keys, to browse every player ship supplied
 by loaded content packs. Each card summarizes hull strength, shield strength,
-and turret-bank count beneath the ship's content-pack image before launch. A
+cargo capacity, mass, thrust, turn response, and turret-bank count beneath the
+ship's content-pack image before launch. A
 pack may nominate the initially highlighted ship, but your selection is what the
 new save records. The chosen hull supplies the ship's flight and durability
 stats, art, power and shield modules, turret-bank count, and initially fitted
@@ -110,7 +111,9 @@ NPC ships, orbit guides, and route context.
 Ships build speed gradually and coast down through maneuvering drag rather than
 hitting a hard speed cap. The Frontier Cargo Ship favors predictable hauling
 control and braking over raw speed; the lighter Twinspire Gunship accelerates,
-turns, and brakes more sharply. Engine and maneuver-thruster upgrades preserve
+turns, and brakes more sharply. The large Frontier Longhauler trades still more
+speed and turn response for a 90-tonne hold, a durable hull and shields, and two
+turret banks. Engine and maneuver-thruster upgrades preserve
 those differences. Approach and follow autopilot use each hull's authored
 braking authority, while manual thrust or turning remains an immediate override.
 
@@ -222,8 +225,9 @@ Inventory stores item stacks from mining, production, starter cargo, trading,
 and module swaps. Starter cargo includes survey drones and reactor pellets for
 the armed starter ship. Items have unit mass in kilograms. The inventory table
 shows `Item`, `Qty`, and `Mass` columns for each stack. Total cargo load and
-capacity are shown in the ship detail panel below the ship image; cargo mass is
-currently informational and does not change flight handling.
+capacity are shown in the ship detail panel below the ship image. Each hull has
+its own base capacity, and every Cargo Hold upgrade adds 10 tonnes to that base.
+Cargo mass is currently informational and does not change flight handling.
 
 Some crafted items are installable modules. Shield and weapon install items can
 be swapped through the labeled Ship Pane dropdowns when a matching slot exists.
@@ -244,7 +248,10 @@ Station garages act as shipyards for hulls whose content definition includes a
 purchase price. A purchased ship begins at the garage berth with full default
 systems, its configured equipment, no upgrades, and an empty cargo hold. Starter
 inventory is granted only to the first new-game ship and is never duplicated by
-ship purchases.
+ship purchases. The shipyard lists cargo, mass, thrust, and turn statistics next
+to each offer. The Frontier Longhauler costs 32,000 credits; its size and slow
+handling demand more clearance while approaching, docking, and flying in a
+fleet, but its 90-tonne hold and durable systems suit bulk trade.
 
 Select a different owned ship in Fleet management to transfer cargo. Both ships
 must be in the same system and within 180 units. Transfer amounts respect the

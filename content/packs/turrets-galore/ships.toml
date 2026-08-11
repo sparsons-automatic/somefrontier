@@ -2,7 +2,9 @@
 id = "twinspire_gunship"
 name = "Twinspire Gunship"
 texture = "./assets/ships/twinspire-gunship.png"
+radius = 22.0
 mass = 72000.0
+cargo_capacity = 20000.0
 forward_acceleration = 410.0
 reverse_acceleration = 330.0
 turn_acceleration = 6.0

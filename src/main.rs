@@ -611,6 +611,10 @@ struct TitleShip {
     hull_capacity: f32,
     shield_capacity: f32,
     weapon_banks: usize,
+    cargo_capacity: f32,
+    mass: f32,
+    forward_acceleration: f32,
+    turn_acceleration: f32,
 }
 
 struct TitleShipPreview {
@@ -999,7 +1003,9 @@ enum PlayerTurretTarget {
 
 #[derive(Clone, Copy)]
 struct ShipAttributes {
+    radius: f32,
     mass: f32,
+    cargo_capacity: f32,
     engine_strength: f32,
     reverse_engine_strength: f32,
     turn_thruster_strength: f32,
@@ -4123,7 +4129,9 @@ impl SceneTransition {
 impl ShipAttributes {
     fn starter() -> Self {
         Self {
+            radius: SHIP_RADIUS,
             mass: STARTER_SHIP_DRY_MASS,
+            cargo_capacity: 20_000.0,
             engine_strength: STARTER_SHIP_DRY_MASS * STARTER_FORWARD_ACCELERATION,
             reverse_engine_strength: STARTER_SHIP_DRY_MASS * STARTER_REVERSE_ACCELERATION,
             turn_thruster_strength: STARTER_SHIP_DRY_MASS * STARTER_TURN_ACCELERATION,
@@ -4135,7 +4143,9 @@ impl ShipAttributes {
 
     fn from_content(ship: &content::ShipDef) -> Self {
         Self {
+            radius: ship.radius,
             mass: ship.mass,
+            cargo_capacity: ship.cargo_capacity,
             engine_strength: ship.mass * ship.forward_acceleration,
             reverse_engine_strength: ship.mass * ship.reverse_acceleration,
             turn_thruster_strength: ship.mass * ship.turn_acceleration,
@@ -4239,6 +4249,10 @@ impl Ship {
 
     fn max_turn_rate(&self) -> f32 {
         self.turn_acceleration() * 0.18
+    }
+
+    fn radius(&self) -> f32 {
+        self.attributes.radius
     }
 }
 
@@ -5248,7 +5262,7 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         let Some(contact) = swept_circle_contact(
             game.ship.position,
             game.ship.velocity,
-            SHIP_RADIUS,
+            game.ship.radius(),
             npc.position,
             npc.velocity,
             npc.radius,
@@ -5407,10 +5421,10 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         let Some(contact) = swept_circle_contact(
             game.ship.position,
             game.ship.velocity,
-            SHIP_RADIUS,
+            game.ship.radius(),
             owned.ship.position,
             Vec2::ZERO,
-            SHIP_RADIUS,
+            owned.ship.radius(),
             dt,
         ) else {
             continue;
@@ -5454,7 +5468,7 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         let player_destroyed = game.ship.systems.hull.current <= 0.0;
         record_collision_impact(
             game,
-            game.ship.position + contact.normal * SHIP_RADIUS,
+            game.ship.position + contact.normal * game.ship.radius(),
             &format!("Impact with owned ship {callsign}"),
             combined_damage_application(player_application, owned_application),
             destroyed,
@@ -5486,7 +5500,7 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
                 game.npc_ships[npc_index].radius,
                 owned.ship.position,
                 Vec2::ZERO,
-                SHIP_RADIUS,
+                owned.ship.radius(),
                 dt,
             ) else {
                 continue;
@@ -5577,7 +5591,7 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         let Some(contact) = swept_circle_contact(
             game.ship.position,
             game.ship.velocity,
-            SHIP_RADIUS,
+            game.ship.radius(),
             *body_position,
             Vec2::ZERO,
             *body_radius,
@@ -5619,7 +5633,7 @@ fn update_ship_collisions(game: &mut GameState, dt: f32) {
         let player_destroyed = game.ship.systems.hull.current <= 0.0;
         record_collision_impact(
             game,
-            game.ship.position + contact.normal * SHIP_RADIUS,
+            game.ship.position + contact.normal * game.ship.radius(),
             &format!("Impact with {body_name}"),
             application,
             player_destroyed,
@@ -5930,8 +5944,9 @@ fn warp_charge_seconds(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
     WARP_CHARGE_SECONDS * (1.0 - fuel_level * 0.10).max(0.45)
 }
 
-fn cargo_rating_kg(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
-    20_000.0 + ship_upgrade_level(upgrades, ShipUpgradeKind::CargoHold) as f32 * 10_000.0
+fn cargo_rating_kg(ship: &Ship, upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
+    ship.attributes.cargo_capacity
+        + ship_upgrade_level(upgrades, ShipUpgradeKind::CargoHold) as f32 * 10_000.0
 }
 
 fn can_afford_cost(inventory: &Inventory, cost: &[ItemStack]) -> bool {
@@ -6462,6 +6477,7 @@ impl Inventory {
 
 fn inventory_receivable_count(
     inventory: &Inventory,
+    ship: &Ship,
     upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
     item: &ItemRef,
     requested: u32,
@@ -6471,7 +6487,8 @@ fn inventory_receivable_count(
         return 0;
     }
     let by_mass = if item.unit_mass > 0.0 {
-        ((cargo_rating_kg(upgrades) - inventory.total_mass()).max(0.0) / item.unit_mass) as u32
+        ((cargo_rating_kg(ship, upgrades) - inventory.total_mass()).max(0.0) / item.unit_mass)
+            as u32
     } else {
         requested
     };
@@ -6618,6 +6635,7 @@ fn transfer_owned_ship_item(
     let amount = if to_target {
         game.inventory.count(&item).min(inventory_receivable_count(
             &target.inventory,
+            &target.ship,
             &target.upgrades,
             &item,
             requested,
@@ -6628,6 +6646,7 @@ fn transfer_owned_ship_item(
             .count(&item)
             .min(inventory_receivable_count(
                 &game.inventory,
+                &game.ship,
                 &game.ship_upgrades,
                 &item,
                 requested,
@@ -8781,6 +8800,10 @@ fn title_ships(registry: &content::ContentRegistry) -> Vec<TitleShip> {
             hull_capacity: ship.hull_capacity,
             shield_capacity: ship.shield_capacity,
             weapon_banks: ship.weapon_slots.len(),
+            cargo_capacity: ship.cargo_capacity,
+            mass: ship.mass,
+            forward_acceleration: ship.forward_acceleration,
+            turn_acceleration: ship.turn_acceleration,
         })
         .collect()
 }
@@ -9309,6 +9332,10 @@ fn title_submenu_view(menu: &TitleMenu) -> egui_title::TitleSubmenuView {
             hull: ship.hull_capacity,
             shields: ship.shield_capacity,
             weapon_banks: ship.weapon_banks,
+            cargo_capacity: ship.cargo_capacity,
+            mass: ship.mass,
+            forward_acceleration: ship.forward_acceleration,
+            turn_acceleration: ship.turn_acceleration,
             texture: menu
                 .ship_textures
                 .get(&ship.id)
@@ -9916,7 +9943,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.fleet_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
-        if clicked_player_ship(mouse) {
+        if clicked_player_ship(mouse, &game.ship, game.camera_zoom) {
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -10441,7 +10468,7 @@ fn context_target_candidates(game: &GameState, mouse: Vec2) -> Vec<ContextTarget
         let screen_position =
             world_to_screen(planet.position, center, &game.ship, game.camera_zoom);
         let cursor_distance = mouse.distance(screen_position);
-        if cursor_distance <= planet_interaction_radius(planet) * game.camera_zoom {
+        if cursor_distance <= planet_interaction_radius(&game.ship, planet) * game.camera_zoom {
             candidates.push(ContextTargetCandidate {
                 target: ContextTarget::Planet(index),
                 cursor_distance,
@@ -10455,7 +10482,7 @@ fn context_target_candidates(game: &GameState, mouse: Vec2) -> Vec<ContextTarget
         let screen_position =
             world_to_screen(station.position, center, &game.ship, game.camera_zoom);
         let cursor_distance = mouse.distance(screen_position);
-        if cursor_distance <= station_interaction_radius(station) * game.camera_zoom {
+        if cursor_distance <= station_interaction_radius(&game.ship, station) * game.camera_zoom {
             candidates.push(ContextTargetCandidate {
                 target: ContextTarget::Station(index),
                 cursor_distance,
@@ -10711,7 +10738,7 @@ fn approach_obstacles(game: &GameState, target: ApproachTarget) -> Vec<ApproachO
                 .then_some(ApproachObstacle {
                     id: ApproachObstacleId::OwnedShip(index),
                     position: owned.ship.position,
-                    radius: SHIP_RADIUS,
+                    radius: owned.ship.radius(),
                 })
         });
     planets
@@ -10734,13 +10761,14 @@ fn point_segment_distance(point: Vec2, start: Vec2, end: Vec2) -> f32 {
 fn approach_segment_is_clear(
     start: Vec2,
     end: Vec2,
+    ship_radius: f32,
     obstacles: &[ApproachObstacle],
     ignored: ApproachObstacleId,
 ) -> bool {
     obstacles.iter().all(|obstacle| {
         obstacle.id == ignored
             || point_segment_distance(obstacle.position, start, end)
-                > obstacle.radius + SHIP_RADIUS + AUTOPILOT_AVOIDANCE_MARGIN
+                > obstacle.radius + ship_radius + AUTOPILOT_AVOIDANCE_MARGIN
     })
 }
 
@@ -10749,6 +10777,7 @@ fn plan_approach_path(
     target: Vec2,
     velocity: Vec2,
     braking_distance: f32,
+    ship_radius: f32,
     obstacles: &[ApproachObstacle],
 ) -> ApproachPathDecision {
     let direct = target - start;
@@ -10760,7 +10789,7 @@ fn plan_approach_path(
     let blocker = obstacles
         .iter()
         .filter_map(|obstacle| {
-            let clearance = obstacle.radius + SHIP_RADIUS + AUTOPILOT_AVOIDANCE_MARGIN;
+            let clearance = obstacle.radius + ship_radius + AUTOPILOT_AVOIDANCE_MARGIN;
             (point_segment_distance(obstacle.position, start, target) <= clearance).then(|| {
                 let progress = ((obstacle.position - start).dot(direct) / direct_length_squared)
                     .clamp(0.0, 1.0);
@@ -10776,7 +10805,7 @@ fn plan_approach_path(
     let direction = direct.normalize();
     let perpendicular = vec2(-direction.y, direction.x);
     let clearance = blocker.radius
-        + SHIP_RADIUS
+        + ship_radius
         + AUTOPILOT_AVOIDANCE_MARGIN
         + braking_distance.clamp(0.0, 140.0) * 0.25;
     let mut best: Option<(f32, ApproachPath)> = None;
@@ -10786,9 +10815,9 @@ fn plan_approach_path(
         let exit_offset = direction * clearance * 0.8 + lateral;
         let entry = blocker.position + entry_offset;
         let exit = blocker.position + exit_offset;
-        if !approach_segment_is_clear(start, entry, obstacles, blocker.id)
-            || !approach_segment_is_clear(entry, exit, obstacles, blocker.id)
-            || !approach_segment_is_clear(exit, target, obstacles, blocker.id)
+        if !approach_segment_is_clear(start, entry, ship_radius, obstacles, blocker.id)
+            || !approach_segment_is_clear(entry, exit, ship_radius, obstacles, blocker.id)
+            || !approach_segment_is_clear(exit, target, ship_radius, obstacles, blocker.id)
         {
             continue;
         }
@@ -10855,6 +10884,7 @@ fn approach_steering_point(
         target_position,
         game.ship.velocity,
         braking_distance,
+        game.ship.radius(),
         &obstacles,
     ) {
         ApproachPathDecision::Direct => Some(target_position),
@@ -10879,22 +10909,32 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
         ApproachTarget::Planet(index) => game.planets.get(index).and_then(|planet| {
             planet_is_in_system(planet, &game.current_system_id).then_some((
                 planet.position,
-                body_approach_stop_radius(planet.radius, planet_interaction_radius(planet)),
+                body_approach_stop_radius(
+                    planet.radius,
+                    game.ship.radius(),
+                    planet_interaction_radius(&game.ship, planet),
+                ),
             ))
         }),
         ApproachTarget::PlanetOrbit(index) => game.planets.get(index).and_then(|planet| {
             planet_is_in_system(planet, &game.current_system_id)
-                .then_some((planet_orbit_position(planet, game.ship.position), 0.0))
+                .then_some((planet_orbit_position(&game.ship, planet), 0.0))
         }),
         ApproachTarget::Station(index) => game.stations.get(index).and_then(|station| {
             station_is_in_system(station, &game.current_system_id).then_some((
                 station.position,
-                body_approach_stop_radius(station.radius, station_interaction_radius(station)),
+                body_approach_stop_radius(
+                    station.radius,
+                    game.ship.radius(),
+                    station_interaction_radius(&game.ship, station),
+                ),
             ))
         }),
         ApproachTarget::NpcShip(index) => game.npc_ships.get(index).and_then(|npc_ship| {
-            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0)
-                .then_some((npc_ship.position, npc_ship_interaction_radius(npc_ship)))
+            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0).then_some((
+                npc_ship.position,
+                npc_ship_interaction_radius(&game.ship, npc_ship),
+            ))
         }),
     };
 
@@ -11008,8 +11048,8 @@ fn complete_ship_approach(game: &mut GameState, target: ApproachTarget) {
     }
 }
 
-fn body_approach_stop_radius(target_radius: f32, interaction_radius: f32) -> f32 {
-    let non_overlapping_radius = target_radius + SHIP_RADIUS;
+fn body_approach_stop_radius(target_radius: f32, ship_radius: f32, interaction_radius: f32) -> f32 {
+    let non_overlapping_radius = target_radius + ship_radius;
     let preferred_radius = non_overlapping_radius + AUTOPILOT_CLEARANCE_MARGIN;
     let inside_interaction_radius = interaction_radius - AUTOPILOT_INTERACTION_INSET;
     preferred_radius.min(inside_interaction_radius.max(non_overlapping_radius))
@@ -11038,8 +11078,8 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
     } else {
         vec2(npc_ship.angle.cos(), npc_ship.angle.sin())
     };
-    let follow_distance =
-        PLAYER_FOLLOW_DISTANCE.max(npc_ship.radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN);
+    let follow_distance = PLAYER_FOLLOW_DISTANCE
+        .max(npc_ship.radius + game.ship.radius() + AUTOPILOT_CLEARANCE_MARGIN);
     let desired_position = npc_ship.position - travel_direction * follow_distance;
     let offset = desired_position - game.ship.position;
     let offset_distance = offset.length();
@@ -11069,7 +11109,7 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
         game.ship.angle = game.ship.velocity.y.atan2(game.ship.velocity.x);
     }
     let movement = game.ship.velocity * dt;
-    let minimum_distance = npc_ship.radius + SHIP_RADIUS + AUTOPILOT_CLEARANCE_MARGIN;
+    let minimum_distance = npc_ship.radius + game.ship.radius() + AUTOPILOT_CLEARANCE_MARGIN;
     let next_position = game.ship.position + movement;
     if next_position.distance(npc_ship.position) < minimum_distance {
         game.ship.position = npc_ship.position - travel_direction * minimum_distance;
@@ -11080,8 +11120,8 @@ fn update_ship_follow(game: &mut GameState, dt: f32) {
     let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
     game.ship.systems.energy.restore(recharge);
     game.ship.systems.weapon_energy.restore(recharge);
-    let in_range =
-        game.ship.position.distance(npc_ship.position) <= npc_ship_interaction_radius(npc_ship);
+    let in_range = game.ship.position.distance(npc_ship.position)
+        <= npc_ship_interaction_radius(&game.ship, npc_ship);
     if in_range && !npc_ship.identified {
         game.selected_npc_ship = Some(index);
         identify_selected_npc_ship(game);
@@ -11844,9 +11884,9 @@ fn select_clicked_destination(game: &mut GameState, mouse: Vec2) {
     game.selected_station_service = None;
 }
 
-fn clicked_player_ship(mouse: Vec2) -> bool {
+fn clicked_player_ship(mouse: Vec2, ship: &Ship, zoom: f32) -> bool {
     let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
-    mouse.distance(center) <= SHIP_SPRITE_SIZE * 0.5
+    mouse.distance(center) <= ship_screen_size(ship, zoom) * 0.5
 }
 
 fn identify_selected_npc_ship(game: &mut GameState) -> bool {
@@ -12636,6 +12676,7 @@ fn execute_npc_trade(
         NpcTradeAction::Buy => npc_trade_buy_amount(
             game.credits,
             &game.inventory,
+            &game.ship,
             &game.ship_upgrades,
             &stack,
             &quote,
@@ -12702,14 +12743,15 @@ fn execute_npc_trade(
 fn npc_trade_buy_amount(
     credits: u32,
     inventory: &Inventory,
+    ship: &Ship,
     ship_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
     stack: &ItemStack,
     quote: &NpcTradeQuote,
     requested: u32,
 ) -> u32 {
     let by_mass = if stack.item.unit_mass > 0.0 {
-        ((cargo_rating_kg(ship_upgrades) - inventory.total_mass()).max(0.0) / stack.item.unit_mass)
-            as u32
+        ((cargo_rating_kg(ship, ship_upgrades) - inventory.total_mass()).max(0.0)
+            / stack.item.unit_mass) as u32
     } else {
         requested
     };
@@ -13392,6 +13434,7 @@ struct NpcAvoidanceBody {
 struct NpcMotionContext<'a> {
     target: Vec2,
     player_position: Vec2,
+    player_radius: f32,
     stations: &'a [NpcAvoidanceBody],
     planets: &'a [NpcAvoidanceBody],
     npc_snapshots: &'a [(usize, NpcAvoidanceBody)],
@@ -13406,6 +13449,7 @@ fn update_npc_ships(game: &mut GameState, dt: f32) {
 
     let current_system_id = game.current_system_id.clone();
     let player_position = game.ship.position;
+    let player_radius = game.ship.radius();
     let stations = game
         .stations
         .iter()
@@ -13452,6 +13496,7 @@ fn update_npc_ships(game: &mut GameState, dt: f32) {
             NpcMotionContext {
                 target,
                 player_position,
+                player_radius,
                 stations: &stations,
                 planets: &planets,
                 npc_snapshots: &npc_snapshots,
@@ -13553,10 +13598,10 @@ fn update_npc_ship_motion(npc_ship: &mut NpcShip, context: NpcMotionContext<'_>)
     steering += avoidance_steering(
         npc_ship.position,
         npc_ship.radius,
-        NPC_SEPARATION_PADDING + SHIP_RADIUS,
+        NPC_SEPARATION_PADDING + context.player_radius,
         &[NpcAvoidanceBody {
             position: context.player_position,
-            radius: SHIP_RADIUS,
+            radius: context.player_radius,
         }],
     ) * NPC_ACCELERATION;
     steering += avoidance_steering(
@@ -13749,7 +13794,7 @@ fn impact_candidates(game: &GameState, impact: &PendingWeaponImpact) -> Vec<Impa
         candidates.push(ImpactCandidate {
             target: WeaponTargetRef::Player,
             position: game.ship.position,
-            radius: SHIP_RADIUS,
+            radius: game.ship.radius(),
             hostile_to_owner: matches!(&impact.owner, WeaponImpactOwner::Npc { hostile: true, .. }),
         });
     }
@@ -13765,7 +13810,7 @@ fn impact_candidates(game: &GameState, impact: &PendingWeaponImpact) -> Vec<Impa
                 .map(|owned| ImpactCandidate {
                     target: WeaponTargetRef::OwnedShip(owned.instance_id.clone()),
                     position: owned.ship.position,
-                    radius: SHIP_RADIUS,
+                    radius: owned.ship.radius(),
                     hostile_to_owner: matches!(
                         &impact.owner,
                         WeaponImpactOwner::Npc { hostile: true, .. }
@@ -14080,6 +14125,7 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
             game.audio.play(audio::AudioCue::Explosion);
             let cargo_items = transfer_destroyed_npc_loot(
                 &mut game.inventory,
+                &game.ship,
                 &game.ship_upgrades,
                 &npc_ship.cargo_defaults,
             );
@@ -14103,10 +14149,11 @@ fn remove_destroyed_npc_ships(game: &mut GameState) {
 
 fn transfer_destroyed_npc_loot(
     inventory: &mut Inventory,
+    ship: &Ship,
     ship_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
     cargo_defaults: &[ItemStack],
 ) -> u32 {
-    let cargo_capacity = cargo_rating_kg(ship_upgrades);
+    let cargo_capacity = cargo_rating_kg(ship, ship_upgrades);
     let mut cargo_mass = inventory.total_mass();
     let mut transferred = 0;
     for stack in cargo_defaults {
@@ -14812,7 +14859,8 @@ fn npc_weapon_can_target_ship(
         && npc_ship.system == current_system_id
         && npc_ship.hull.current > 0.0
         && ship.systems.hull.current > 0.0
-        && npc_ship.position.distance(ship.position) <= weapon.range + SHIP_RADIUS + npc_ship.radius
+        && npc_ship.position.distance(ship.position)
+            <= weapon.range + ship.radius() + npc_ship.radius
         && target_within_tracking_arc_from(npc_ship.position, npc_ship.angle, weapon, ship.position)
 }
 
@@ -15651,7 +15699,8 @@ fn clicked_planet_index(
             return None;
         }
         let screen_pos = world_to_screen(planet.position, center, ship, zoom);
-        (mouse.distance(screen_pos) <= planet_interaction_radius(planet) * zoom).then_some(index)
+        (mouse.distance(screen_pos) <= planet_interaction_radius(ship, planet) * zoom)
+            .then_some(index)
     })
 }
 
@@ -15670,7 +15719,7 @@ fn clicked_station_index(
         .filter(|(_, station)| station_is_in_system(station, current_system_id))
         .filter_map(|(index, station)| {
             let screen_pos = world_to_screen(station.position, center, ship, zoom);
-            (mouse.distance(screen_pos) <= station_interaction_radius(station) * zoom)
+            (mouse.distance(screen_pos) <= station_interaction_radius(ship, station) * zoom)
                 .then_some((index, mouse.distance_squared(screen_pos)))
         })
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
@@ -15849,55 +15898,55 @@ fn npc_ship_is_in_system(npc_ship: &NpcShip, system_id: &str) -> bool {
     npc_ship.system == system_id && npc_ship.hull.current > 0.0
 }
 
-fn planet_interaction_radius(planet: &Planet) -> f32 {
-    planet.radius + SHIP_RADIUS + PLANET_INTERACTION_PADDING
+fn planet_interaction_radius(ship: &Ship, planet: &Planet) -> f32 {
+    planet.radius + ship.radius() + PLANET_INTERACTION_PADDING
 }
 
-fn station_interaction_radius(station: &StationDestination) -> f32 {
-    station.radius + SHIP_RADIUS + STATION_INTERACTION_PADDING
+fn station_interaction_radius(ship: &Ship, station: &StationDestination) -> f32 {
+    station.radius + ship.radius() + STATION_INTERACTION_PADDING
 }
 
-fn npc_ship_interaction_radius(npc_ship: &NpcShip) -> f32 {
-    npc_ship.radius + SHIP_RADIUS + NPC_INTERACTION_PADDING
+fn npc_ship_interaction_radius(ship: &Ship, npc_ship: &NpcShip) -> f32 {
+    npc_ship.radius + ship.radius() + NPC_INTERACTION_PADDING
 }
 
-fn planet_safe_orbit_radius(planet: &Planet) -> f32 {
-    planet.radius + SHIP_RADIUS + PLANET_ORBIT_CLEARANCE
+fn planet_safe_orbit_radius(ship: &Ship, planet: &Planet) -> f32 {
+    planet.radius + ship.radius() + PLANET_ORBIT_CLEARANCE
 }
 
 fn planet_surface_distance(ship: &Ship, planet: &Planet) -> f32 {
-    (ship.position.distance(planet.position) - planet.radius - SHIP_RADIUS).max(0.0)
+    (ship.position.distance(planet.position) - planet.radius - ship.radius()).max(0.0)
 }
 
 fn planet_in_interaction_range(ship: &Ship, planet: &Planet) -> bool {
-    ship.position.distance(planet.position) <= planet_interaction_radius(planet)
+    ship.position.distance(planet.position) <= planet_interaction_radius(ship, planet)
 }
 
 fn station_surface_distance(ship: &Ship, station: &StationDestination) -> f32 {
-    (ship.position.distance(station.position) - station.radius - SHIP_RADIUS).max(0.0)
+    (ship.position.distance(station.position) - station.radius - ship.radius()).max(0.0)
 }
 
 fn npc_ship_surface_distance(ship: &Ship, npc_ship: &NpcShip) -> f32 {
-    (ship.position.distance(npc_ship.position) - npc_ship.radius - SHIP_RADIUS).max(0.0)
+    (ship.position.distance(npc_ship.position) - npc_ship.radius - ship.radius()).max(0.0)
 }
 
 fn station_in_interaction_range(ship: &Ship, station: &StationDestination) -> bool {
-    ship.position.distance(station.position) <= station_interaction_radius(station)
+    ship.position.distance(station.position) <= station_interaction_radius(ship, station)
 }
 
 fn npc_ship_in_interaction_range(ship: &Ship, npc_ship: &NpcShip) -> bool {
-    ship.position.distance(npc_ship.position) <= npc_ship_interaction_radius(npc_ship)
+    ship.position.distance(npc_ship.position) <= npc_ship_interaction_radius(ship, npc_ship)
 }
 
-fn planet_orbit_position(planet: &Planet, ship_position: Vec2) -> Vec2 {
-    let offset = ship_position - planet.position;
+fn planet_orbit_position(ship: &Ship, planet: &Planet) -> Vec2 {
+    let offset = ship.position - planet.position;
     let direction = if offset.length_squared() > 0.001 {
         offset.normalize()
     } else {
         vec2(1.0, 0.0)
     };
 
-    planet.position + direction * planet_safe_orbit_radius(planet)
+    planet.position + direction * planet_safe_orbit_radius(ship, planet)
 }
 
 fn enter_planet_orbit(game: &mut GameState, planet_index: usize) -> bool {
@@ -15941,7 +15990,7 @@ fn update_ship_orbit(game: &mut GameState) {
         return;
     }
 
-    game.ship.position = planet_orbit_position(planet, game.ship.position);
+    game.ship.position = planet_orbit_position(&game.ship, planet);
     game.ship.velocity = Vec2::ZERO;
     game.ship.angular_velocity = 0.0;
 }
@@ -15987,11 +16036,11 @@ fn draw_poi_route(
     let direction = to_planet.normalize_or_zero();
     let distance = to_planet.length();
 
-    if distance < SHIP_RADIUS + planet.radius + 20.0 {
+    if distance < ship.radius() + planet.radius + 20.0 {
         return;
     }
 
-    let start = center + direction * (ship_screen_size(zoom) * 0.5 + 64.0);
+    let start = center + direction * (ship_screen_size(ship, zoom) * 0.5 + 64.0);
     let end = planet_screen_pos - direction * (planet.radius * zoom + 10.0);
     draw_dotted_line(
         start,
@@ -16054,7 +16103,7 @@ fn draw_dotted_line(
 
 fn draw_planet(center: Vec2, ship: &Ship, planet: &Planet, zoom: f32) {
     let screen_pos = world_to_screen(planet.position, center, ship, zoom);
-    let interaction_radius = planet_interaction_radius(planet) * zoom;
+    let interaction_radius = planet_interaction_radius(ship, planet) * zoom;
     let planet_radius = planet.radius * zoom;
     let in_range = planet_in_interaction_range(ship, planet);
 
@@ -16127,7 +16176,7 @@ fn draw_planet(center: Vec2, ship: &Ship, planet: &Planet, zoom: f32) {
 
 fn draw_station(center: Vec2, ship: &Ship, station: &StationDestination, zoom: f32) {
     let screen_pos = world_to_screen(station.position, center, ship, zoom);
-    let interaction_radius = station_interaction_radius(station) * zoom;
+    let interaction_radius = station_interaction_radius(ship, station) * zoom;
     let station_radius = station.radius * zoom;
     let in_range = station_in_interaction_range(ship, station);
 
@@ -16776,7 +16825,7 @@ fn draw_collision_impact_event(center: Vec2, ship: &Ship, event: &CollisionImpac
 fn incoming_weapon_fire_count(ship: &Ship, weapon_fire_events: &[WeaponFireEvent]) -> usize {
     weapon_fire_events
         .iter()
-        .filter(|event| event.to.distance(ship.position) <= SHIP_RADIUS + 12.0)
+        .filter(|event| event.to.distance(ship.position) <= ship.radius() + 12.0)
         .count()
 }
 
@@ -16929,7 +16978,7 @@ fn draw_ship(
     draw_ship_sprite(
         center,
         texture,
-        ship_screen_size(zoom),
+        ship_screen_size(ship, zoom),
         thrusting,
         ship_screen_rotation(ship),
     );
@@ -16943,7 +16992,7 @@ fn draw_inactive_owned_ship(
     zoom: f32,
 ) {
     let screen_pos = world_to_screen(owned.ship.position, center, active_ship, zoom);
-    let size = ship_screen_size(zoom);
+    let size = ship_screen_size(&owned.ship, zoom);
     let cull_padding = size + 120.0;
     if screen_pos.x < -cull_padding
         || screen_pos.x > screen_width() + cull_padding
@@ -16980,8 +17029,8 @@ fn draw_inactive_owned_ship(
     );
 }
 
-fn ship_screen_size(zoom: f32) -> f32 {
-    SHIP_SPRITE_SIZE * zoom
+fn ship_screen_size(ship: &Ship, zoom: f32) -> f32 {
+    SHIP_SPRITE_SIZE * (ship.radius() / SHIP_RADIUS) * zoom
 }
 
 fn ship_screen_rotation(ship: &Ship) -> f32 {
@@ -17069,7 +17118,7 @@ fn draw_ship_status_arcs(center: Vec2, ship: &Ship, zoom: f32) {
     let shield = Color::from_rgba(72, 185, 255, 152);
     let energy = Color::from_rgba(255, 206, 88, 148);
     let hull = Color::from_rgba(113, 235, 138, 136);
-    let scale = zoom.clamp(0.75, 1.25);
+    let scale = zoom.clamp(0.75, 1.25) * (ship.radius() / SHIP_RADIUS);
 
     draw_status_arc(
         center,
@@ -19341,7 +19390,9 @@ fn content_object_detail(
                 value.name.clone(),
                 None,
                 vec![
-                    field("Mass", format!("{} t", value.mass)),
+                    field("Mass", format_mass(value.mass)),
+                    field("Collision radius", value.radius.to_string()),
+                    field("Cargo", format_mass(value.cargo_capacity)),
                     field("Hull", value.hull_capacity.to_string()),
                     field("Shield", value.shield_capacity.to_string()),
                     field(
@@ -19964,7 +20015,7 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
             cargo: format!(
                 "{} / {}",
                 format_mass(inventory.total_mass()),
-                format_mass(cargo_rating_kg(upgrades))
+                format_mass(cargo_rating_kg(ship, upgrades))
             ),
             turrets: weapons.len(),
             active,
@@ -20000,6 +20051,10 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
                     name: ship.name.clone(),
                     price,
                     affordable: game.credits >= price,
+                    cargo_capacity: format_mass(ship.cargo_capacity),
+                    mass: format_mass(ship.mass),
+                    forward_acceleration: ship.forward_acceleration,
+                    turn_acceleration: ship.turn_acceleration,
                 })
             })
             .collect();
@@ -20092,6 +20147,7 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
                     npc_trade_buy_amount(
                         game.credits,
                         &game.inventory,
+                        &game.ship,
                         &game.ship_upgrades,
                         stack,
                         &quote,
@@ -20432,7 +20488,7 @@ fn ship_pane_view(game: &GameState) -> egui_inventory::ShipPane {
         cargo: format!(
             "Cargo {} / {}",
             format_mass(game.inventory.total_mass()),
-            format_mass(cargo_rating_kg(&game.ship_upgrades))
+            format_mass(cargo_rating_kg(&game.ship, &game.ship_upgrades))
         ),
         hull: format!("{:.0}%", game.ship.systems.hull.fraction() * 100.0),
         shield: format!("{:.0}%", game.ship.systems.shields.fraction() * 100.0),
@@ -22493,6 +22549,7 @@ mod tests {
             .expect("content packs should load and validate");
         let cargo = ship_from_registry(&registry, STARTER_SHIP_ID);
         let gunship = ship_from_registry(&registry, "turrets-galore:twinspire_gunship");
+        let longhauler = ship_from_registry(&registry, "core:frontier_longhauler");
 
         assert_eq!(cargo.forward_acceleration(), 350.0);
         assert_eq!(cargo.reverse_acceleration(), 320.0);
@@ -22505,6 +22562,55 @@ mod tests {
         assert!(gunship.forward_acceleration() > cargo.forward_acceleration());
         assert!(gunship.reverse_acceleration() > cargo.reverse_acceleration());
         assert!(gunship.max_turn_rate() > cargo.max_turn_rate());
+        assert_eq!(longhauler.radius(), 36.0);
+        assert_eq!(longhauler.attributes.cargo_capacity, 90_000.0);
+        assert_eq!(longhauler.forward_acceleration(), 210.0);
+        assert_eq!(longhauler.reverse_acceleration(), 145.0);
+        assert_eq!(longhauler.turn_acceleration(), 2.4);
+        assert!(longhauler.attributes.mass > cargo.attributes.mass);
+        assert!(longhauler.forward_acceleration() < cargo.forward_acceleration());
+        assert!(longhauler.max_turn_rate() < cargo.max_turn_rate());
+    }
+
+    #[test]
+    fn longhauler_radius_expands_navigation_and_collision_clearance() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let starter = ship_from_registry(&registry, STARTER_SHIP_ID);
+        let longhauler = ship_from_registry(&registry, "core:frontier_longhauler");
+        let body_radius = 54.0;
+        let starter_stop = body_approach_stop_radius(
+            body_radius,
+            starter.radius(),
+            body_radius + starter.radius() + STATION_INTERACTION_PADDING,
+        );
+        let longhauler_stop = body_approach_stop_radius(
+            body_radius,
+            longhauler.radius(),
+            body_radius + longhauler.radius() + STATION_INTERACTION_PADDING,
+        );
+
+        assert_eq!(longhauler_stop - starter_stop, 14.0);
+        assert!(swept_circle_contact(
+            Vec2::ZERO,
+            Vec2::ZERO,
+            starter.radius(),
+            vec2(85.0, 0.0),
+            Vec2::ZERO,
+            body_radius,
+            0.1,
+        )
+        .is_none());
+        assert!(swept_circle_contact(
+            Vec2::ZERO,
+            Vec2::ZERO,
+            longhauler.radius(),
+            vec2(85.0, 0.0),
+            Vec2::ZERO,
+            body_radius,
+            0.1,
+        )
+        .is_some());
     }
 
     #[test]
@@ -22892,6 +22998,51 @@ mod tests {
         );
         assert_eq!(game.owned_ships[1].inventory.total_mass(), 0.0);
         assert_eq!(game.owned_ships[1].equipped_weapons.len(), 2);
+    }
+
+    #[test]
+    fn longhauler_purchase_switch_and_save_preserve_its_cargo_and_hull_identity() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 50_000;
+
+        assert!(acquire_owned_ship(&mut game, 0, "core:frontier_longhauler"));
+        assert_eq!(game.credits, 18_000);
+        assert_eq!(game.owned_ships[1].inventory.total_mass(), 0.0);
+        assert_eq!(game.owned_ships[1].equipped_weapons.len(), 2);
+        assert!(switch_active_owned_ship(&mut game, 1));
+        assert_eq!(game.ship_id, "core:frontier_longhauler");
+        assert_eq!(game.ship.radius(), 36.0);
+        assert_eq!(cargo_rating_kg(&game.ship, &game.ship_upgrades), 90_000.0);
+        assert_eq!(game.ship.systems.hull.max, 460.0);
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::CargoHold)
+            .expect("cargo hold upgrade should be registered")
+            .level = 2;
+        assert_eq!(cargo_rating_kg(&game.ship, &game.ship_upgrades), 110_000.0);
+
+        let save = game.to_save();
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+
+        assert_eq!(restored.ship_id, "core:frontier_longhauler");
+        assert_eq!(restored.ship.radius(), 36.0);
+        assert_eq!(restored.ship.attributes.mass, 175_000.0);
+        assert_eq!(
+            cargo_rating_kg(&restored.ship, &restored.ship_upgrades),
+            110_000.0
+        );
+        assert_eq!(weapon_slot_capacity(&restored), 2);
     }
 
     #[test]
@@ -23864,8 +24015,9 @@ mod tests {
         let iron_ore = required_item(&registry, "core:iron_ore");
         let circuit = required_item(&registry, "core:circuit");
         let mut game = test_game_with_systems(registry, Vec::new());
-        let existing_count =
-            (cargo_rating_kg(&game.ship_upgrades) / iron_ore.unit_mass).ceil() as u32 + 1;
+        let existing_count = (cargo_rating_kg(&game.ship, &game.ship_upgrades) / iron_ore.unit_mass)
+            .ceil() as u32
+            + 1;
         game.inventory.add_item(iron_ore, existing_count);
         let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
         destroyed.credit_reward_min = 30;
@@ -24880,6 +25032,7 @@ mod tests {
             NpcMotionContext {
                 target,
                 player_position: vec2(10_000.0, 0.0),
+                player_radius: SHIP_RADIUS,
                 stations: &[],
                 planets: &[],
                 npc_snapshots: &[],
@@ -25359,6 +25512,7 @@ mod tests {
             npc_trade_buy_amount(
                 game.credits,
                 &game.inventory,
+                &game.ship,
                 &game.ship_upgrades,
                 &stack,
                 &quote,
@@ -25452,7 +25606,14 @@ mod tests {
         };
 
         assert_eq!(
-            plan_approach_path(Vec2::ZERO, vec2(800.0, 0.0), Vec2::ZERO, 0.0, &[obstacle],),
+            plan_approach_path(
+                Vec2::ZERO,
+                vec2(800.0, 0.0),
+                Vec2::ZERO,
+                0.0,
+                SHIP_RADIUS,
+                &[obstacle],
+            ),
             ApproachPathDecision::Direct
         );
     }
@@ -25464,9 +25625,14 @@ mod tests {
             position: vec2(400.0, 0.0),
             radius: 48.0,
         };
-        let ApproachPathDecision::Bypass(path) =
-            plan_approach_path(Vec2::ZERO, vec2(800.0, 0.0), Vec2::ZERO, 80.0, &[obstacle])
-        else {
+        let ApproachPathDecision::Bypass(path) = plan_approach_path(
+            Vec2::ZERO,
+            vec2(800.0, 0.0),
+            Vec2::ZERO,
+            80.0,
+            SHIP_RADIUS,
+            &[obstacle],
+        ) else {
             panic!("the blocked route should produce a bypass");
         };
         let entry = obstacle.position + path.entry_offset;
@@ -25503,6 +25669,7 @@ mod tests {
             vec2(800.0, 0.0),
             Vec2::ZERO,
             0.0,
+            SHIP_RADIUS,
             &[blocker, upper_guard],
         ) else {
             panic!("the open lower side should be selected");
@@ -25514,6 +25681,7 @@ mod tests {
                 vec2(800.0, 0.0),
                 Vec2::ZERO,
                 0.0,
+                SHIP_RADIUS,
                 &[blocker, upper_guard, lower_guard],
             ),
             ApproachPathDecision::Hold
@@ -25738,10 +25906,11 @@ mod tests {
 
         assert!(game.approach_target.is_none());
         let center_distance = game.ship.position.distance(game.planets[0].position);
-        assert!(center_distance <= planet_interaction_radius(&game.planets[0]));
+        assert!(center_distance <= planet_interaction_radius(&game.ship, &game.planets[0]));
         assert!(
             center_distance
-                <= planet_interaction_radius(&game.planets[0]) - AUTOPILOT_INTERACTION_INSET
+                <= planet_interaction_radius(&game.ship, &game.planets[0])
+                    - AUTOPILOT_INTERACTION_INSET
         );
         assert!(
             (planet_surface_distance(&game.ship, &game.planets[0]) - AUTOPILOT_CLEARANCE_MARGIN)
@@ -25893,7 +26062,8 @@ mod tests {
         let center_distance = game.ship.position.distance(game.stations[0].position);
         assert!(
             center_distance
-                <= station_interaction_radius(&game.stations[0]) - AUTOPILOT_INTERACTION_INSET
+                <= station_interaction_radius(&game.ship, &game.stations[0])
+                    - AUTOPILOT_INTERACTION_INSET
         );
         assert!(
             (station_surface_distance(&game.ship, &game.stations[0]) - AUTOPILOT_CLEARANCE_MARGIN)
@@ -27487,6 +27657,7 @@ mod tests {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut upgrades = make_ship_upgrades();
+        let ship = Ship::starter();
 
         assert!(registry
             .upgrades
@@ -27503,7 +27674,7 @@ mod tests {
         assert_eq!(survey_drone_return_chance(&upgrades), 0.0);
         assert_eq!(scanner_survey_bonus(&upgrades), 0);
         assert_eq!(warp_charge_seconds(&upgrades), WARP_CHARGE_SECONDS);
-        assert_eq!(cargo_rating_kg(&upgrades), 20_000.0);
+        assert_eq!(cargo_rating_kg(&ship, &upgrades), 20_000.0);
         upgrades
             .iter_mut()
             .find(|upgrade| upgrade.kind == ShipUpgradeKind::DroneBay)
@@ -27527,7 +27698,7 @@ mod tests {
         assert_eq!(survey_drone_return_chance(&upgrades), 0.3);
         assert_eq!(scanner_survey_bonus(&upgrades), 2);
         assert!((warp_charge_seconds(&upgrades) - WARP_CHARGE_SECONDS * 0.8).abs() < 0.01);
-        assert_eq!(cargo_rating_kg(&upgrades), 40_000.0);
+        assert_eq!(cargo_rating_kg(&ship, &upgrades), 40_000.0);
     }
 
     #[test]
@@ -27816,8 +27987,11 @@ mod tests {
         assert_eq!(game.orbiting_planet, None);
 
         let planet_position = game.planets[0].position;
-        game.ship.position =
-            planet_position + vec2(planet_interaction_radius(&game.planets[0]) - 1.0, 0.0);
+        game.ship.position = planet_position
+            + vec2(
+                planet_interaction_radius(&game.ship, &game.planets[0]) - 1.0,
+                0.0,
+            );
         let entry_position = game.ship.position;
 
         assert!(enter_planet_orbit(&mut game, 0));
@@ -27828,7 +28002,7 @@ mod tests {
         assert_eq!(game.orbiting_planet, Some(0));
         assert_vec2_near(
             game.ship.position,
-            planet_position + vec2(planet_safe_orbit_radius(&game.planets[0]), 0.0),
+            planet_position + vec2(planet_safe_orbit_radius(&game.ship, &game.planets[0]), 0.0),
         );
     }
 
@@ -27859,7 +28033,7 @@ mod tests {
         assert_ne!(game.ship.position, initial_ship_position);
         assert!(
             (game.ship.position.distance(game.planets[0].position)
-                - planet_safe_orbit_radius(&game.planets[0]))
+                - planet_safe_orbit_radius(&game.ship, &game.planets[0]))
             .abs()
                 < 0.01
         );
@@ -28028,6 +28202,10 @@ mod tests {
             hull_capacity: 100.0,
             shield_capacity: 100.0,
             weapon_banks: 1,
+            cargo_capacity: 20_000.0,
+            mass: 50.0,
+            forward_acceleration: 300.0,
+            turn_acceleration: 4.0,
         };
         let mut menu = TitleMenu {
             view: TitleView::NewGame,

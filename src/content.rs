@@ -160,7 +160,9 @@ pub struct ShipDef {
     pub id: String,
     pub name: String,
     pub texture: Option<String>,
+    pub radius: f32,
     pub mass: f32,
+    pub cargo_capacity: f32,
     pub forward_acceleration: f32,
     pub reverse_acceleration: f32,
     pub turn_acceleration: f32,
@@ -786,7 +788,11 @@ struct ShipFileDef {
     id: String,
     name: String,
     texture: Option<String>,
+    #[serde(default = "default_player_ship_radius")]
+    radius: f32,
     mass: f32,
+    #[serde(default = "default_player_ship_cargo_capacity")]
+    cargo_capacity: f32,
     forward_acceleration: f32,
     reverse_acceleration: f32,
     turn_acceleration: f32,
@@ -1938,7 +1944,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         let id = namespaced_id(&pack_id, &ship.id);
         validate_local_content_id(&id, "ship", errors);
         validate_required_name(&id, "Ship", &ship.name, errors);
+        validate_positive(ship.radius, "Ship", &id, "radius", errors);
         validate_positive(ship.mass, "Ship", &id, "mass", errors);
+        validate_positive(ship.cargo_capacity, "Ship", &id, "cargo capacity", errors);
         validate_positive(
             ship.forward_acceleration,
             "Ship",
@@ -1979,7 +1987,9 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     id: id.clone(),
                     name: ship.name,
                     texture,
+                    radius: ship.radius,
                     mass: ship.mass,
+                    cargo_capacity: ship.cargo_capacity,
                     forward_acceleration: ship.forward_acceleration,
                     reverse_acceleration: ship.reverse_acceleration,
                     turn_acceleration: ship.turn_acceleration,
@@ -4085,6 +4095,14 @@ fn default_station_radius() -> f32 {
     54.0
 }
 
+fn default_player_ship_radius() -> f32 {
+    22.0
+}
+
+fn default_player_ship_cargo_capacity() -> f32 {
+    20_000.0
+}
+
 fn default_npc_ship_radius() -> f32 {
     28.0
 }
@@ -4237,7 +4255,9 @@ mod tests {
             .get("core:frontier_cargo_ship_01")
             .is_some_and(|ship| {
                 ship.name == "Frontier Cargo Ship"
+                    && ship.radius == 22.0
                     && ship.mass == 85000.0
+                    && ship.cargo_capacity == 20000.0
                     && ship.forward_acceleration == 350.0
                     && ship.reverse_acceleration == 320.0
                     && ship.turn_acceleration == 5.2
@@ -4249,6 +4269,31 @@ mod tests {
                         texture.contains(
                             "content/packs/core/./assets/ships/frontier-cargo-ship-01.png",
                         )
+                    })
+            }));
+        assert!(registry
+            .ships
+            .get("core:frontier_longhauler")
+            .is_some_and(|ship| {
+                ship.name == "Frontier Longhauler"
+                    && ship.radius == 36.0
+                    && ship.mass == 175000.0
+                    && ship.cargo_capacity == 90000.0
+                    && ship.forward_acceleration == 210.0
+                    && ship.reverse_acceleration == 145.0
+                    && ship.turn_acceleration == 2.4
+                    && ship.energy_capacity == 155.0
+                    && ship.energy_recharge == 5.5
+                    && ship.linear_drag == 0.986
+                    && ship.hull_capacity == 460.0
+                    && ship.shield_capacity == 260.0
+                    && ship.purchase_price == Some(32000)
+                    && ship.power_modules == ["core:compact_fission_cell"]
+                    && ship.shield_slots == ["core:balanced_shield_matrix"]
+                    && ship.weapon_slots
+                        == ["core:point_defense_turret", "core:point_defense_turret"]
+                    && ship.texture.as_deref().is_some_and(|texture| {
+                        texture.ends_with("core/./assets/ships/frontier-freehauler.png")
                     })
             }));
         assert!(registry
@@ -5659,8 +5704,13 @@ summary = "A station using a plugin-local asset."
         assert!(registry
             .ships
             .get("asset-pack:local_ship")
-            .and_then(|ship| ship.texture.as_deref())
-            .is_some_and(|texture| texture.contains("asset-pack/./assets/ships/local-ship.png")));
+            .is_some_and(|ship| {
+                ship.radius == 22.0
+                    && ship.cargo_capacity == 20_000.0
+                    && ship.texture.as_deref().is_some_and(|texture| {
+                        texture.contains("asset-pack/./assets/ships/local-ship.png")
+                    })
+            }));
         assert!(registry
             .npc_ships
             .get("asset-pack:local_npc")
@@ -5886,7 +5936,9 @@ research = "missing_research"
 [[ships]]
 id = "bad_ship"
 name = "Bad Ship"
+radius = 0.0
 mass = 1000.0
+cargo_capacity = 0.0
 forward_acceleration = 10.0
 reverse_acceleration = 5.0
 turn_acceleration = 2.0
@@ -5967,6 +6019,12 @@ weapon_slots = ["missing_npc_weapon"]
         assert!(errors.iter().any(|error| {
             error
                 == "Ship `bad-ship-pack:bad_ship` references missing power module `bad-ship-pack:missing_module`"
+        }));
+        assert!(errors
+            .iter()
+            .any(|error| { error == "Ship `bad-ship-pack:bad_ship` has non-positive radius" }));
+        assert!(errors.iter().any(|error| {
+            error == "Ship `bad-ship-pack:bad_ship` has non-positive cargo capacity"
         }));
         assert!(errors.iter().any(|error| {
             error
