@@ -9,6 +9,7 @@ pub struct CostRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpgradeRow {
+    pub upgrade_index: usize,
     pub name: String,
     pub level: u32,
     pub effect: String,
@@ -104,7 +105,7 @@ fn draw_contents(ui: &mut egui::Ui, view: &UpgradesView, actions: &mut Vec<Upgra
             );
             ui.end_row();
 
-            for (index, row) in view.rows.iter().enumerate() {
+            for row in &view.rows {
                 ui.vertical(|ui| {
                     ui.set_min_width(220.0);
                     ui.strong(&row.name);
@@ -131,7 +132,7 @@ fn draw_contents(ui: &mut egui::Ui, view: &UpgradesView, actions: &mut Vec<Upgra
                     .on_disabled_hover_text("Required components are missing")
                     .clicked()
                 {
-                    actions.push(UpgradesUiAction::Purchase(index));
+                    actions.push(UpgradesUiAction::Purchase(row.upgrade_index));
                 }
                 ui.end_row();
             }

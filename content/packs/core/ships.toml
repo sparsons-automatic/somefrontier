@@ -37,3 +37,67 @@ purchase_price = 32000
 power_modules = ["compact_fission_cell"]
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret", "point_defense_turret"]
+
+[[ships]]
+id = "prospector_mining_drone"
+name = "Prospector Mining Drone"
+texture = "./assets/ships/prospector-mining-drone.png"
+radius = 16.0
+mass = 28000.0
+cargo_capacity = 8000.0
+forward_acceleration = 460.0
+reverse_acceleration = 410.0
+turn_acceleration = 7.2
+energy_capacity = 80.0
+energy_recharge = 9.0
+linear_drag = 0.978
+hull_capacity = 120.0
+shield_capacity = 100.0
+purchase_price = 7000
+power_modules = ["compact_fission_cell"]
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = []
+upgrade_catalog = [
+  "mining_head",
+  "ore_processor",
+  "smelter",
+  "cargo_pods",
+  "navigation_core",
+  "job_controller",
+  "delivery_thrusters",
+  "industrial_plating",
+  "drone_shield_matrix",
+]
+mining_drone = { throughput_multiplier = 0.8, operating_range = 6500.0, max_job_quota = 50 }
+
+[[ships]]
+id = "industrial_mining_drone"
+name = "Industrial Mining Drone"
+texture = "./assets/ships/industrial-mining-drone.png"
+radius = 28.0
+mass = 98000.0
+cargo_capacity = 30000.0
+forward_acceleration = 275.0
+reverse_acceleration = 230.0
+turn_acceleration = 3.4
+energy_capacity = 130.0
+energy_recharge = 7.0
+linear_drag = 0.984
+hull_capacity = 300.0
+shield_capacity = 220.0
+purchase_price = 19000
+power_modules = ["compact_fission_cell"]
+shield_slots = ["balanced_shield_matrix"]
+weapon_slots = ["point_defense_turret"]
+upgrade_catalog = [
+  "mining_head",
+  "ore_processor",
+  "smelter",
+  "cargo_pods",
+  "navigation_core",
+  "job_controller",
+  "delivery_thrusters",
+  "industrial_plating",
+  "drone_shield_matrix",
+]
+mining_drone = { throughput_multiplier = 1.5, operating_range = 16000.0, max_job_quota = 200 }

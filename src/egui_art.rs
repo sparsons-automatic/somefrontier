@@ -53,6 +53,32 @@ pub fn preview(ui: &mut egui::Ui, artwork: Option<&str>, max_size: Vec2) -> bool
     true
 }
 
+pub fn card_button(
+    ui: &mut egui::Ui,
+    artwork: Option<&str>,
+    text: impl Into<egui::WidgetText>,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    let text = text.into();
+    let button = artwork
+        .and_then(|artwork| texture(ui.ctx(), artwork))
+        .map(|texture| {
+            let image = egui::Image::new((
+                texture.id,
+                contained_size(texture.size, Vec2::new(128.0, 78.0)),
+            ));
+            egui::Button::image_and_text(image, text.clone())
+        })
+        .unwrap_or_else(|| egui::Button::new(text));
+    ui.add_enabled(
+        enabled,
+        button
+            .selected(selected)
+            .min_size(Vec2::new(ui.available_width(), 92.0)),
+    )
+}
+
 fn texture(ctx: &egui::Context, key: &str) -> Option<ArtTexture> {
     ART_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();

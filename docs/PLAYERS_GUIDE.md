@@ -126,6 +126,12 @@ across launches, kept within the visible display, and restored to their defaults
 by `Reset Menus`. The map is anchored to the active system: ordinary ship
 acceleration, coasting, and turning move only the ship marker, while planets
 remain stable except for their deliberately authored orbital motion.
+Stations, live NPC contacts, and inactive owned ships also appear at their
+current local-space positions. Squares mark stations, triangles mark NPCs, and
+outlined circles mark owned ships. Unscanned NPCs remain `Unknown contact`
+until their identity scan completes; hostile coloring likewise does not reveal
+disposition early. Station and NPC markers can be clicked to select them, while
+the `F` and `R` filters continue to apply specifically to planet markers.
 Clicking a planet selects it without changing course; choose `Fly Now` to begin
 a physical autopilot approach or `Add Stop` to append it to the itinerary.
 Numbered planet markers show itinerary order on the map. Systems tagged as
@@ -201,6 +207,45 @@ The `Keep` column sets an auto-maintained inventory target. Click its stock egui
 Hazard effects are lightweight in the current build. Some planets can drain
 shields while the ship is close. Stable orbit mitigates configured shield drain.
 
+Purchased mining-drone hulls can perform this work without becoming the active
+ship. Open Fleet and select an inactive mining drone. Choose a composition-
+scanned planet, one of its revealed resources, and a quota, then select `Add
+route leg`. Repeat this for each planet-to-planet stop; the numbered Mining Route
+preserves that order and lets individual legs be removed or the route cleared.
+Each leg owns its planet, ore, quota, and progress. Check `Auto-transfer
+inventory to a fleet ship` to deliver after the route, or leave it unchecked to
+hold at the final target.
+
+The drone flies to each planet in order and fulfills that leg's quota before
+continuing to the next. If its hold fills early, it stops the remaining route
+and begins delivery with the cargo already collected. Cargo delivery requires a
+same-system fleet ship selected from the `Deliver to` list. The drone rendezvous
+with that ship and automatically transfers its entire inventory, including
+cargo that was aboard before the job. The recipient accepts as much as its cargo
+capacity permits; any remainder stays safely aboard the drone and blocks the
+job for attention. The recipient can be active or inactive, and the drone
+follows its current position while delivering. Jobs report the active leg and
+progress in Fleet and the
+Operations Log and can be paused, resumed, recalled, or cancelled.
+
+Autonomous jobs are deliberately local-system operations. A destination that is
+missing, out of the hull's operating range, no longer provides the selected
+resource, or cannot accept more cargo leaves a visible blocked job instead of
+silently losing it. Delivery also blocks with the cargo aboard if its recipient
+is destroyed, unavailable, leaves the system, or runs out of capacity. Recall
+remains an emergency return to the job's original dispatch point. A damaged
+working drone interrupts and recalls; a destroyed drone records the job as
+destroyed. Taking direct control pauses an active job, which can be resumed from
+Fleet after control is transferred elsewhere.
+
+The optional `Drone smelter` upgrade unlocks an onboard smelting queue in the
+drone's Fleet details. Queued recipes run while the drone is autonomous; queue
+state and progress persist with the individual hull. Processing pauses while
+the drone is under direct control. When fleet inventory sharing is enabled, its
+recipes may draw missing inputs from nearby linked ships, but output always
+stays in the drone's own cargo. This upgrade is separate from `Ore processor`,
+which continues to improve bonus mining yield.
+
 ## Production
 
 Open inventory with `Tab` or `E`. The production table has three tabs:
@@ -247,26 +292,66 @@ Press `F` during local flight to open the movable, resizable stock egui Fleet
 workspace. Its position, size, and scroll state are remembered with the other
 egui menus and can be restored with `Reset Menus`. Each owned ship keeps its own
 hull and shield condition, energy, position, cargo, upgrades, power
-modules, shields, and turret-bank loadout. Select a fleet row and choose `Switch
-control` to make that vessel active; switching to a vessel in another system
+modules, shields, and turret-bank loadout. Click a fleet row to inspect that
+ship's inventory and details, or double-click an available row to switch control
+immediately. The `Switch control` button remains available as an explicit
+alternative; switching to a vessel in another system
 moves the local-space view to its saved location. Destroyed ships and hulls from
 currently unavailable content packs cannot be activated.
 
-Station garages act as shipyards for hulls whose content definition includes a
-purchase price. A purchased ship begins at the garage berth with full default
+The Hull Showroom service at Cinder Repair Yard sells hulls whose content
+definition includes a purchase price. Select it beside Repair Gantry, Parts
+Cage, and Torchcut Bar in the Station window. A purchased ship begins at the yard berth with full default
 systems, its configured equipment, no upgrades, and an empty cargo hold. Starter
 inventory is granted only to the first new-game ship and is never duplicated by
 ship purchases. The shipyard lists cargo, mass, thrust, and turn statistics next
-to each offer. The Frontier Longhauler costs 32,000 credits; its size and slow
+to each offer, plus throughput, operating range, and maximum quota for mining
+drones. The 7,000-credit Prospector is quicker and inexpensive but has an
+8-tonne hold, ×0.8 mining throughput, 6,500-unit range, and 50-unit job cap. The
+19,000-credit Industrial Mining Drone trades agility for a 30-tonne hold, ×1.5
+throughput, 16,000-unit range, 200-unit cap, and a defensive turret. The
+Frontier Longhauler costs 32,000 credits; its size and slow
 handling demand more clearance while approaching, docking, and flying in a
 fleet, but its 90-tonne hold and durable systems suit bulk trade.
+
+Mining drones use distinctive circular yellow-and-black industrial hulls in
+local space, Fleet previews, and the Hull Showroom. Their radial silhouettes
+separate autonomous work platforms from conventional pilotable ships at a
+glance; the larger Industrial drone carries a visibly broader extraction frame.
+Click an owned drone in local space to open its Fleet inventory and details;
+double-click it to switch control directly.
 
 Select a different owned ship in Fleet management to transfer cargo. Both ships
 must be in the same system and within 180 units. Transfer amounts respect the
 receiving ship's cargo mass and inventory-slot capacity. A normal quantity click
 changes the transfer amount by 1, `Shift` changes it by 10, and `Ctrl` changes it
-by 20. Inactive owned ships
-remain at their saved positions, but their reactors and shields continue to
+by 20. `Take all from selected ship` pulls every stack that fits into the active
+ship and leaves any capacity-limited remainder aboard. Destroyed drones remain
+valid cargo sources, so surviving ships can recover their payload when they can
+get within transfer range.
+
+After a destroyed drone's cargo is empty, right-click its wreck in local space
+and choose `Salvage`. Dismantling takes 150 seconds while the active ship remains
+within the same 180-unit range. Leaving range pauses the operation without
+losing progress; return and choose `Resume salvage` to continue. The saved game
+retains partial progress. Completion recovers a mass-scaled cache of iron and
+copper plates, then removes the wreck from local space and Fleet. If the active
+ship cannot hold the complete salvage yield, completion waits without deleting
+the wreck or losing materials.
+
+Each ship also has a `Share inventory with nearby fleet` checkbox in its Fleet
+details, enabled by default. Two opted-in ships in the same system and within
+the 180-unit transfer range form a linked cargo pool. Smelting, crafting,
+processing, ship upgrades, and Auto Repair consume the acting ship's cargo
+first, then draw missing materials from linked ships. Costs are atomic: if the
+linked fleet cannot cover the whole bill, nothing is consumed. Produced items
+remain on the ship doing the work, and production pauses before consuming inputs
+when that ship lacks local cargo capacity. Turret ammunition, mining quotas,
+and each hull's cargo-capacity limit remain strictly local. Moving out of range
+or disabling either ship's checkbox immediately unlinks their cargo.
+
+Inactive owned ships without an active autonomous job remain at their
+saved positions, but their reactors and shields continue to
 recharge and their installed turrets automatically engage hostile targets in the
 same system. They consume energy and ammunition from that ship's own stores,
 and hostile ships can target and damage them. Simultaneous fleet movement and
@@ -320,15 +405,17 @@ Research can unlock production recipes and other progression hooks. Locked
 production rows become available once the required research node is completed.
 
 `Autonomous Hull Patching` branches from Yield Optimization. After completing
-it, open the Ship window and enable Auto Repair. The system repairs only the
-active ship's hull in two-second cycles; it never restores shields. Iron ore
+it, open the Ship window and enable Auto Repair for the currently controlled
+ship. Enabled inactive ships also continue repairing their own hulls in
+two-second cycles; the system never restores shields. Iron ore
 restores 5 hull per unit and titanium ore restores 20 hull per unit. The system
 chooses the largest unit it can use without waste, falling back to the smallest
 available unit for minor damage. Any shield or hull damage resets the cycle and
 pauses repairs for eight seconds, so sustained combat cannot repair through
-incoming fire. Missing materials also pause progress. Auto Repair consumes no
-drive energy or weapon capacitor, and each owned ship remembers its own setting
-and progress through control switching and save/load.
+incoming fire. Missing materials also pause progress. An opted-in ship may draw
+repair ore from nearby linked fleet cargo. Auto Repair consumes no drive energy
+or weapon capacitor, and each owned ship remembers its own setting, sharing
+preference, and progress through control switching and save/load.
 
 ## Ship Upgrades
 
@@ -347,6 +434,16 @@ Upgrade costs scale by level. If you cannot afford an upgrade, its action is
 disabled until the required items are in inventory. Shift and Control retain
 the existing upgrade modifiers, buying up to 5 or 10 levels respectively while
 components remain available.
+
+Upgrade catalogs are hull-specific while levels remain stored per owned ship.
+Conventional ships use Engine Tuning, Maneuver Thrusters, Energy Core, Shield
+Matrix, Drone Bay, Fuel Systems, Scanner Array, and Cargo Hold. Autonomous
+mining drones instead use Mining Head, Ore Processor, Cargo Pods, Navigation
+Core, Job Controller, Delivery Thrusters, Industrial Plating, and Drone Shield
+Matrix. These improve mining speed, bonus ore chance, drone cargo capacity,
+operating range, job quota, autonomous travel speed, hull, and shields. Buying an
+upgrade affects only the currently controlled hull; switch control to inspect or
+improve another fleet ship.
 
 ## Shields And Weapons
 
@@ -474,9 +571,19 @@ to that offer's configured capacity. Research leads point to progression-tree
 nodes that can expose additional production recipes after completion.
 
 Resize or scroll the Station window when a station has a large catalog or long
-contract descriptions. Services remain accessible as native selectable buttons.
+contract descriptions. Services appear as full-width clickable cards with an
+optional scene thumbnail on the left and their name, description, and access
+context beside it. Before a service is selected, the cards use the full Station
+window. Selecting a service moves the cards into the left column and opens a
+right-hand detail rail containing that service's description, status, offers,
+and actions. Cinder Repair Yard supplies distinct artwork for Repair Gantry,
+Hull Showroom, Parts Cage, and Torchcut Bar. Freebelt Commissary also illustrates
+its Supply Counter, Hauler Tables, and Job Board; content-pack services without
+artwork retain the same card layout with text only.
 
-Garage services provide a Maintenance action. When docked and carrying enough
+Garage services provide a Maintenance action. Shipyard services list
+purchasable ships and mining drones with their price, handling, cargo, and
+mining statistics; ship sales no longer appear in Fleet management. When docked and carrying enough
 credits, repair restores damaged hull and shields; the price is based on the
 amount of damage. This remains the immediate way to restore both systems;
 research-gated Auto Repair is slower, hull-only, and consumes carried raw ore.

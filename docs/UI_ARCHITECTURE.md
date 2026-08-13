@@ -55,7 +55,12 @@ appears beside the shared Production and Inventory windows. Its presentation-onl
 view model includes services, market quotes and stock, maintenance state,
 contracts, recipe unlocks, and research leads. Typed actions flow back through
 the existing range, reputation, credit, cargo, contract, progression, and save
-rules rather than changing those rules in the renderer.
+rules rather than changing those rules in the renderer. Service selection uses
+full-width clickable cards: optional content-pack artwork is projected through
+the shared egui artwork cache beside the name, description, and access context.
+With no selection, cards span the Station window. Selecting any point on a card
+opens a right-hand detail rail; selected-service status, offers, actions, and
+operation feedback render there for every station.
 
 Inspecting an NPC ship opens a movable Contact window with identification,
 disposition, systems, defenses, and cargo details. Hail and market controls emit
@@ -64,10 +69,21 @@ inventory, and save rules. Hostile contacts remain visible while friendly-only
 actions use egui's disabled state.
 
 Fleet management is a separate movable egui workspace. Its owned-ship list,
-condition readout, two-way cargo controls, and nearby shipyard offers are built
-from a presentation-only snapshot. Typed actions return ship selection, control
-transfer, cargo item IDs, and hull IDs to the existing range, capacity, content,
-credit, and save validation. The Fleet window participates in the same global
+condition readout, and two-way cargo controls are built from a presentation-only
+snapshot. Typed actions return ship selection, control transfer, and cargo item
+IDs to the existing range, capacity, and save validation. A per-ship inventory-
+sharing checkbox also returns a typed action; the gameplay layer resolves the
+same-system 180-unit link, local-first atomic input consumption, and producer-
+local output capacity for production, upgrades, and Auto Repair. Ammunition,
+mining jobs, and cargo limits remain outside that shared-input resolver. Shipyard offers belong
+to the selected station service, where typed hull-purchase actions flow through
+station range, service, content, and credit validation. Mining-drone hulls add
+typed destination, resource, quota, recipient-ship, completion behavior, pause,
+ordered-route editing, recall, and cancel actions to that same boundary. Each
+persisted route leg owns a planet, resource, quota, and mined progress; legacy
+single-destination jobs migrate to one-leg routes. The gameplay layer owns job
+validation, leg transitions, recipient rendezvous, capacity-limited cargo
+delivery, and the persisted state machine. The Fleet window participates in the same global
 layout persistence and `Reset Menus` recovery path as the inspection windows.
 
 The Content Browser uses the same presentation/action boundary. Its view model
