@@ -99,13 +99,14 @@ const STARMAP_ZOOM_STEP: f32 = 1.15;
 const STARMAP_PAN_PIXELS_TO_WORLD: f32 = 1.35;
 const ARC_SEGMENTS: usize = 72;
 const INVENTORY_SLOTS: usize = 200;
-const SHIP_UPGRADE_COUNT: usize = 8;
+const SHIP_UPGRADE_COUNT: usize = 17;
 const OWNED_SHIP_TRANSFER_RANGE: f32 = 180.0;
+const OWNED_SHIP_DOUBLE_CLICK_SECONDS: f64 = 0.35;
 const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const SAVE_VERSION: u32 = 6;
+const SAVE_VERSION: u32 = 8;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
 #[cfg(target_os = "linux")]
@@ -113,6 +114,10 @@ const EGUI_LINUX_WHEEL_DIVISOR: f32 = 90.0;
 const GAME_DAY_SECONDS: f32 = 120.0;
 const PLANET_SEED_JITTER: f32 = 180.0;
 const PLANET_SEED_ROTATION: f32 = 0.22;
+
+fn default_true() -> bool {
+    true
+}
 const CAMERA_ZOOM_MIN: f32 = 0.35;
 const CAMERA_ZOOM_MAX: f32 = 2.0;
 const CAMERA_ZOOM_STEP: f32 = 1.12;
@@ -131,6 +136,7 @@ const COMBAT_SCAN_RANGE: f32 = 620.0;
 const COMBAT_SCAN_ENERGY_PER_SECOND: f32 = 2.0;
 const COMBAT_SCAN_INTERRUPTION_GRACE_SECONDS: f32 = 1.5;
 const AUTO_REPAIR_CYCLE_SECONDS: f32 = 2.0;
+const OWNED_SHIP_SALVAGE_SECONDS: f32 = 150.0;
 const AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS: f32 = 8.0;
 const OPERATION_HISTORY_LIMIT: usize = 200;
 const STARTER_SYSTEM_ID: &str = "core:frontier";
@@ -399,6 +405,7 @@ struct GameState {
     starmap_resize_previous_mouse: Option<Vec2>,
     open_turret_bank: Option<usize>,
     inventory: Inventory,
+    share_inventory: bool,
     smelt_recipes: Vec<Recipe>,
     smelt_settings: Vec<CraftSetting>,
     craft_recipes: Vec<Recipe>,
@@ -417,6 +424,13 @@ struct GameState {
     operations_open: bool,
     selected_owned_ship_index: usize,
     fleet_transfer_quantity: u32,
+    fleet_mining_planet: Option<String>,
+    fleet_mining_resource: Option<String>,
+    fleet_mining_quota: u32,
+    fleet_mining_route: Vec<MiningDroneLeg>,
+    fleet_mining_deliver_to_ship: bool,
+    fleet_mining_delivery_ship: Option<String>,
+    pending_owned_ship_click: Option<(String, f64)>,
     content_browser: ContentBrowserState,
     escape_dialog_open: bool,
     quit_to_title_requested: bool,
@@ -482,6 +496,7 @@ enum ContextTarget {
     Planet(usize),
     Station(usize),
     NpcShip(usize),
+    OwnedShip(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,6 +513,7 @@ enum ContextAction {
     StopFollowing,
     Hail,
     Trade,
+    Salvage,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1242,6 +1258,7 @@ struct StationService {
     id: String,
     name: String,
     kind: String,
+    artwork: Option<String>,
     description: Option<String>,
     vendor: Option<StationVendor>,
     trade: Vec<TradeOffer>,
@@ -1392,6 +1409,115 @@ struct Inventory {
     slots: [Option<ItemStack>; INVENTORY_SLOTS],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MiningDroneReturnBehavior {
+    DeliverToShip,
+    ReturnToDispatch,
+    HoldAtTarget,
+}
+
+impl MiningDroneReturnBehavior {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DeliverToShip => "Deliver cargo to fleet ship",
+            Self::ReturnToDispatch => "Return to dispatch point",
+            Self::HoldAtTarget => "Hold at mining site",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MiningDroneJobState {
+    Traveling,
+    Mining,
+    Returning,
+    Holding,
+    Paused,
+    Blocked,
+    Completed,
+    Interrupted,
+    Destroyed,
+}
+
+impl MiningDroneJobState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Traveling => "Traveling",
+            Self::Mining => "Mining",
+            Self::Returning => "Returning",
+            Self::Holding => "Holding",
+            Self::Paused => "Paused",
+            Self::Blocked => "Blocked",
+            Self::Completed => "Completed",
+            Self::Interrupted => "Interrupted",
+            Self::Destroyed => "Destroyed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MiningDroneBlocker {
+    CrossSystem,
+    MissingPlanet,
+    MissingResource,
+    ResourceUnavailable,
+    OutOfRange,
+    CargoFull,
+    HostileInterruption,
+    DeliveryShipUnavailable,
+    DeliveryShipCrossSystem,
+    DeliveryShipCargoFull,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct MiningDroneLeg {
+    planet: String,
+    resource: String,
+    quota: u32,
+    #[serde(default)]
+    mined: u32,
+}
+
+impl MiningDroneBlocker {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CrossSystem => "destination is in another system",
+            Self::MissingPlanet => "destination content is unavailable",
+            Self::MissingResource => "resource content is unavailable",
+            Self::ResourceUnavailable => "resource is unavailable at the destination",
+            Self::OutOfRange => "destination exceeds the drone's operating range",
+            Self::CargoFull => "cargo hold is full",
+            Self::HostileInterruption => "hostile damage interrupted the job",
+            Self::DeliveryShipUnavailable => "delivery ship is unavailable",
+            Self::DeliveryShipCrossSystem => "delivery ship left the system",
+            Self::DeliveryShipCargoFull => "delivery ship cannot accept remaining cargo",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct MiningDroneJob {
+    system: String,
+    planet: String,
+    resource: String,
+    quota: u32,
+    mined: u32,
+    #[serde(default)]
+    route: Vec<MiningDroneLeg>,
+    #[serde(default)]
+    active_leg: usize,
+    return_behavior: MiningDroneReturnBehavior,
+    #[serde(default)]
+    delivery_ship: Option<String>,
+    dispatch_position: [f32; 2],
+    state: MiningDroneJobState,
+    blocker: Option<MiningDroneBlocker>,
+    progress: f32,
+}
+
 #[derive(Clone)]
 struct OwnedShip {
     instance_id: String,
@@ -1408,6 +1534,11 @@ struct OwnedShip {
     auto_repair_enabled: bool,
     auto_repair_cycle_progress: f32,
     auto_repair_damage_lockout_remaining: f32,
+    share_inventory: bool,
+    salvage_active: bool,
+    salvage_progress: f32,
+    mining_job: Option<MiningDroneJob>,
+    smelt_settings: Vec<CraftSetting>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1442,6 +1573,8 @@ struct SaveData {
     shield_slots: Vec<String>,
     #[serde(default)]
     shield_recharge_delay_remaining: f32,
+    #[serde(default = "default_true")]
+    share_inventory: bool,
     #[serde(default)]
     weapon_slots: Vec<String>,
     #[serde(default)]
@@ -1498,6 +1631,16 @@ struct SaveOwnedShip {
     auto_repair_cycle_progress: f32,
     #[serde(default)]
     auto_repair_damage_lockout_remaining: f32,
+    #[serde(default = "default_true")]
+    share_inventory: bool,
+    #[serde(default)]
+    salvage_active: bool,
+    #[serde(default)]
+    salvage_progress: f32,
+    #[serde(default)]
+    mining_job: Option<MiningDroneJob>,
+    #[serde(default)]
+    smelt_settings: Vec<SaveWorkSetting>,
     weapon_slot_loadout: Vec<Option<String>>,
 }
 
@@ -1585,7 +1728,7 @@ struct SaveUpgrade {
     level: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SaveWorkSetting {
     id: String,
     keep: u32,
@@ -1621,6 +1764,7 @@ struct PendingWarp {
     cost: Vec<ItemStack>,
 }
 
+#[derive(Clone)]
 struct Recipe {
     id: String,
     output: ItemStack,
@@ -1681,6 +1825,19 @@ enum WorkKind {
     Fabrication,
 }
 
+#[derive(Clone, Copy)]
+enum FleetProducer {
+    Active,
+    Owned(usize),
+}
+
+#[derive(Clone, Copy)]
+enum RecipeTable {
+    Smelting,
+    Crafting,
+    Processing,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShipUpgradeKind {
     Engine,
@@ -1691,6 +1848,15 @@ enum ShipUpgradeKind {
     FuelSystems,
     ScannerArray,
     CargoHold,
+    MiningHead,
+    OreProcessor,
+    Smelter,
+    CargoPods,
+    NavigationCore,
+    JobController,
+    DeliveryThrusters,
+    IndustrialPlating,
+    DroneShieldMatrix,
 }
 
 impl GameState {
@@ -1919,6 +2085,7 @@ impl GameState {
             starmap_resize_previous_mouse: None,
             open_turret_bank: None,
             inventory,
+            share_inventory: true,
             smelt_recipes,
             smelt_settings,
             craft_recipes,
@@ -1937,6 +2104,13 @@ impl GameState {
             operations_open: false,
             selected_owned_ship_index: 0,
             fleet_transfer_quantity: 1,
+            fleet_mining_planet: None,
+            fleet_mining_resource: None,
+            fleet_mining_quota: 10,
+            fleet_mining_route: Vec::new(),
+            fleet_mining_deliver_to_ship: true,
+            fleet_mining_delivery_ship: None,
+            pending_owned_ship_click: None,
             content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,
@@ -2023,6 +2197,7 @@ impl GameState {
 
     fn apply_save(&mut self, save: SaveData) {
         let restore_legacy_npc_ammo = save.version < 5;
+        let restore_legacy_active_smelt_settings = save.version < 8;
         let saved_owned_ships = save.owned_ships.clone();
         let saved_active_owned_ship_id = save.active_owned_ship_id.clone();
         let saved_next_owned_ship_sequence = save.next_owned_ship_sequence;
@@ -2206,6 +2381,7 @@ impl GameState {
             |recipe| recipe.id.as_str(),
             |recipe| recipe.output.item.id.as_str(),
         );
+        let legacy_active_smelt_settings = self.smelt_settings.clone();
         apply_work_settings(
             &mut self.craft_settings,
             &self.craft_recipes,
@@ -2229,7 +2405,7 @@ impl GameState {
         } else {
             self.owned_ships = saved_owned_ships
                 .into_iter()
-                .map(|ship| OwnedShip::from_save(&self.content_registry, ship))
+                .map(|ship| OwnedShip::from_save(&self.content_registry, &self.smelt_recipes, ship))
                 .collect();
             self.next_owned_ship_sequence = saved_next_owned_ship_sequence.max(
                 self.owned_ships
@@ -2253,6 +2429,12 @@ impl GameState {
                 });
             if let Some(active_index) = active_index {
                 self.restore_owned_ship_at(active_index);
+                if restore_legacy_active_smelt_settings {
+                    self.smelt_settings = legacy_active_smelt_settings;
+                    if let Some(active) = self.owned_ships.get_mut(active_index) {
+                        active.smelt_settings = self.smelt_settings.clone();
+                    }
+                }
             } else {
                 let sequence = self.next_owned_ship_sequence;
                 self.active_owned_ship_id = format!("ship-{sequence}");
@@ -2283,9 +2465,10 @@ impl GameState {
                 .iter()
                 .map(|owned| {
                     if owned.instance_id == self.active_owned_ship_id {
-                        self.capture_active_owned_ship().to_save()
+                        self.capture_active_owned_ship()
+                            .to_save(&self.smelt_recipes)
                     } else {
-                        owned.to_save()
+                        owned.to_save(&self.smelt_recipes)
                     }
                 })
                 .collect(),
@@ -2340,6 +2523,7 @@ impl GameState {
                 self.shield_recharge_delay_remaining,
                 0.0,
             ),
+            share_inventory: self.share_inventory,
             weapon_slots: Vec::new(),
             weapon_slot_loadout: self
                 .equipped_weapons
@@ -2468,6 +2652,11 @@ impl GameState {
     }
 
     fn capture_active_owned_ship(&self) -> OwnedShip {
+        let mining_job = self
+            .owned_ships
+            .iter()
+            .find(|ship| ship.instance_id == self.active_owned_ship_id)
+            .and_then(|ship| ship.mining_job.clone());
         let callsign = self
             .owned_ships
             .iter()
@@ -2495,6 +2684,11 @@ impl GameState {
             auto_repair_enabled: self.auto_repair_enabled,
             auto_repair_cycle_progress: self.auto_repair_cycle_progress,
             auto_repair_damage_lockout_remaining: self.auto_repair_damage_lockout_remaining,
+            share_inventory: self.share_inventory,
+            salvage_active: false,
+            salvage_progress: 0.0,
+            mining_job,
+            smelt_settings: self.smelt_settings.clone(),
         }
     }
 
@@ -2526,11 +2720,13 @@ impl GameState {
         self.equipped_shields = owned.equipped_shields;
         self.equipped_weapons = owned.equipped_weapons;
         self.inventory = owned.inventory;
+        self.share_inventory = owned.share_inventory;
         self.ship_upgrades = owned.upgrades;
         self.shield_recharge_delay_remaining = owned.shield_recharge_delay_remaining;
         self.auto_repair_enabled = owned.auto_repair_enabled;
         self.auto_repair_cycle_progress = owned.auto_repair_cycle_progress;
         self.auto_repair_damage_lockout_remaining = owned.auto_repair_damage_lockout_remaining;
+        self.smelt_settings = owned.smelt_settings;
         self.selected_owned_ship_index = index;
         self.destination_planet = destination_planet_for_system(
             &self.planets,
@@ -2542,7 +2738,7 @@ impl GameState {
 }
 
 impl OwnedShip {
-    fn to_save(&self) -> SaveOwnedShip {
+    fn to_save(&self, smelt_recipes: &[Recipe]) -> SaveOwnedShip {
         SaveOwnedShip {
             instance_id: self.instance_id.clone(),
             callsign: self.callsign.clone(),
@@ -2579,6 +2775,14 @@ impl OwnedShip {
                 self.auto_repair_damage_lockout_remaining,
                 0.0,
             ),
+            share_inventory: self.share_inventory,
+            salvage_active: self.salvage_active,
+            salvage_progress: finite_nonnegative_or(self.salvage_progress, 0.0)
+                .min(OWNED_SHIP_SALVAGE_SECONDS),
+            mining_job: self.mining_job.as_ref().map(sanitized_mining_drone_job),
+            smelt_settings: save_work_settings(smelt_recipes, &self.smelt_settings, |recipe| {
+                recipe.id.as_str()
+            }),
             weapon_slot_loadout: self
                 .equipped_weapons
                 .iter()
@@ -2587,7 +2791,11 @@ impl OwnedShip {
         }
     }
 
-    fn from_save(registry: &content::ContentRegistry, saved: SaveOwnedShip) -> Self {
+    fn from_save(
+        registry: &content::ContentRegistry,
+        smelt_recipes: &[Recipe],
+        saved: SaveOwnedShip,
+    ) -> Self {
         let mut ship = registry
             .ships
             .get(&saved.ship_id)
@@ -2601,6 +2809,14 @@ impl OwnedShip {
             }
         }
         apply_saved_ship_state(&mut ship, &saved.ship);
+        let mut smelt_settings = vec![CraftSetting::starter(); smelt_recipes.len()];
+        apply_work_settings(
+            &mut smelt_settings,
+            smelt_recipes,
+            &saved.smelt_settings,
+            |recipe| recipe.id.as_str(),
+            |recipe| recipe.output.item.id.as_str(),
+        );
         Self {
             instance_id: saved.instance_id,
             callsign: saved.callsign,
@@ -2638,7 +2854,49 @@ impl OwnedShip {
                 saved.auto_repair_damage_lockout_remaining,
                 0.0,
             ),
+            share_inventory: saved.share_inventory,
+            salvage_active: saved.salvage_active,
+            salvage_progress: finite_nonnegative_or(saved.salvage_progress, 0.0)
+                .min(OWNED_SHIP_SALVAGE_SECONDS),
+            mining_job: saved.mining_job.map(|job| sanitized_mining_drone_job(&job)),
+            smelt_settings,
         }
+    }
+}
+
+fn sanitized_mining_drone_job(job: &MiningDroneJob) -> MiningDroneJob {
+    let mut route = job.route.clone();
+    if route.is_empty() {
+        route.push(MiningDroneLeg {
+            planet: job.planet.clone(),
+            resource: job.resource.clone(),
+            quota: job.quota.max(1),
+            mined: job.mined.min(job.quota.max(1)),
+        });
+    }
+    for leg in &mut route {
+        leg.quota = leg.quota.max(1);
+        leg.mined = leg.mined.min(leg.quota);
+    }
+    let active_leg = job.active_leg.min(route.len().saturating_sub(1));
+    let current = &route[active_leg];
+    MiningDroneJob {
+        system: job.system.clone(),
+        planet: current.planet.clone(),
+        resource: current.resource.clone(),
+        quota: current.quota,
+        mined: current.mined,
+        route,
+        active_leg,
+        return_behavior: job.return_behavior,
+        delivery_ship: job.delivery_ship.clone(),
+        dispatch_position: [
+            finite_or(job.dispatch_position[0], 0.0),
+            finite_or(job.dispatch_position[1], 0.0),
+        ],
+        state: job.state,
+        blocker: job.blocker,
+        progress: finite_nonnegative_or(job.progress, 0.0).min(1.0),
     }
 }
 
@@ -2916,6 +3174,7 @@ async fn make_station_destinations(
                         id: service.id.clone(),
                         name: service.name.clone(),
                         kind: service.kind.clone(),
+                        artwork: service.artwork.clone(),
                         description: service.description.clone(),
                         vendor: runtime_vendor.map(|(vendor, _)| vendor),
                         trade,
@@ -3777,6 +4036,13 @@ fn egui_art_source_paths(registry: &content::ContentRegistry) -> Vec<String> {
             .stations
             .values()
             .filter_map(|value| value.texture.clone()),
+    );
+    paths.extend(
+        registry
+            .stations
+            .values()
+            .flat_map(|station| station.services.iter())
+            .filter_map(|service| service.artwork.clone()),
     );
     paths.extend(
         registry
@@ -4769,6 +5035,7 @@ fn apply_owned_ship_weapon_damage(owned: &mut OwnedShip, amount: f32) -> bool {
     if application.changed() {
         owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
         reset_owned_auto_repair_after_damage(owned);
+        interrupt_owned_mining_job_after_damage(owned);
     }
     application.changed()
 }
@@ -5265,6 +5532,7 @@ fn apply_owned_ship_collision_damage(owned: &mut OwnedShip, amount: f32) -> Dama
     if application.changed() {
         owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
         reset_owned_auto_repair_after_damage(owned);
+        interrupt_owned_mining_job_after_damage(owned);
     }
     application
 }
@@ -5822,6 +6090,21 @@ impl ShipUpgrade {
 }
 
 impl ShipUpgradeKind {
+    fn is_mining_drone_upgrade(self) -> bool {
+        matches!(
+            self,
+            Self::MiningHead
+                | Self::OreProcessor
+                | Self::Smelter
+                | Self::CargoPods
+                | Self::NavigationCore
+                | Self::JobController
+                | Self::DeliveryThrusters
+                | Self::IndustrialPlating
+                | Self::DroneShieldMatrix
+        )
+    }
+
     fn id(self) -> &'static str {
         match self {
             Self::Engine => "core:engine",
@@ -5832,6 +6115,15 @@ impl ShipUpgradeKind {
             Self::FuelSystems => "core:fuel_systems",
             Self::ScannerArray => "core:scanner_array",
             Self::CargoHold => "core:cargo_hold",
+            Self::MiningHead => "core:mining_head",
+            Self::OreProcessor => "core:ore_processor",
+            Self::Smelter => "core:smelter",
+            Self::CargoPods => "core:cargo_pods",
+            Self::NavigationCore => "core:navigation_core",
+            Self::JobController => "core:job_controller",
+            Self::DeliveryThrusters => "core:delivery_thrusters",
+            Self::IndustrialPlating => "core:industrial_plating",
+            Self::DroneShieldMatrix => "core:drone_shield_matrix",
         }
     }
 
@@ -5845,6 +6137,15 @@ impl ShipUpgradeKind {
             "core:fuel_systems" => Some(Self::FuelSystems),
             "core:scanner_array" => Some(Self::ScannerArray),
             "core:cargo_hold" => Some(Self::CargoHold),
+            "core:mining_head" => Some(Self::MiningHead),
+            "core:ore_processor" => Some(Self::OreProcessor),
+            "core:smelter" => Some(Self::Smelter),
+            "core:cargo_pods" => Some(Self::CargoPods),
+            "core:navigation_core" => Some(Self::NavigationCore),
+            "core:job_controller" => Some(Self::JobController),
+            "core:delivery_thrusters" => Some(Self::DeliveryThrusters),
+            "core:industrial_plating" => Some(Self::IndustrialPlating),
+            "core:drone_shield_matrix" => Some(Self::DroneShieldMatrix),
             _ => None,
         }
     }
@@ -5859,6 +6160,15 @@ impl ShipUpgradeKind {
             Self::FuelSystems => "Fuel systems",
             Self::ScannerArray => "Scanner array",
             Self::CargoHold => "Cargo hold",
+            Self::MiningHead => "Mining head",
+            Self::OreProcessor => "Ore processor",
+            Self::Smelter => "Drone smelter",
+            Self::CargoPods => "Cargo pods",
+            Self::NavigationCore => "Navigation core",
+            Self::JobController => "Job controller",
+            Self::DeliveryThrusters => "Delivery thrusters",
+            Self::IndustrialPlating => "Industrial plating",
+            Self::DroneShieldMatrix => "Drone shield matrix",
         }
     }
 
@@ -5874,6 +6184,15 @@ impl ShipUpgradeKind {
                 "+1 combat scan depth and +15% scan speed per level; +1 survey depth every 2 levels"
             }
             Self::CargoHold => "+10 t cargo rating",
+            Self::MiningHead => "+12% autonomous mining speed",
+            Self::OreProcessor => "+8% chance for bonus mined ore",
+            Self::Smelter => "Enables autonomous smelting in the drone's cargo hold",
+            Self::CargoPods => "+5 t drone cargo rating",
+            Self::NavigationCore => "+12% autonomous operating range",
+            Self::JobController => "+25 maximum job quota",
+            Self::DeliveryThrusters => "+10% autonomous travel and delivery thrust",
+            Self::IndustrialPlating => "+20 hull capacity",
+            Self::DroneShieldMatrix => "+15 shield capacity",
         }
     }
 
@@ -5952,6 +6271,15 @@ fn make_ship_upgrades() -> [ShipUpgrade; SHIP_UPGRADE_COUNT] {
         ShipUpgrade::new(ShipUpgradeKind::FuelSystems),
         ShipUpgrade::new(ShipUpgradeKind::ScannerArray),
         ShipUpgrade::new(ShipUpgradeKind::CargoHold),
+        ShipUpgrade::new(ShipUpgradeKind::MiningHead),
+        ShipUpgrade::new(ShipUpgradeKind::OreProcessor),
+        ShipUpgrade::new(ShipUpgradeKind::Smelter),
+        ShipUpgrade::new(ShipUpgradeKind::CargoPods),
+        ShipUpgrade::new(ShipUpgradeKind::NavigationCore),
+        ShipUpgrade::new(ShipUpgradeKind::JobController),
+        ShipUpgrade::new(ShipUpgradeKind::DeliveryThrusters),
+        ShipUpgrade::new(ShipUpgradeKind::IndustrialPlating),
+        ShipUpgrade::new(ShipUpgradeKind::DroneShieldMatrix),
     ]
 }
 
@@ -5980,6 +6308,51 @@ fn ship_upgrade_level(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT], kind: ShipUp
         .unwrap_or(0)
 }
 
+fn ship_upgrade_is_available(
+    registry: &content::ContentRegistry,
+    ship_id: &str,
+    kind: ShipUpgradeKind,
+) -> bool {
+    registry.ships.get(ship_id).is_some_and(|ship| {
+        if ship.upgrade_catalog.is_empty() {
+            !kind.is_mining_drone_upgrade()
+        } else {
+            ship.upgrade_catalog
+                .iter()
+                .any(|upgrade| upgrade == kind.id())
+        }
+    })
+}
+
+fn mining_drone_throughput(
+    profile: &content::MiningDroneDef,
+    upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+) -> f32 {
+    profile.throughput_multiplier
+        * 1.12_f32.powi(ship_upgrade_level(upgrades, ShipUpgradeKind::MiningHead) as i32)
+}
+
+fn mining_drone_operating_range(
+    profile: &content::MiningDroneDef,
+    upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+) -> f32 {
+    profile.operating_range
+        * 1.12_f32.powi(ship_upgrade_level(upgrades, ShipUpgradeKind::NavigationCore) as i32)
+}
+
+fn mining_drone_max_quota(
+    profile: &content::MiningDroneDef,
+    upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+) -> u32 {
+    profile.max_job_quota.saturating_add(
+        ship_upgrade_level(upgrades, ShipUpgradeKind::JobController).saturating_mul(25),
+    )
+}
+
+fn mining_drone_bonus_ore_chance(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
+    (ship_upgrade_level(upgrades, ShipUpgradeKind::OreProcessor) as f32 * 0.08).min(0.65)
+}
+
 fn survey_drone_return_chance(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
     (ship_upgrade_level(upgrades, ShipUpgradeKind::DroneBay) as f32 * 0.10).min(0.65)
 }
@@ -5996,6 +6369,7 @@ fn warp_charge_seconds(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
 fn cargo_rating_kg(ship: &Ship, upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
     ship.attributes.cargo_capacity
         + ship_upgrade_level(upgrades, ShipUpgradeKind::CargoHold) as f32 * 10_000.0
+        + ship_upgrade_level(upgrades, ShipUpgradeKind::CargoPods) as f32 * 5_000.0
 }
 
 #[derive(Clone)]
@@ -6043,14 +6417,15 @@ fn auto_repair_materials(
     materials
 }
 
-fn auto_repair_material_for_inventory(
+fn auto_repair_material_for_fleet(
+    game: &GameState,
+    producer: FleetProducer,
     materials: &[AutoRepairMaterial],
-    inventory: &Inventory,
     missing_hull: f32,
 ) -> Option<AutoRepairMaterial> {
     let available = materials
         .iter()
-        .filter(|material| inventory.count(&material.item) > 0);
+        .filter(|material| fleet_inventory_count(game, producer, &material.item) > 0);
     available
         .clone()
         .filter(|material| material.hull_points <= missing_hull)
@@ -6075,7 +6450,7 @@ fn auto_repair_status(game: &GameState) -> AutoRepairStatus {
         return AutoRepairStatus::DamageLockout(game.auto_repair_damage_lockout_remaining);
     }
     let Some(material) =
-        auto_repair_material_for_inventory(&materials, &game.inventory, missing_hull)
+        auto_repair_material_for_fleet(game, FleetProducer::Active, &materials, missing_hull)
     else {
         return AutoRepairStatus::OutOfMaterials;
     };
@@ -6094,6 +6469,20 @@ fn reset_active_auto_repair_after_damage(game: &mut GameState) {
 fn reset_owned_auto_repair_after_damage(owned: &mut OwnedShip) {
     owned.auto_repair_cycle_progress = 0.0;
     owned.auto_repair_damage_lockout_remaining = AUTO_REPAIR_DAMAGE_LOCKOUT_SECONDS;
+}
+
+fn interrupt_owned_mining_job_after_damage(owned: &mut OwnedShip) {
+    let Some(job) = &mut owned.mining_job else {
+        return;
+    };
+    if matches!(
+        job.state,
+        MiningDroneJobState::Traveling | MiningDroneJobState::Mining | MiningDroneJobState::Holding
+    ) {
+        job.state = MiningDroneJobState::Interrupted;
+        job.blocker = Some(MiningDroneBlocker::HostileInterruption);
+        job.progress = 0.0;
+    }
 }
 
 fn update_auto_repair(game: &mut GameState, dt: f32) {
@@ -6124,7 +6513,9 @@ fn update_auto_repair(game: &mut GameState, dt: f32) {
     if game.auto_repair_damage_lockout_remaining > 0.0 {
         return;
     }
-    if auto_repair_material_for_inventory(&materials, &game.inventory, missing_hull).is_none() {
+    if auto_repair_material_for_fleet(game, FleetProducer::Active, &materials, missing_hull)
+        .is_none()
+    {
         return;
     }
 
@@ -6132,12 +6523,12 @@ fn update_auto_repair(game: &mut GameState, dt: f32) {
     game.save_dirty = true;
     while game.auto_repair_cycle_progress >= AUTO_REPAIR_CYCLE_SECONDS {
         let Some(material) =
-            auto_repair_material_for_inventory(&materials, &game.inventory, missing_hull)
+            auto_repair_material_for_fleet(game, FleetProducer::Active, &materials, missing_hull)
         else {
             break;
         };
         game.auto_repair_cycle_progress -= AUTO_REPAIR_CYCLE_SECONDS;
-        game.inventory.remove_item(&material.item, 1);
+        fleet_consume_item(game, FleetProducer::Active, &material.item, 1);
         let repaired = material.hull_points.min(missing_hull);
         game.ship.systems.hull.restore(repaired);
         missing_hull = (game.ship.systems.hull.max - game.ship.systems.hull.current).max(0.0);
@@ -6170,6 +6561,135 @@ fn pay_cost(inventory: &mut Inventory, cost: &[ItemStack]) {
     for stack in cost {
         inventory.remove_item(&stack.item, stack.count);
     }
+}
+
+fn fleet_producer_position(game: &GameState, producer: FleetProducer) -> Vec2 {
+    match producer {
+        FleetProducer::Active => game.ship.position,
+        FleetProducer::Owned(index) => game.owned_ships[index].ship.position,
+    }
+}
+
+fn fleet_producer_system(game: &GameState, producer: FleetProducer) -> &str {
+    match producer {
+        FleetProducer::Active => &game.current_system_id,
+        FleetProducer::Owned(index) => &game.owned_ships[index].system_id,
+    }
+}
+
+fn fleet_producer_shares(game: &GameState, producer: FleetProducer) -> bool {
+    match producer {
+        FleetProducer::Active => game.share_inventory,
+        FleetProducer::Owned(index) => game.owned_ships[index].share_inventory,
+    }
+}
+
+fn fleet_inventory_count(game: &GameState, producer: FleetProducer, item: &ItemRef) -> u32 {
+    let local = match producer {
+        FleetProducer::Active => game.inventory.count(item),
+        FleetProducer::Owned(index) => game.owned_ships[index].inventory.count(item),
+    };
+    if !fleet_producer_shares(game, producer) {
+        return local;
+    }
+    let position = fleet_producer_position(game, producer);
+    let system = fleet_producer_system(game, producer);
+    let active_peer = match producer {
+        FleetProducer::Active => 0,
+        FleetProducer::Owned(_) => {
+            if game.share_inventory
+                && game.current_system_id == system
+                && game.ship.position.distance(position) <= OWNED_SHIP_TRANSFER_RANGE
+            {
+                game.inventory.count(item)
+            } else {
+                0
+            }
+        }
+    };
+    let owned_peers = game
+        .owned_ships
+        .iter()
+        .enumerate()
+        .filter(|(index, owned)| {
+            !matches!(producer, FleetProducer::Owned(producer_index) if *index == producer_index)
+                && owned.instance_id != game.active_owned_ship_id
+                && owned.share_inventory
+                && owned.system_id == system
+                && owned.ship.position.distance(position) <= OWNED_SHIP_TRANSFER_RANGE
+        })
+        .map(|(_, owned)| owned.inventory.count(item))
+        .sum::<u32>();
+    local
+        .saturating_add(active_peer)
+        .saturating_add(owned_peers)
+}
+
+fn fleet_can_afford(game: &GameState, producer: FleetProducer, cost: &[ItemStack]) -> bool {
+    cost.iter()
+        .all(|stack| fleet_inventory_count(game, producer, &stack.item) >= stack.count)
+}
+
+fn fleet_consume_item(
+    game: &mut GameState,
+    producer: FleetProducer,
+    item: &ItemRef,
+    mut count: u32,
+) {
+    let producer_position = fleet_producer_position(game, producer);
+    let producer_system = fleet_producer_system(game, producer).to_string();
+    let producer_shares = fleet_producer_shares(game, producer);
+    match producer {
+        FleetProducer::Active => {
+            let local = game.inventory.count(item).min(count);
+            game.inventory.remove_item(item, local);
+            count -= local;
+        }
+        FleetProducer::Owned(index) => {
+            let local = game.owned_ships[index].inventory.count(item).min(count);
+            game.owned_ships[index].inventory.remove_item(item, local);
+            count -= local;
+        }
+    }
+    if count == 0 || !producer_shares {
+        return;
+    }
+    if !matches!(producer, FleetProducer::Active)
+        && game.share_inventory
+        && game.current_system_id == producer_system
+        && game.ship.position.distance(producer_position) <= OWNED_SHIP_TRANSFER_RANGE
+    {
+        let amount = game.inventory.count(item).min(count);
+        game.inventory.remove_item(item, amount);
+        count -= amount;
+    }
+    for (index, owned) in game.owned_ships.iter_mut().enumerate() {
+        if count == 0 {
+            break;
+        }
+        if matches!(producer, FleetProducer::Owned(producer_index) if index == producer_index)
+            || owned.instance_id == game.active_owned_ship_id
+            || !owned.share_inventory
+            || owned.system_id != producer_system
+            || owned.ship.position.distance(producer_position) > OWNED_SHIP_TRANSFER_RANGE
+        {
+            continue;
+        }
+        let amount = owned.inventory.count(item).min(count);
+        owned.inventory.remove_item(item, amount);
+        count -= amount;
+    }
+    debug_assert_eq!(count, 0, "fleet affordability and consumption diverged");
+}
+
+fn fleet_pay_cost(game: &mut GameState, producer: FleetProducer, cost: &[ItemStack]) -> bool {
+    if !fleet_can_afford(game, producer, cost) {
+        return false;
+    }
+    for stack in cost {
+        fleet_consume_item(game, producer, &stack.item, stack.count);
+    }
+    true
 }
 
 fn push_operation_feedback(
@@ -6363,12 +6883,15 @@ fn buy_ship_upgrade(game: &mut GameState, upgrade_index: usize) -> bool {
     let Some(upgrade) = game.ship_upgrades.get(upgrade_index).copied() else {
         return false;
     };
+    if !ship_upgrade_is_available(&game.content_registry, &game.ship_id, upgrade.kind) {
+        return false;
+    }
     let cost = upgrade.next_cost(&game.content_registry);
-    if !can_afford_cost(&game.inventory, &cost) {
+    if !fleet_can_afford(game, FleetProducer::Active, &cost) {
         return false;
     }
 
-    pay_cost(&mut game.inventory, &cost);
+    fleet_pay_cost(game, FleetProducer::Active, &cost);
     apply_ship_upgrade(&mut game.ship, upgrade.kind);
     game.ship_upgrades[upgrade_index].level += 1;
     push_operation_feedback(
@@ -6404,10 +6927,29 @@ fn apply_ship_upgrade(ship: &mut Ship, kind: ShipUpgradeKind) {
             ship.systems.shields.max += 15.0;
             ship.systems.shields.restore(15.0);
         }
+        ShipUpgradeKind::DeliveryThrusters => {
+            ship.attributes.engine_strength *= 1.10;
+            ship.attributes.reverse_engine_strength *= 1.10;
+            ship.attributes.turn_thruster_strength *= 1.05;
+        }
+        ShipUpgradeKind::IndustrialPlating => {
+            ship.systems.hull.max += 20.0;
+            ship.systems.hull.restore(20.0);
+        }
+        ShipUpgradeKind::DroneShieldMatrix => {
+            ship.systems.shields.max += 15.0;
+            ship.systems.shields.restore(15.0);
+        }
         ShipUpgradeKind::DroneBay
         | ShipUpgradeKind::FuelSystems
         | ShipUpgradeKind::ScannerArray
-        | ShipUpgradeKind::CargoHold => {}
+        | ShipUpgradeKind::CargoHold
+        | ShipUpgradeKind::MiningHead
+        | ShipUpgradeKind::OreProcessor
+        | ShipUpgradeKind::Smelter
+        | ShipUpgradeKind::CargoPods
+        | ShipUpgradeKind::NavigationCore
+        | ShipUpgradeKind::JobController => {}
     }
 }
 
@@ -6615,25 +7157,6 @@ impl Inventory {
             .sum()
     }
 
-    fn can_craft(&self, recipe: &Recipe) -> bool {
-        recipe
-            .ingredients
-            .iter()
-            .all(|ingredient| self.count(&ingredient.item) >= ingredient.count)
-    }
-
-    fn craft(&mut self, recipe: &Recipe) -> bool {
-        if !self.can_craft(recipe) {
-            return false;
-        }
-
-        for ingredient in &recipe.ingredients {
-            self.remove_item(&ingredient.item, ingredient.count);
-        }
-        self.add_item(recipe.output.item.clone(), recipe.output.count);
-        true
-    }
-
     fn remove_item(&mut self, item: &ItemRef, count: u32) {
         self.remove_item_id(&item.id, count);
     }
@@ -6715,6 +7238,83 @@ fn owned_ship_in_transfer_range(game: &GameState, index: usize) -> bool {
     })
 }
 
+fn clicked_owned_ship_index(game: &GameState, mouse: Vec2) -> Option<usize> {
+    let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
+    game.owned_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, owned)| {
+            owned.instance_id != game.active_owned_ship_id
+                && owned.system_id == game.current_system_id
+        })
+        .filter_map(|(index, owned)| {
+            let screen_position =
+                world_to_screen(owned.ship.position, center, &game.ship, game.camera_zoom);
+            let distance = mouse.distance(screen_position);
+            let click_radius = (owned.ship.radius() * game.camera_zoom).max(18.0);
+            (distance <= click_radius).then_some((index, distance))
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index)
+}
+
+fn open_owned_ship_inventory(game: &mut GameState, index: usize) {
+    if index >= game.owned_ships.len() {
+        return;
+    }
+    game.sync_active_owned_ship();
+    game.selected_owned_ship_index = index;
+    game.fleet_open = true;
+    game.inventory_open = false;
+    game.selected_planet = None;
+    game.selected_station = None;
+    game.selected_npc_ship = None;
+    game.selected_station_service = None;
+}
+
+fn resolve_pending_owned_ship_click(game: &mut GameState, now: f64) {
+    let Some((instance_id, deadline)) = game.pending_owned_ship_click.clone() else {
+        return;
+    };
+    if now < deadline {
+        return;
+    }
+    game.pending_owned_ship_click = None;
+    if let Some(index) = game
+        .owned_ships
+        .iter()
+        .position(|owned| owned.instance_id == instance_id)
+    {
+        open_owned_ship_inventory(game, index);
+        game.audio.play(audio::AudioCue::Select);
+    }
+}
+
+fn handle_owned_ship_click(game: &mut GameState, index: usize, now: f64) {
+    let Some(instance_id) = game
+        .owned_ships
+        .get(index)
+        .map(|owned| owned.instance_id.clone())
+    else {
+        return;
+    };
+    let double_clicked = game
+        .pending_owned_ship_click
+        .as_ref()
+        .is_some_and(|(pending_id, deadline)| pending_id == &instance_id && now <= *deadline);
+    if double_clicked {
+        game.pending_owned_ship_click = None;
+        let switched = switch_active_owned_ship(game, index);
+        game.audio.play(if switched {
+            audio::AudioCue::Confirm
+        } else {
+            audio::AudioCue::Warning
+        });
+    } else {
+        game.pending_owned_ship_click = Some((instance_id, now + OWNED_SHIP_DOUBLE_CLICK_SECONDS));
+    }
+}
+
 fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
     if game
         .owned_ships
@@ -6730,6 +7330,22 @@ fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
         || !game.content_registry.ships.contains_key(&target.ship_id)
     {
         return false;
+    }
+    let paused_job = game.owned_ships[index]
+        .mining_job
+        .as_ref()
+        .is_some_and(|job| {
+            matches!(
+                job.state,
+                MiningDroneJobState::Traveling | MiningDroneJobState::Mining
+            )
+        });
+    if paused_job {
+        if let Some(job) = &mut game.owned_ships[index].mining_job {
+            job.state = MiningDroneJobState::Paused;
+            job.progress = 0.0;
+        }
+        game.owned_ships[index].ship.velocity = Vec2::ZERO;
     }
     game.sync_active_owned_ship();
     game.pending_warp = None;
@@ -6755,6 +7371,13 @@ fn switch_active_owned_ship(game: &mut GameState, index: usize) -> bool {
     game.save_dirty = true;
     let callsign = game.owned_ships[index].callsign.clone();
     push_operation_feedback(game, "Fleet", format!("Control transferred to {callsign}"));
+    if paused_job {
+        push_operation_feedback(
+            game,
+            "Mining drone",
+            format!("{callsign} mining job paused while under direct control"),
+        );
+    }
     true
 }
 
@@ -6765,7 +7388,8 @@ fn acquire_owned_ship(game: &mut GameState, station_index: usize, ship_id: &str)
     if station.system != game.current_system_id
         || !station_in_interaction_range(&game.ship, station)
         || !station.services.iter().any(|service| {
-            service.kind == "garage" && station_service_is_available(game, station, service)
+            matches!(service.kind.as_str(), "garage" | "shipyard")
+                && station_service_is_available(game, station, service)
         })
     {
         return false;
@@ -6813,11 +7437,16 @@ fn acquire_owned_ship(game: &mut GameState, station_index: usize, ship_id: &str)
             &definition.weapon_slots,
         ),
         inventory: Inventory::empty(),
+        share_inventory: true,
+        salvage_active: false,
+        salvage_progress: 0.0,
         upgrades: make_ship_upgrades(),
         shield_recharge_delay_remaining: 0.0,
         auto_repair_enabled: false,
         auto_repair_cycle_progress: 0.0,
         auto_repair_damage_lockout_remaining: 0.0,
+        mining_job: None,
+        smelt_settings: vec![CraftSetting::starter(); game.smelt_recipes.len()],
     };
     game.credits -= price;
     game.owned_ships.push(owned);
@@ -6885,6 +7514,36 @@ fn transfer_owned_ship_item(
         format!("Transferred {} x{amount}", item.name),
     );
     amount
+}
+
+fn take_all_owned_ship_cargo(game: &mut GameState, target_index: usize) -> u32 {
+    if !owned_ship_in_transfer_range(game, target_index) {
+        return 0;
+    }
+    let item_ids = game
+        .owned_ships
+        .get(target_index)
+        .map(|owned| {
+            owned
+                .inventory
+                .slots
+                .iter()
+                .flatten()
+                .map(|stack| stack.item.id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut moved = 0_u32;
+    for item_id in item_ids {
+        moved = moved.saturating_add(transfer_owned_ship_item(
+            game,
+            target_index,
+            &item_id,
+            false,
+            u32::MAX,
+        ));
+    }
+    moved
 }
 
 fn apply_upgrade_save(
@@ -9840,6 +10499,7 @@ fn make_star_layer(
 }
 
 fn update_game(game: &mut GameState, dt: f32) {
+    resolve_pending_owned_ship_click(game, get_time());
     update_window_size_memory(game, dt);
     update_save_state(game, dt);
     clamp_inventory_scrolls(game);
@@ -10039,6 +10699,8 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_orbital_hazards(game, dt);
     update_shield_recharge(game, dt);
     update_inactive_owned_ship_systems(game, dt);
+    update_owned_ship_salvage(game, dt);
+    update_owned_mining_drone_jobs(game, dt);
     update_npc_ships(game, dt);
     update_hostile_npc_pressure(game, dt);
     update_hostile_scanner_contacts(game);
@@ -10141,8 +10803,22 @@ fn update_game(game: &mut GameState, dt: f32) {
                 start_player_warp_charge(game, system_id);
             }
             click_handled = true;
+        } else if let Some(station_index) = clicked_starmap_station_index(mouse, game) {
+            game.selected_station = Some(station_index);
+            game.selected_npc_ship = None;
+            game.starmap_selected_planet = None;
+            game.audio.play(audio::AudioCue::Select);
+            click_handled = true;
+        } else if let Some(npc_index) = clicked_starmap_npc_ship_index(mouse, game) {
+            game.selected_npc_ship = Some(npc_index);
+            game.selected_station = None;
+            game.starmap_selected_planet = None;
+            game.audio.play(audio::AudioCue::Select);
+            click_handled = true;
         } else if let Some(planet_index) = clicked_starmap_planet_index(mouse, game) {
             game.starmap_selected_planet = Some(planet_index);
+            game.selected_station = None;
+            game.selected_npc_ship = None;
             game.audio.play(audio::AudioCue::Select);
             click_handled = true;
         }
@@ -10158,7 +10834,9 @@ fn update_game(game: &mut GameState, dt: f32) {
         && !game.fleet_open
     {
         let mouse = vec2(mouse_position().0, mouse_position().1);
-        if clicked_player_ship(mouse, &game.ship, game.camera_zoom) {
+        if let Some(index) = clicked_owned_ship_index(game, mouse) {
+            handle_owned_ship_click(game, index, get_time());
+        } else if clicked_player_ship(mouse, &game.ship, game.camera_zoom) {
             game.selected_planet = None;
             game.selected_station = None;
             game.selected_npc_ship = None;
@@ -10491,6 +11169,34 @@ fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<Contex
                 },
             ]
         }
+        ContextTarget::OwnedShip(index) => {
+            let Some(owned) = game.owned_ships.get(index) else {
+                return Vec::new();
+            };
+            let destroyed = owned.ship.systems.hull.current <= 0.0;
+            let cargo_empty = inventory_unit_count(&owned.inventory) == 0;
+            let in_range = owned_ship_in_transfer_range(game, index);
+            vec![ContextMenuEntry {
+                action: ContextAction::Salvage,
+                label: if owned.salvage_progress > 0.0 {
+                    "Resume salvage"
+                } else {
+                    "Salvage"
+                },
+                enabled: destroyed && cargo_empty && in_range,
+                detail: if !destroyed {
+                    "Ship can still be repaired"
+                } else if !cargo_empty {
+                    "Empty the wreck's cargo first"
+                } else if !in_range {
+                    "Move within cargo transfer range"
+                } else if owned.salvage_progress > 0.0 {
+                    "Continue saved dismantling progress"
+                } else {
+                    "Dismantle wreck over 150 seconds"
+                },
+            }]
+        }
     }
 }
 
@@ -10559,6 +11265,19 @@ fn context_target_label(game: &GameState, target: ContextTarget) -> (String, Str
                         "Unidentified contact".to_string()
                     },
                     format!("Contact · {}", npc_ship.id),
+                )
+            },
+        ),
+        ContextTarget::OwnedShip(index) => game.owned_ships.get(index).map_or_else(
+            || ("Unavailable wreck".to_string(), "Owned ship".to_string()),
+            |owned| {
+                (
+                    owned.callsign.clone(),
+                    if owned.ship.systems.hull.current <= 0.0 {
+                        "Destroyed fleet wreck".to_string()
+                    } else {
+                        "Owned fleet ship".to_string()
+                    },
                 )
             },
         ),
@@ -10719,6 +11438,23 @@ fn context_target_candidates(game: &GameState, mouse: Vec2) -> Vec<ContextTarget
             });
         }
     }
+    for (index, owned) in game.owned_ships.iter().enumerate() {
+        if owned.instance_id == game.active_owned_ship_id
+            || owned.system_id != game.current_system_id
+            || owned.ship.systems.hull.current > 0.0
+        {
+            continue;
+        }
+        let screen_position =
+            world_to_screen(owned.ship.position, center, &game.ship, game.camera_zoom);
+        let cursor_distance = mouse.distance(screen_position);
+        if cursor_distance <= ship_screen_size(&owned.ship, game.camera_zoom) * 0.65 {
+            candidates.push(ContextTargetCandidate {
+                target: ContextTarget::OwnedShip(index),
+                cursor_distance,
+            });
+        }
+    }
 
     candidates
 }
@@ -10738,6 +11474,11 @@ fn select_context_target(game: &mut GameState, target: ContextTarget) {
             game.selected_station_service = None;
         }
         ContextTarget::NpcShip(index) => select_npc_ship_for_context(game, index),
+        ContextTarget::OwnedShip(index) => {
+            if index < game.owned_ships.len() {
+                game.selected_owned_ship_index = index;
+            }
+        }
     }
 }
 
@@ -10870,6 +11611,23 @@ fn execute_context_action(game: &mut GameState, target: ContextTarget, action: C
             select_npc_ship_for_context(game, index);
             begin_approach(game, ApproachTarget::NpcShip(index));
             push_operation_feedback(game, "Contact", "Autopilot approaching contact".to_string());
+        }
+        (ContextTarget::OwnedShip(index), ContextAction::Salvage) => {
+            let eligible = game.owned_ships.get(index).is_some_and(|owned| {
+                owned.instance_id != game.active_owned_ship_id
+                    && owned.ship.systems.hull.current <= 0.0
+                    && inventory_unit_count(&owned.inventory) == 0
+            }) && owned_ship_in_transfer_range(game, index);
+            if eligible {
+                let callsign = game.owned_ships[index].callsign.clone();
+                game.owned_ships[index].salvage_active = true;
+                game.save_dirty = true;
+                push_operation_feedback(
+                    game,
+                    "Fleet",
+                    format!("Salvage operation started on {callsign}"),
+                );
+            }
         }
         _ => {}
     }
@@ -13300,18 +14058,7 @@ fn max_scroll_offset(row_count: usize, row_height: f32, viewport_height: f32) ->
 }
 
 fn update_production(game: &mut GameState, dt: f32) {
-    let smelted = update_recipes(
-        RecipeUpdate {
-            content_registry: &game.content_registry,
-            inventory: &mut game.inventory,
-            recipes: &game.smelt_recipes,
-            settings: &mut game.smelt_settings,
-            locked_recipes: &game.recipe_vendor_locked_recipes,
-            completed_research: &game.completed_research,
-            work_kind: WorkKind::Smelting,
-        },
-        dt,
-    );
+    let smelted = update_fleet_recipes(game, FleetProducer::Active, RecipeTable::Smelting, dt);
     for stack in smelted {
         let item_name = stack.item.name.clone();
         push_aggregate_operation_feedback(
@@ -13324,18 +14071,7 @@ fn update_production(game: &mut GameState, dt: f32) {
         push_route_ready_feedback(game);
     }
 
-    let crafted = update_recipes(
-        RecipeUpdate {
-            content_registry: &game.content_registry,
-            inventory: &mut game.inventory,
-            recipes: &game.craft_recipes,
-            settings: &mut game.craft_settings,
-            locked_recipes: &game.recipe_vendor_locked_recipes,
-            completed_research: &game.completed_research,
-            work_kind: WorkKind::Fabrication,
-        },
-        dt,
-    );
+    let crafted = update_fleet_recipes(game, FleetProducer::Active, RecipeTable::Crafting, dt);
     for stack in crafted {
         let item_name = stack.item.name.clone();
         push_aggregate_operation_feedback(
@@ -13348,18 +14084,7 @@ fn update_production(game: &mut GameState, dt: f32) {
         push_route_ready_feedback(game);
     }
 
-    let processed = update_recipes(
-        RecipeUpdate {
-            content_registry: &game.content_registry,
-            inventory: &mut game.inventory,
-            recipes: &game.processing_recipes,
-            settings: &mut game.processing_settings,
-            locked_recipes: &game.recipe_vendor_locked_recipes,
-            completed_research: &game.completed_research,
-            work_kind: WorkKind::Fabrication,
-        },
-        dt,
-    );
+    let processed = update_fleet_recipes(game, FleetProducer::Active, RecipeTable::Processing, dt);
     for stack in processed {
         let item_name = stack.item.name.clone();
         push_aggregate_operation_feedback(
@@ -13371,97 +14096,215 @@ fn update_production(game: &mut GameState, dt: f32) {
         );
         push_route_ready_feedback(game);
     }
+
+    update_autonomous_drone_smelting(game, dt);
 }
 
-struct RecipeUpdate<'a> {
-    content_registry: &'a content::ContentRegistry,
-    inventory: &'a mut Inventory,
-    recipes: &'a [Recipe],
-    settings: &'a mut [CraftSetting],
-    locked_recipes: &'a [String],
-    completed_research: &'a [String],
-    work_kind: WorkKind,
+fn update_autonomous_drone_smelting(game: &mut GameState, dt: f32) {
+    let active_id = game.active_owned_ship_id.clone();
+    let mut produced = Vec::new();
+    for index in 0..game.owned_ships.len() {
+        if game.owned_ships[index].instance_id == active_id
+            || game.owned_ships[index].ship.systems.hull.current <= 0.0
+            || ship_upgrade_level(&game.owned_ships[index].upgrades, ShipUpgradeKind::Smelter) == 0
+        {
+            continue;
+        }
+        let callsign = game.owned_ships[index].callsign.clone();
+        let output =
+            update_fleet_recipes(game, FleetProducer::Owned(index), RecipeTable::Smelting, dt);
+        if !output.is_empty() {
+            game.save_dirty = true;
+            produced.extend(output.into_iter().map(|stack| (callsign.clone(), stack)));
+        }
+    }
+    for (callsign, stack) in produced {
+        push_aggregate_operation_feedback(
+            game,
+            "Production",
+            format!("drone-smelt:{}:{}", callsign, stack.item.id),
+            stack.count,
+            |count| format!("{callsign} smelted {} x{count}", stack.item.name),
+        );
+    }
 }
 
-fn update_recipes(update: RecipeUpdate<'_>, dt: f32) -> Vec<ItemStack> {
-    let RecipeUpdate {
-        content_registry,
-        inventory,
-        recipes,
-        settings,
-        locked_recipes,
-        completed_research,
-        work_kind,
-    } = update;
+fn recipe_table(game: &GameState, table: RecipeTable) -> (&[Recipe], &[CraftSetting], WorkKind) {
+    match table {
+        RecipeTable::Smelting => (
+            &game.smelt_recipes,
+            &game.smelt_settings,
+            WorkKind::Smelting,
+        ),
+        RecipeTable::Crafting => (
+            &game.craft_recipes,
+            &game.craft_settings,
+            WorkKind::Fabrication,
+        ),
+        RecipeTable::Processing => (
+            &game.processing_recipes,
+            &game.processing_settings,
+            WorkKind::Fabrication,
+        ),
+    }
+}
 
-    clear_blocked_recipe_progress(
-        inventory,
-        content_registry,
-        recipes,
-        settings,
-        locked_recipes,
-        completed_research,
-    );
-    let Some(recipe_index) = next_recipe_bill_index_for_sets(
-        inventory,
-        content_registry,
-        recipes,
-        settings,
-        locked_recipes,
-        completed_research,
-    ) else {
+fn producer_settings_mut(
+    game: &mut GameState,
+    producer: FleetProducer,
+    table: RecipeTable,
+) -> &mut [CraftSetting] {
+    match (producer, table) {
+        (FleetProducer::Active, RecipeTable::Smelting) => &mut game.smelt_settings,
+        (FleetProducer::Active, RecipeTable::Crafting) => &mut game.craft_settings,
+        (FleetProducer::Active, RecipeTable::Processing) => &mut game.processing_settings,
+        (FleetProducer::Owned(index), RecipeTable::Smelting) => {
+            &mut game.owned_ships[index].smelt_settings
+        }
+        (FleetProducer::Owned(_), _) => &mut [],
+    }
+}
+
+fn producer_settings(
+    game: &GameState,
+    producer: FleetProducer,
+    table: RecipeTable,
+) -> &[CraftSetting] {
+    match (producer, table) {
+        (FleetProducer::Active, RecipeTable::Smelting) => &game.smelt_settings,
+        (FleetProducer::Active, RecipeTable::Crafting) => &game.craft_settings,
+        (FleetProducer::Active, RecipeTable::Processing) => &game.processing_settings,
+        (FleetProducer::Owned(index), RecipeTable::Smelting) => {
+            &game.owned_ships[index].smelt_settings
+        }
+        (FleetProducer::Owned(_), _) => &[],
+    }
+}
+
+fn producer_inventory(game: &GameState, producer: FleetProducer) -> &Inventory {
+    match producer {
+        FleetProducer::Active => &game.inventory,
+        FleetProducer::Owned(index) => &game.owned_ships[index].inventory,
+    }
+}
+
+fn producer_inventory_mut(game: &mut GameState, producer: FleetProducer) -> &mut Inventory {
+    match producer {
+        FleetProducer::Active => &mut game.inventory,
+        FleetProducer::Owned(index) => &mut game.owned_ships[index].inventory,
+    }
+}
+
+fn producer_ship_and_upgrades(
+    game: &GameState,
+    producer: FleetProducer,
+) -> (&Ship, &[ShipUpgrade; SHIP_UPGRADE_COUNT]) {
+    match producer {
+        FleetProducer::Active => (&game.ship, &game.ship_upgrades),
+        FleetProducer::Owned(index) => {
+            let owned = &game.owned_ships[index];
+            (&owned.ship, &owned.upgrades)
+        }
+    }
+}
+
+fn producer_receivable_count(
+    game: &GameState,
+    producer: FleetProducer,
+    item: &ItemRef,
+    requested: u32,
+) -> u32 {
+    let (ship, upgrades) = producer_ship_and_upgrades(game, producer);
+    inventory_receivable_count(
+        producer_inventory(game, producer),
+        ship,
+        upgrades,
+        item,
+        requested,
+    )
+}
+
+fn update_fleet_recipes(
+    game: &mut GameState,
+    producer: FleetProducer,
+    table: RecipeTable,
+    dt: f32,
+) -> Vec<ItemStack> {
+    let recipe_index = {
+        let (recipes, _, _) = recipe_table(game, table);
+        let settings = producer_settings(game, producer, table);
+        recipes
+            .iter()
+            .zip(settings)
+            .enumerate()
+            .find_map(|(index, (recipe, setting))| {
+                let local_output = producer_inventory(game, producer).count(&recipe.output.item);
+                let has_bill =
+                    setting.queued > 0 || (setting.keep > 0 && local_output < setting.keep);
+                (recipe_is_unlocked_from_sets(
+                    &game.content_registry,
+                    &recipe.id,
+                    &game.recipe_vendor_locked_recipes,
+                    &game.completed_research,
+                ) && has_bill
+                    && producer_receivable_count(
+                        game,
+                        producer,
+                        &recipe.output.item,
+                        recipe.output.count,
+                    ) == recipe.output.count
+                    && fleet_can_afford(game, producer, &recipe.ingredients))
+                .then_some(index)
+            })
+    };
+    let Some(recipe_index) = recipe_index else {
         return Vec::new();
     };
-    let recipe = &recipes[recipe_index];
-    let operation_seconds =
-        recipe_operation_seconds(content_registry, completed_research, work_kind, recipe);
-    let setting = &mut settings[recipe_index];
-    setting.progress += dt / operation_seconds;
-    if setting.progress < 1.0 {
+    let (recipe, operation_seconds) = {
+        let (recipes, _, work_kind) = recipe_table(game, table);
+        let recipe = recipes[recipe_index].clone();
+        let seconds = recipe_operation_seconds(
+            &game.content_registry,
+            &game.completed_research,
+            work_kind,
+            &recipe,
+        );
+        (recipe, seconds)
+    };
+    let completed = {
+        let setting = &mut producer_settings_mut(game, producer, table)[recipe_index];
+        setting.progress += dt / operation_seconds.max(0.01);
+        setting.progress >= 1.0
+    };
+    if !completed
+        || producer_receivable_count(game, producer, &recipe.output.item, recipe.output.count)
+            != recipe.output.count
+        || !fleet_pay_cost(game, producer, &recipe.ingredients)
+    {
         return Vec::new();
     }
-    if !inventory.can_craft(recipe) {
-        setting.progress = 0.0;
-        return Vec::new();
-    }
-
-    setting.progress -= 1.0;
-    if setting.queued > 0 {
-        setting.queued = setting.queued.saturating_sub(recipe.output.count);
-    }
-    if inventory.craft(recipe) {
-        let bonus = bonus_output_count(content_registry, completed_research, recipe.output.count);
-        if bonus > 0 {
-            inventory.add_item(recipe.output.item.clone(), bonus);
-        }
-        return vec![ItemStack {
-            item: recipe.output.item.clone(),
-            count: recipe.output.count.saturating_add(bonus),
-        }];
-    }
-    Vec::new()
-}
-
-fn clear_blocked_recipe_progress(
-    inventory: &Inventory,
-    content_registry: &content::ContentRegistry,
-    recipes: &[Recipe],
-    settings: &mut [CraftSetting],
-    locked_recipes: &[String],
-    completed_research: &[String],
-) {
-    for (recipe, setting) in recipes.iter().zip(settings.iter_mut()) {
-        if recipe_has_bill(inventory, recipe, setting)
-            && (!recipe_is_unlocked_from_sets(
-                content_registry,
-                &recipe.id,
-                locked_recipes,
-                completed_research,
-            ) || !inventory.can_craft(recipe))
-        {
-            setting.progress = 0.0;
+    {
+        let setting = &mut producer_settings_mut(game, producer, table)[recipe_index];
+        setting.progress -= 1.0;
+        if setting.queued > 0 {
+            setting.queued = setting.queued.saturating_sub(recipe.output.count);
         }
     }
+    producer_inventory_mut(game, producer)
+        .add_item(recipe.output.item.clone(), recipe.output.count);
+    let bonus = bonus_output_count(
+        &game.content_registry,
+        &game.completed_research,
+        recipe.output.count,
+    );
+    let accepted_bonus = producer_receivable_count(game, producer, &recipe.output.item, bonus);
+    if accepted_bonus > 0 {
+        producer_inventory_mut(game, producer).add_item(recipe.output.item.clone(), accepted_bonus);
+    }
+    vec![ItemStack {
+        item: recipe.output.item,
+        count: recipe.output.count.saturating_add(accepted_bonus),
+    }]
 }
 
 fn next_recipe_bill_index(
@@ -13469,42 +14312,21 @@ fn next_recipe_bill_index(
     recipes: &[Recipe],
     settings: &[CraftSetting],
 ) -> Option<usize> {
-    next_recipe_bill_index_for_sets(
-        &game.inventory,
-        &game.content_registry,
-        recipes,
-        settings,
-        &game.recipe_vendor_locked_recipes,
-        &game.completed_research,
-    )
-}
-
-fn next_recipe_bill_index_for_sets(
-    inventory: &Inventory,
-    content_registry: &content::ContentRegistry,
-    recipes: &[Recipe],
-    settings: &[CraftSetting],
-    locked_recipes: &[String],
-    completed_research: &[String],
-) -> Option<usize> {
     recipes
         .iter()
         .zip(settings.iter())
         .enumerate()
         .find_map(|(index, (recipe, setting))| {
             (recipe_is_unlocked_from_sets(
-                content_registry,
+                &game.content_registry,
                 &recipe.id,
-                locked_recipes,
-                completed_research,
-            ) && recipe_has_bill(inventory, recipe, setting)
-                && inventory.can_craft(recipe))
+                &game.recipe_vendor_locked_recipes,
+                &game.completed_research,
+            ) && (setting.queued > 0
+                || (setting.keep > 0 && game.inventory.count(&recipe.output.item) < setting.keep))
+                && fleet_can_afford(game, FleetProducer::Active, &recipe.ingredients))
             .then_some(index)
         })
-}
-
-fn recipe_has_bill(inventory: &Inventory, recipe: &Recipe, setting: &CraftSetting) -> bool {
-    setting.queued > 0 || (setting.keep > 0 && inventory.count(&recipe.output.item) < setting.keep)
 }
 
 fn update_mining(game: &mut GameState, dt: f32) {
@@ -13612,7 +14434,8 @@ fn update_shield_recharge(game: &mut GameState, dt: f32) {
 
 fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
     let mut auto_repair_state_changed = false;
-    for owned in &mut game.owned_ships {
+    let mut auto_repair_candidates = Vec::new();
+    for (index, owned) in game.owned_ships.iter_mut().enumerate() {
         if owned.instance_id == game.active_owned_ship_id || owned.ship.systems.hull.current <= 0.0
         {
             continue;
@@ -13621,6 +14444,12 @@ fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
         owned.auto_repair_damage_lockout_remaining =
             (owned.auto_repair_damage_lockout_remaining - dt).max(0.0);
         auto_repair_state_changed |= owned.auto_repair_damage_lockout_remaining != previous_lockout;
+        let repair_dt = if previous_lockout > 0.0 {
+            (dt - previous_lockout).max(0.0)
+        } else {
+            dt
+        };
+        auto_repair_candidates.push((index, repair_dt));
         if owned.system_id != game.current_system_id {
             continue;
         }
@@ -13645,8 +14474,664 @@ fn update_inactive_owned_ship_systems(game: &mut GameState, dt: f32) {
         let shield_recharge = owned_ship_shield_recharge_rate(owned);
         owned.ship.systems.shields.restore(shield_recharge * dt);
     }
+
+    let materials = auto_repair_materials(&game.content_registry, &game.completed_research);
+    let mut repair_feedback = Vec::new();
+    if !materials.is_empty() {
+        for (index, repair_dt) in auto_repair_candidates {
+            let missing_hull = (game.owned_ships[index].ship.systems.hull.max
+                - game.owned_ships[index].ship.systems.hull.current)
+                .max(0.0);
+            if missing_hull <= f32::EPSILON {
+                if game.owned_ships[index].auto_repair_cycle_progress > 0.0 {
+                    game.owned_ships[index].auto_repair_cycle_progress = 0.0;
+                    auto_repair_state_changed = true;
+                }
+                continue;
+            }
+            if !game.owned_ships[index].auto_repair_enabled
+                || game.owned_ships[index].auto_repair_damage_lockout_remaining > 0.0
+                || auto_repair_material_for_fleet(
+                    game,
+                    FleetProducer::Owned(index),
+                    &materials,
+                    missing_hull,
+                )
+                .is_none()
+            {
+                continue;
+            }
+
+            game.owned_ships[index].auto_repair_cycle_progress += repair_dt;
+            auto_repair_state_changed = true;
+            loop {
+                if game.owned_ships[index].auto_repair_cycle_progress < AUTO_REPAIR_CYCLE_SECONDS {
+                    break;
+                }
+                let missing_hull = (game.owned_ships[index].ship.systems.hull.max
+                    - game.owned_ships[index].ship.systems.hull.current)
+                    .max(0.0);
+                let Some(material) = auto_repair_material_for_fleet(
+                    game,
+                    FleetProducer::Owned(index),
+                    &materials,
+                    missing_hull,
+                ) else {
+                    break;
+                };
+                game.owned_ships[index].auto_repair_cycle_progress -= AUTO_REPAIR_CYCLE_SECONDS;
+                fleet_consume_item(game, FleetProducer::Owned(index), &material.item, 1);
+                let repaired = material.hull_points.min(missing_hull);
+                let owned = &mut game.owned_ships[index];
+                owned.ship.systems.hull.restore(repaired);
+                repair_feedback.push((
+                    owned.callsign.clone(),
+                    material.item.clone(),
+                    material.hull_points,
+                ));
+                if owned.ship.systems.hull.current >= owned.ship.systems.hull.max {
+                    owned.auto_repair_cycle_progress = 0.0;
+                    break;
+                }
+            }
+        }
+    }
     if auto_repair_state_changed {
         game.save_dirty = true;
+    }
+    for (callsign, item, hull_points) in repair_feedback {
+        push_aggregate_operation_feedback(
+            game,
+            "Repair",
+            format!("auto-repair:{callsign}:{}", item.id),
+            1,
+            |count| {
+                format!(
+                    "{callsign} Auto Repair restored hull using {count} {} ({hull_points:.0} hull capacity each)",
+                    item.name
+                )
+            },
+        );
+    }
+}
+
+fn owned_ship_salvage_yield(game: &GameState, index: usize) -> Vec<ItemStack> {
+    let Some(owned) = game.owned_ships.get(index) else {
+        return Vec::new();
+    };
+    let iron_count = (owned.ship.attributes.mass / 14_000.0).round().max(1.0) as u32;
+    let copper_count = (owned.ship.attributes.mass / 32_000.0).round().max(1.0) as u32;
+    [
+        ("core:iron_plate", iron_count),
+        ("core:copper_plate", copper_count),
+    ]
+    .into_iter()
+    .filter_map(|(item_id, count)| {
+        registry_item(&game.content_registry, item_id).map(|item| ItemStack { item, count })
+    })
+    .collect()
+}
+
+fn active_inventory_with_salvage_yield(
+    game: &GameState,
+    salvage: &[ItemStack],
+) -> Option<Inventory> {
+    let mut inventory = game.inventory.clone();
+    for stack in salvage {
+        if inventory_receivable_count(
+            &inventory,
+            &game.ship,
+            &game.ship_upgrades,
+            &stack.item,
+            stack.count,
+        ) != stack.count
+        {
+            return None;
+        }
+        inventory.add_item(stack.item.clone(), stack.count);
+    }
+    Some(inventory)
+}
+
+fn update_owned_ship_salvage(game: &mut GameState, dt: f32) {
+    let dt = finite_nonnegative_or(dt, 0.0);
+    let mut completed = None;
+    for index in 0..game.owned_ships.len() {
+        if !game.owned_ships[index].salvage_active {
+            continue;
+        }
+        let eligible = game.owned_ships[index].instance_id != game.active_owned_ship_id
+            && game.owned_ships[index].ship.systems.hull.current <= 0.0
+            && inventory_unit_count(&game.owned_ships[index].inventory) == 0;
+        if !eligible || !owned_ship_in_transfer_range(game, index) {
+            game.owned_ships[index].salvage_active = false;
+            game.save_dirty = true;
+            continue;
+        }
+        game.owned_ships[index].salvage_progress =
+            (game.owned_ships[index].salvage_progress + dt).min(OWNED_SHIP_SALVAGE_SECONDS);
+        game.save_dirty = true;
+        if game.owned_ships[index].salvage_progress >= OWNED_SHIP_SALVAGE_SECONDS {
+            let salvage = owned_ship_salvage_yield(game, index);
+            if let Some(inventory) = active_inventory_with_salvage_yield(game, &salvage) {
+                completed = Some((index, inventory, salvage));
+            }
+        }
+    }
+
+    let Some((index, inventory, salvage)) = completed else {
+        return;
+    };
+    let callsign = game.owned_ships[index].callsign.clone();
+    game.inventory = inventory;
+    game.owned_ships.remove(index);
+    game.selected_owned_ship_index = game
+        .selected_owned_ship_index
+        .min(game.owned_ships.len().saturating_sub(1));
+    game.sync_active_owned_ship();
+    game.save_dirty = true;
+    let recovered = salvage
+        .iter()
+        .map(|stack| format!("{} x{}", stack.item.name, stack.count))
+        .collect::<Vec<_>>()
+        .join(", ");
+    push_operation_feedback(
+        game,
+        "Fleet",
+        format!("Salvaged {callsign}; recovered {recovered}"),
+    );
+}
+
+fn move_owned_ship_toward(owned: &mut OwnedShip, target: Vec2, dt: f32) -> bool {
+    let offset = target - owned.ship.position;
+    let distance = offset.length();
+    if distance <= 2.0 {
+        owned.ship.position = target;
+        owned.ship.velocity = Vec2::ZERO;
+        owned.ship.angular_velocity = 0.0;
+        return true;
+    }
+    let direction = offset / distance;
+    let speed = autopilot_speed_for_distance(
+        distance,
+        owned.ship.forward_acceleration(),
+        PLAYER_APPROACH_SPEED,
+    );
+    let desired_velocity = direction * speed;
+    let acceleration = autopilot_velocity_change_acceleration(
+        owned.ship.velocity,
+        desired_velocity,
+        owned.ship.forward_acceleration(),
+        owned.ship.reverse_acceleration(),
+    );
+    owned.ship.velocity =
+        move_toward_vec2(owned.ship.velocity, desired_velocity, acceleration * dt);
+    if owned.ship.velocity.length_squared() > 0.01 {
+        owned.ship.angle = owned.ship.velocity.y.atan2(owned.ship.velocity.x);
+    }
+    let movement = owned.ship.velocity * dt;
+    if movement.length() >= distance {
+        owned.ship.position = target;
+        owned.ship.velocity = Vec2::ZERO;
+        owned.ship.angular_velocity = 0.0;
+        true
+    } else {
+        owned.ship.position += movement;
+        false
+    }
+}
+
+fn move_owned_ship_into_transfer_range(owned: &mut OwnedShip, target: Vec2, dt: f32) -> bool {
+    let offset = owned.ship.position - target;
+    let distance = offset.length();
+    if distance <= OWNED_SHIP_TRANSFER_RANGE {
+        owned.ship.velocity = Vec2::ZERO;
+        owned.ship.angular_velocity = 0.0;
+        return true;
+    }
+    let approach_direction = safe_direction(offset, vec2(1.0, 0.0));
+    let rendezvous = target + approach_direction * OWNED_SHIP_TRANSFER_RANGE;
+    move_owned_ship_toward(owned, rendezvous, dt)
+}
+
+fn mining_drone_job_blocker(
+    planets: &[Planet],
+    owned: &OwnedShip,
+    job: &MiningDroneJob,
+    profile: &content::MiningDroneDef,
+) -> Option<MiningDroneBlocker> {
+    if job.system != owned.system_id {
+        return Some(MiningDroneBlocker::CrossSystem);
+    }
+    let Some(planet) = planets
+        .iter()
+        .find(|planet| planet.id == job.planet && planet.system == job.system)
+    else {
+        return Some(MiningDroneBlocker::MissingPlanet);
+    };
+    if !planet
+        .info
+        .mineables
+        .iter()
+        .any(|mineable| mineable.item.id == job.resource)
+    {
+        return Some(MiningDroneBlocker::ResourceUnavailable);
+    }
+    let dispatch = vec2(job.dispatch_position[0], job.dispatch_position[1]);
+    if dispatch.distance(planet.position) > mining_drone_operating_range(profile, &owned.upgrades) {
+        return Some(MiningDroneBlocker::OutOfRange);
+    }
+    None
+}
+
+fn transfer_inventory_contents(
+    source: &mut Inventory,
+    recipient: &mut Inventory,
+    recipient_ship: &Ship,
+    recipient_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
+) -> u32 {
+    let stacks = source
+        .slots
+        .iter()
+        .filter_map(|slot| slot.as_ref())
+        .map(|stack| (stack.item.clone(), stack.count))
+        .collect::<Vec<_>>();
+    let mut moved = 0_u32;
+    for (item, count) in stacks {
+        let amount =
+            inventory_receivable_count(recipient, recipient_ship, recipient_upgrades, &item, count);
+        if amount > 0 {
+            source.remove_item(&item, amount);
+            recipient.add_item(item, amount);
+            moved = moved.saturating_add(amount);
+        }
+    }
+    moved
+}
+
+fn inventory_unit_count(inventory: &Inventory) -> u32 {
+    inventory
+        .slots
+        .iter()
+        .filter_map(|slot| slot.as_ref())
+        .map(|stack| stack.count)
+        .sum()
+}
+
+fn deliver_owned_ship_cargo(game: &mut GameState, drone_id: &str, target_id: &str) -> (u32, u32) {
+    let Some(drone_index) = game
+        .owned_ships
+        .iter()
+        .position(|ship| ship.instance_id == drone_id)
+    else {
+        return (0, 0);
+    };
+    if target_id == game.active_owned_ship_id {
+        let source = &mut game.owned_ships[drone_index].inventory;
+        let moved = transfer_inventory_contents(
+            source,
+            &mut game.inventory,
+            &game.ship,
+            &game.ship_upgrades,
+        );
+        let remaining = inventory_unit_count(source);
+        game.sync_active_owned_ship();
+        return (moved, remaining);
+    }
+    let Some(target_index) = game
+        .owned_ships
+        .iter()
+        .position(|ship| ship.instance_id == target_id)
+    else {
+        return (
+            0,
+            inventory_unit_count(&game.owned_ships[drone_index].inventory),
+        );
+    };
+    if drone_index == target_index {
+        return (
+            0,
+            inventory_unit_count(&game.owned_ships[drone_index].inventory),
+        );
+    }
+    let (source, recipient) = if drone_index < target_index {
+        let (before, after) = game.owned_ships.split_at_mut(target_index);
+        (&mut before[drone_index], &mut after[0])
+    } else {
+        let (before, after) = game.owned_ships.split_at_mut(drone_index);
+        (&mut after[0], &mut before[target_index])
+    };
+    let moved = transfer_inventory_contents(
+        &mut source.inventory,
+        &mut recipient.inventory,
+        &recipient.ship,
+        &recipient.upgrades,
+    );
+    (moved, inventory_unit_count(&source.inventory))
+}
+
+fn update_owned_mining_drone_jobs(game: &mut GameState, dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+    let active_id = game.active_owned_ship_id.clone();
+    let registry = &game.content_registry;
+    let planets = &game.planets;
+    let completed_research = &game.completed_research;
+    let mut events = Vec::new();
+    let mut delivery_targets = game
+        .owned_ships
+        .iter()
+        .map(|ship| {
+            (
+                ship.instance_id.clone(),
+                (
+                    ship.system_id.clone(),
+                    ship.ship.position,
+                    ship.ship.systems.hull.current > 0.0
+                        && registry.ships.contains_key(&ship.ship_id),
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    delivery_targets.insert(
+        game.active_owned_ship_id.clone(),
+        (
+            game.current_system_id.clone(),
+            game.ship.position,
+            game.ship.systems.hull.current > 0.0 && registry.ships.contains_key(&game.ship_id),
+        ),
+    );
+    let mut pending_deliveries = Vec::new();
+    let mut changed = false;
+
+    for owned in &mut game.owned_ships {
+        let Some(profile) = registry
+            .ships
+            .get(&owned.ship_id)
+            .and_then(|definition| definition.mining_drone.clone())
+        else {
+            continue;
+        };
+        let Some(mut job) = owned.mining_job.clone() else {
+            continue;
+        };
+        if owned.ship.systems.hull.current <= 0.0 {
+            if job.state != MiningDroneJobState::Destroyed {
+                job.state = MiningDroneJobState::Destroyed;
+                job.blocker = None;
+                events.push(format!("{} was destroyed; mining job lost", owned.callsign));
+                changed = true;
+            }
+            owned.mining_job = Some(job);
+            continue;
+        }
+        if owned.instance_id == active_id {
+            continue;
+        }
+        if matches!(
+            job.state,
+            MiningDroneJobState::Paused
+                | MiningDroneJobState::Blocked
+                | MiningDroneJobState::Completed
+                | MiningDroneJobState::Holding
+                | MiningDroneJobState::Destroyed
+        ) {
+            continue;
+        }
+        if job.state == MiningDroneJobState::Interrupted {
+            job.state = MiningDroneJobState::Returning;
+            job.return_behavior = MiningDroneReturnBehavior::ReturnToDispatch;
+            job.delivery_ship = None;
+            events.push(format!(
+                "{} recalled after hostile interruption",
+                owned.callsign
+            ));
+            changed = true;
+        }
+        if !matches!(job.state, MiningDroneJobState::Returning) {
+            if let Some(blocker) = mining_drone_job_blocker(planets, owned, &job, &profile) {
+                job.state = MiningDroneJobState::Blocked;
+                job.blocker = Some(blocker);
+                owned.ship.velocity = Vec2::ZERO;
+                events.push(format!("{} blocked: {}", owned.callsign, blocker.label()));
+                owned.mining_job = Some(job);
+                changed = true;
+                continue;
+            }
+        }
+
+        match job.state {
+            MiningDroneJobState::Traveling => {
+                let planet = planets
+                    .iter()
+                    .find(|planet| planet.id == job.planet && planet.system == job.system)
+                    .expect("validated mining destination");
+                let dispatch = vec2(job.dispatch_position[0], job.dispatch_position[1]);
+                let direction = safe_direction(dispatch - planet.position, vec2(1.0, 0.0));
+                let stop_radius = body_approach_stop_radius(
+                    planet.radius,
+                    owned.ship.radius(),
+                    planet_interaction_radius(&owned.ship, planet),
+                );
+                let target = planet.position + direction * stop_radius;
+                if move_owned_ship_toward(owned, target, dt) {
+                    job.state = MiningDroneJobState::Mining;
+                    job.progress = 0.0;
+                    events.push(format!("{} began mining {}", owned.callsign, job.resource));
+                }
+                changed = true;
+            }
+            MiningDroneJobState::Mining => {
+                let planet = planets
+                    .iter()
+                    .find(|planet| planet.id == job.planet && planet.system == job.system)
+                    .expect("validated mining destination");
+                if !planet_in_interaction_range(&owned.ship, planet) {
+                    job.state = MiningDroneJobState::Traveling;
+                    changed = true;
+                } else if let Some(item) = registry_item(registry, &job.resource) {
+                    if inventory_receivable_count(
+                        &owned.inventory,
+                        &owned.ship,
+                        &owned.upgrades,
+                        &item,
+                        1,
+                    ) == 0
+                    {
+                        job.blocker = Some(MiningDroneBlocker::CargoFull);
+                        job.state =
+                            if job.return_behavior != MiningDroneReturnBehavior::HoldAtTarget {
+                                MiningDroneJobState::Returning
+                            } else {
+                                owned.ship.velocity = Vec2::ZERO;
+                                MiningDroneJobState::Blocked
+                            };
+                        events.push(format!("{} cargo hold is full", owned.callsign));
+                        changed = true;
+                    } else {
+                        let mineable_index = planet
+                            .info
+                            .mineables
+                            .iter()
+                            .position(|mineable| mineable.item.id == job.resource)
+                            .expect("validated mining resource");
+                        let seconds = mining_operation_seconds(registry, completed_research)
+                            * planet_hazard_mining_slowdown(planet)
+                            / mineable_richness_multiplier(planet, mineable_index)
+                            / mining_drone_throughput(&profile, &owned.upgrades);
+                        job.progress += dt / seconds.max(0.01);
+                        while job.progress >= 1.0 && job.mined < job.quota {
+                            if inventory_receivable_count(
+                                &owned.inventory,
+                                &owned.ship,
+                                &owned.upgrades,
+                                &item,
+                                1,
+                            ) == 0
+                            {
+                                job.blocker = Some(MiningDroneBlocker::CargoFull);
+                                job.state = if job.return_behavior
+                                    != MiningDroneReturnBehavior::HoldAtTarget
+                                {
+                                    MiningDroneJobState::Returning
+                                } else {
+                                    MiningDroneJobState::Blocked
+                                };
+                                break;
+                            }
+                            owned.inventory.add_item(item.clone(), 1);
+                            job.mined += 1;
+                            if let Some(leg) = job.route.get_mut(job.active_leg) {
+                                leg.mined = job.mined;
+                            }
+                            job.progress -= 1.0;
+                            if rand::gen_range(0.0, 1.0)
+                                < mining_drone_bonus_ore_chance(&owned.upgrades)
+                                && inventory_receivable_count(
+                                    &owned.inventory,
+                                    &owned.ship,
+                                    &owned.upgrades,
+                                    &item,
+                                    1,
+                                ) > 0
+                            {
+                                owned.inventory.add_item(item.clone(), 1);
+                            }
+                        }
+                        if job.mined >= job.quota {
+                            job.progress = 0.0;
+                            job.blocker = None;
+                            events.push(format!(
+                                "{} completed route leg {}/{}: {} {}",
+                                owned.callsign,
+                                job.active_leg + 1,
+                                job.route.len(),
+                                job.mined,
+                                job.resource
+                            ));
+                            if let Some(next_leg) = job.route.get(job.active_leg + 1).cloned() {
+                                job.active_leg += 1;
+                                job.planet = next_leg.planet;
+                                job.resource = next_leg.resource;
+                                job.quota = next_leg.quota;
+                                job.mined = next_leg.mined;
+                                job.state = MiningDroneJobState::Traveling;
+                                events.push(format!(
+                                    "{} proceeding to mining route leg {}/{}",
+                                    owned.callsign,
+                                    job.active_leg + 1,
+                                    job.route.len()
+                                ));
+                            } else {
+                                job.state = match job.return_behavior {
+                                    MiningDroneReturnBehavior::DeliverToShip
+                                    | MiningDroneReturnBehavior::ReturnToDispatch => {
+                                        MiningDroneJobState::Returning
+                                    }
+                                    MiningDroneReturnBehavior::HoldAtTarget => {
+                                        owned.ship.velocity = Vec2::ZERO;
+                                        MiningDroneJobState::Holding
+                                    }
+                                };
+                            }
+                        }
+                        changed = true;
+                    }
+                } else {
+                    job.state = MiningDroneJobState::Blocked;
+                    job.blocker = Some(MiningDroneBlocker::MissingResource);
+                    events.push(format!(
+                        "{} blocked: resource content is unavailable",
+                        owned.callsign
+                    ));
+                    changed = true;
+                }
+            }
+            MiningDroneJobState::Returning => {
+                if job.return_behavior == MiningDroneReturnBehavior::DeliverToShip {
+                    let Some(target_id) = job.delivery_ship.as_deref() else {
+                        job.state = MiningDroneJobState::Blocked;
+                        job.blocker = Some(MiningDroneBlocker::DeliveryShipUnavailable);
+                        owned.mining_job = Some(job);
+                        changed = true;
+                        continue;
+                    };
+                    let Some((target_system, target_position, target_available)) =
+                        delivery_targets.get(target_id)
+                    else {
+                        job.state = MiningDroneJobState::Blocked;
+                        job.blocker = Some(MiningDroneBlocker::DeliveryShipUnavailable);
+                        owned.mining_job = Some(job);
+                        changed = true;
+                        continue;
+                    };
+                    if !target_available {
+                        job.state = MiningDroneJobState::Blocked;
+                        job.blocker = Some(MiningDroneBlocker::DeliveryShipUnavailable);
+                    } else if target_system != &owned.system_id {
+                        job.state = MiningDroneJobState::Blocked;
+                        job.blocker = Some(MiningDroneBlocker::DeliveryShipCrossSystem);
+                    } else if move_owned_ship_into_transfer_range(owned, *target_position, dt) {
+                        pending_deliveries.push((owned.instance_id.clone(), target_id.to_string()));
+                    }
+                } else {
+                    let target = vec2(job.dispatch_position[0], job.dispatch_position[1]);
+                    if move_owned_ship_toward(owned, target, dt) {
+                        job.state = if job.blocker.is_some() {
+                            MiningDroneJobState::Blocked
+                        } else {
+                            MiningDroneJobState::Completed
+                        };
+                        events.push(format!("{} returned to its dispatch point", owned.callsign));
+                    }
+                }
+                changed = true;
+            }
+            MiningDroneJobState::Interrupted => unreachable!(),
+            MiningDroneJobState::Holding
+            | MiningDroneJobState::Paused
+            | MiningDroneJobState::Blocked
+            | MiningDroneJobState::Completed
+            | MiningDroneJobState::Destroyed => {}
+        }
+        owned.mining_job = Some(job);
+    }
+    for (drone_id, target_id) in pending_deliveries {
+        let (moved, remaining) = deliver_owned_ship_cargo(game, &drone_id, &target_id);
+        let target_name = game
+            .owned_ships
+            .iter()
+            .find(|ship| ship.instance_id == target_id)
+            .map(|ship| ship.callsign.clone())
+            .unwrap_or_else(|| "fleet ship".to_string());
+        if let Some(drone) = game
+            .owned_ships
+            .iter_mut()
+            .find(|ship| ship.instance_id == drone_id)
+        {
+            if let Some(job) = &mut drone.mining_job {
+                if remaining > 0 {
+                    job.state = MiningDroneJobState::Blocked;
+                    job.blocker = Some(MiningDroneBlocker::DeliveryShipCargoFull);
+                } else if job.blocker.is_some() {
+                    job.state = MiningDroneJobState::Blocked;
+                } else {
+                    job.state = MiningDroneJobState::Completed;
+                }
+            }
+            events.push(format!(
+                "{} delivered {moved} cargo unit(s) to {target_name}",
+                drone.callsign
+            ));
+        }
+        changed = true;
+    }
+    if changed {
+        game.save_dirty = true;
+    }
+    for message in events {
+        push_operation_feedback(game, "Mining drone", message);
     }
 }
 
@@ -15548,16 +17033,6 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, panel_corner: O
     }
 }
 
-fn nearby_garage_index(game: &GameState) -> Option<usize> {
-    game.stations.iter().position(|station| {
-        station.system == game.current_system_id
-            && station_in_interaction_range(&game.ship, station)
-            && station.services.iter().any(|service| {
-                service.kind == "garage" && station_service_is_available(game, station, service)
-            })
-    })
-}
-
 fn draw_debug_console_hint(game: &GameState) {
     if game.debug_console.open {
         return;
@@ -16001,6 +17476,55 @@ fn clicked_starmap_planet_index(mouse: Vec2, game: &GameState) -> Option<usize> 
                 .then_some((index, mouse.distance_squared(screen_pos)))
         })
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index)
+}
+
+fn starmap_contains_click(mouse: Vec2, game: &GameState) -> bool {
+    let (x, y, width, height) = starmap_panel_rect(game);
+    mouse.x >= x
+        && mouse.x <= x + width
+        && mouse.y >= y
+        && mouse.y <= y + height
+        && !known_systems_panel_rect(game).contains(mouse)
+}
+
+fn clicked_starmap_station_index(mouse: Vec2, game: &GameState) -> Option<usize> {
+    if !starmap_contains_click(mouse, game) {
+        return None;
+    }
+    let (x, y, width, height) = starmap_panel_rect(game);
+    let camera = starmap_camera(x, y, width, height);
+    let transform = starmap_transform(game);
+    game.stations
+        .iter()
+        .enumerate()
+        .filter(|(_, station)| station_is_in_system(station, &game.current_system_id))
+        .filter_map(|(index, station)| {
+            let screen_pos = starmap_poi_screen_pos(station.position, 16.0, &camera, transform);
+            (mouse.distance(screen_pos) <= 22.0)
+                .then_some((index, mouse.distance_squared(screen_pos)))
+        })
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(index, _)| index)
+}
+
+fn clicked_starmap_npc_ship_index(mouse: Vec2, game: &GameState) -> Option<usize> {
+    if !starmap_contains_click(mouse, game) {
+        return None;
+    }
+    let (x, y, width, height) = starmap_panel_rect(game);
+    let camera = starmap_camera(x, y, width, height);
+    let transform = starmap_transform(game);
+    game.npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc)| npc_ship_is_in_system(npc, &game.current_system_id))
+        .filter_map(|(index, npc)| {
+            let screen_pos = starmap_poi_screen_pos(npc.position, 12.0, &camera, transform);
+            (mouse.distance(screen_pos) <= 20.0)
+                .then_some((index, mouse.distance_squared(screen_pos)))
+        })
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
         .map(|(index, _)| index)
 }
 
@@ -17238,6 +18762,26 @@ fn draw_inactive_owned_ship(
     );
     draw_ship_status_arcs(screen_pos, &owned.ship, zoom);
 
+    if destroyed && owned.salvage_progress > 0.0 {
+        let progress = (owned.salvage_progress / OWNED_SHIP_SALVAGE_SECONDS).clamp(0.0, 1.0);
+        let bar_width = size.max(54.0);
+        let bar_y = screen_pos.y - size * 0.68 - 9.0;
+        draw_rectangle(
+            screen_pos.x - bar_width * 0.5,
+            bar_y,
+            bar_width,
+            5.0,
+            Color::from_rgba(30, 25, 20, 220),
+        );
+        draw_rectangle(
+            screen_pos.x - bar_width * 0.5,
+            bar_y,
+            bar_width * progress,
+            5.0,
+            Color::from_rgba(226, 190, 92, 230),
+        );
+    }
+
     let label = fit_debug_text(&owned.callsign, 180.0, 15);
     let label_size = measure_text(&label, None, 15, 1.0);
     draw_text(
@@ -17600,6 +19144,35 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
             transform,
         );
     }
+    for (index, station) in game
+        .stations
+        .iter()
+        .enumerate()
+        .filter(|(_, station)| station_is_in_system(station, &game.current_system_id))
+    {
+        draw_starmap_station_3d(station, game.selected_station == Some(index), transform);
+    }
+    for (index, npc) in game
+        .npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc)| npc_ship_is_in_system(npc, &game.current_system_id))
+    {
+        let identified = npc_intel_level(game, npc) >= CombatIntelLevel::Identity;
+        draw_starmap_npc_ship_3d(
+            npc,
+            game.selected_npc_ship == Some(index),
+            identified && npc_ship_is_hostile(&game.content_registry, npc),
+            transform,
+        );
+    }
+    for owned in game.owned_ships.iter().filter(|owned| {
+        owned.instance_id != game.active_owned_ship_id
+            && owned.system_id == game.current_system_id
+            && owned.ship.systems.hull.current > 0.0
+    }) {
+        draw_starmap_owned_ship_3d(owned, transform);
+    }
     draw_starmap_ship_3d(&game.ship, transform);
 
     set_default_camera();
@@ -17607,6 +19180,7 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
     draw_rectangle(x, y, width, height, Color::from_rgba(4, 12, 18, 24));
     draw_panel_corner_art(Rect::new(x, y, width, height), panel_corner);
     draw_starmap_planet_markers(game, &camera);
+    draw_starmap_poi_markers(game, &camera);
     draw_text(
         "3D Starmap",
         x + GAME_PANEL_HEADER_PAD_X,
@@ -17615,7 +19189,7 @@ fn draw_starmap_overlay(game: &GameState, panel_corner: Option<&Texture2D>) {
         Color::from_rgba(235, 242, 226, 255),
     );
     let help = fit_debug_text(
-        "Drag header move   Wheel zoom   Right-drag pan   Drag corner resize   Click select   F/R filters",
+        "Drag header move   Wheel zoom   Right-drag pan   Click POI   F/R planet filters",
         (width - 280.0).max(40.0),
         16,
     );
@@ -17792,6 +19366,82 @@ fn draw_starmap_planet_markers(game: &GameState, camera: &Camera3D) {
     }
 }
 
+fn draw_starmap_poi_markers(game: &GameState, camera: &Camera3D) {
+    let transform = starmap_transform(game);
+    for (index, station) in game
+        .stations
+        .iter()
+        .enumerate()
+        .filter(|(_, station)| station_is_in_system(station, &game.current_system_id))
+    {
+        let screen = starmap_poi_screen_pos(station.position, 16.0, camera, transform);
+        let selected = game.selected_station == Some(index);
+        let color = if selected {
+            Color::from_rgba(255, 206, 88, 245)
+        } else {
+            Color::from_rgba(120, 208, 255, 225)
+        };
+        draw_rectangle_lines(screen.x - 7.0, screen.y - 7.0, 14.0, 14.0, 2.0, color);
+        if selected {
+            draw_circle_lines(screen.x, screen.y, 13.0, 1.5, color);
+        }
+        draw_starmap_poi_label(screen, &station.name, color);
+    }
+    for (index, npc) in game
+        .npc_ships
+        .iter()
+        .enumerate()
+        .filter(|(_, npc)| npc_ship_is_in_system(npc, &game.current_system_id))
+    {
+        let screen = starmap_poi_screen_pos(npc.position, 12.0, camera, transform);
+        let identified = npc_intel_level(game, npc) >= CombatIntelLevel::Identity;
+        let hostile = identified && npc_ship_is_hostile(&game.content_registry, npc);
+        let selected = game.selected_npc_ship == Some(index);
+        let color = if hostile {
+            Color::from_rgba(255, 104, 94, 235)
+        } else if selected {
+            Color::from_rgba(255, 206, 88, 245)
+        } else if identified {
+            Color::from_rgba(184, 221, 175, 220)
+        } else {
+            Color::from_rgba(212, 175, 104, 210)
+        };
+        draw_triangle(
+            vec2(screen.x, screen.y - 8.0),
+            vec2(screen.x - 7.0, screen.y + 6.0),
+            vec2(screen.x + 7.0, screen.y + 6.0),
+            color,
+        );
+        if selected {
+            draw_circle_lines(screen.x, screen.y, 13.0, 1.5, color);
+        }
+        draw_starmap_poi_label(screen, starmap_npc_label(game, npc), color);
+    }
+    for owned in game.owned_ships.iter().filter(|owned| {
+        owned.instance_id != game.active_owned_ship_id
+            && owned.system_id == game.current_system_id
+            && owned.ship.systems.hull.current > 0.0
+    }) {
+        let screen = starmap_poi_screen_pos(owned.ship.position, 10.0, camera, transform);
+        let color = Color::from_rgba(116, 235, 178, 220);
+        draw_circle_lines(screen.x, screen.y, 7.0, 2.0, color);
+        draw_starmap_poi_label(screen, &owned.callsign, color);
+    }
+}
+
+fn draw_starmap_poi_label(position: Vec2, label: &str, color: Color) {
+    let label = fit_debug_text(label, 180.0, 14);
+    draw_text(&label, position.x + 11.0, position.y - 8.0, 14.0, color);
+}
+
+fn starmap_npc_label<'a>(game: &GameState, npc: &'a NpcShip) -> &'a str {
+    if npc_intel_level(game, npc) >= CombatIntelLevel::Identity {
+        &npc.name
+    } else {
+        "Unknown contact"
+    }
+}
+
 fn draw_starmap_route_3d(game: &GameState) {
     let Some(planet) = target_planet(
         &game.ship,
@@ -17853,6 +19503,56 @@ fn draw_starmap_planet_3d(
     } else if is_selected {
         draw_starmap_ring_at_3d(position, radius + 8.0, Color::from_rgba(255, 206, 88, 190));
     }
+}
+
+fn draw_starmap_station_3d(
+    station: &StationDestination,
+    selected: bool,
+    transform: StarmapTransform,
+) {
+    let floor = transform.floor_position(station.position);
+    let position = floor + vec3(0.0, 16.0, 0.0);
+    let color = if selected {
+        Color::from_rgba(255, 206, 88, 235)
+    } else {
+        Color::from_rgba(88, 178, 222, 220)
+    };
+    draw_line_3d(floor, position, Color::from_rgba(94, 137, 151, 100));
+    draw_cube(position, vec3(18.0, 18.0, 18.0), None, color);
+    draw_cube_wires(
+        position,
+        vec3(22.0, 22.0, 22.0),
+        Color::from_rgba(220, 240, 245, 180),
+    );
+}
+
+fn draw_starmap_npc_ship_3d(
+    npc: &NpcShip,
+    selected: bool,
+    hostile: bool,
+    transform: StarmapTransform,
+) {
+    let position = transform.floor_position(npc.position) + vec3(0.0, 12.0, 0.0);
+    let color = if hostile {
+        Color::from_rgba(230, 72, 66, 225)
+    } else if selected {
+        Color::from_rgba(255, 206, 88, 235)
+    } else {
+        Color::from_rgba(171, 202, 166, 205)
+    };
+    draw_cube(position, vec3(9.0, 6.0, 15.0), None, color);
+    if selected {
+        draw_starmap_ring_at_3d(position, 17.0, Color::from_rgba(255, 206, 88, 200));
+    }
+}
+
+fn draw_starmap_owned_ship_3d(owned: &OwnedShip, transform: StarmapTransform) {
+    let position = transform.floor_position(owned.ship.position) + vec3(0.0, 10.0, 0.0);
+    draw_cube_wires(
+        position,
+        vec3(10.0, 7.0, 16.0),
+        Color::from_rgba(116, 235, 178, 210),
+    );
 }
 
 fn draw_starmap_ship_3d(ship: &Ship, transform: StarmapTransform) {
@@ -17992,6 +19692,18 @@ fn starmap_planet_screen_pos(
     transform: StarmapTransform,
 ) -> Vec2 {
     starmap_world_to_screen(transform.planet_position(planet.position), camera)
+}
+
+fn starmap_poi_screen_pos(
+    position: Vec2,
+    height: f32,
+    camera: &Camera3D,
+    transform: StarmapTransform,
+) -> Vec2 {
+    starmap_world_to_screen(
+        transform.floor_position(position) + vec3(0.0, height, 0.0),
+        camera,
+    )
 }
 
 fn starmap_world_to_screen(position: Vec3, camera: &Camera3D) -> Vec2 {
@@ -18350,7 +20062,8 @@ fn inventory_overlay_view(
                     String::new()
                 },
                 active: active_row == Some(index),
-                enabled: unlocked && game.inventory.can_craft(recipe),
+                enabled: unlocked
+                    && fleet_can_afford(game, FleetProducer::Active, &recipe.ingredients),
                 unlocked,
                 requirements: recipe
                     .ingredients
@@ -18359,7 +20072,7 @@ fn inventory_overlay_view(
                         format!(
                             "{}: {} / {}",
                             ingredient.item.name,
-                            game.inventory.count(&ingredient.item),
+                            fleet_inventory_count(game, FleetProducer::Active, &ingredient.item,),
                             ingredient.count
                         )
                     })
@@ -18615,6 +20328,7 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
             contracts: Vec::new(),
             recipes: Vec::new(),
             research: Vec::new(),
+            shipyard: Vec::new(),
             latest_operation: None,
         };
     };
@@ -18662,6 +20376,11 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
             egui_station::ServiceRow {
                 name: service.name.clone(),
                 context,
+                description: service
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| "No service description available.".to_string()),
+                artwork: service.artwork.clone(),
                 available: true,
             }
         })
@@ -18712,6 +20431,13 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
         (game.ship.systems.shields.max - game.ship.systems.shields.current).ceil();
     let repair_cost = (missing_hull * 3.0) as u32 + missing_shields as u32;
     let garage = service.is_some_and(|service| service.kind == "garage");
+    let has_explicit_shipyard = station
+        .services
+        .iter()
+        .any(|service| service.kind == "shipyard");
+    let shipyard_service = service.is_some_and(|service| {
+        service.kind == "shipyard" || (service.kind == "garage" && !has_explicit_shipyard)
+    });
     let repair_label = if !in_range {
         "Approach to repair".to_string()
     } else if repair_cost == 0 {
@@ -18850,6 +20576,47 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
                 .collect()
         })
         .unwrap_or_default();
+    let shipyard = if shipyard_service {
+        game.content_registry
+            .ship_order
+            .iter()
+            .filter_map(|ship_id| game.content_registry.ships.get(ship_id))
+            .filter_map(|ship| {
+                let price = ship.purchase_price?;
+                let purchasable = in_range && service_available && game.credits >= price;
+                let status = if !service_available {
+                    "Locked by faction standing".to_string()
+                } else if !in_range {
+                    "Approach within dock range".to_string()
+                } else if game.credits < price {
+                    format!("Need {} more credits", price - game.credits)
+                } else {
+                    "Ready for delivery".to_string()
+                };
+                Some(egui_station::ShipOffer {
+                    ship_id: ship.id.clone(),
+                    name: ship.name.clone(),
+                    price,
+                    purchasable,
+                    status,
+                    cargo_capacity: format_mass(ship.cargo_capacity),
+                    mass: format_mass(ship.mass),
+                    forward_acceleration: ship.forward_acceleration,
+                    turn_acceleration: ship.turn_acceleration,
+                    mining_profile: ship.mining_drone.as_ref().map(|profile| {
+                        format!(
+                            "Mining drone · throughput ×{:.1} · range {:.0} · quota {}",
+                            profile.throughput_multiplier,
+                            profile.operating_range,
+                            profile.max_job_quota
+                        )
+                    }),
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     egui_station::StationPaneView {
         pinned: egui_pane_pinned(EguiPane::Station),
@@ -18879,13 +20646,14 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
         contracts,
         recipes,
         research,
+        shipyard,
         latest_operation: game
             .operation_feedback
             .iter()
             .find(|entry| {
                 matches!(
                     entry.category.as_str(),
-                    "Station" | "Trade" | "Repair" | "Contract" | "Unlock" | "Route"
+                    "Station" | "Trade" | "Repair" | "Shipyard" | "Contract" | "Unlock" | "Route"
                 )
             })
             .map(|entry| format!("{} / {}", entry.category, entry.message)),
@@ -18903,6 +20671,33 @@ fn fleet_cargo_rows(inventory: &Inventory) -> Vec<egui_fleet::CargoRow> {
             count: stack.count,
         })
         .collect()
+}
+
+fn linked_fleet_ship_count(game: &GameState, producer: FleetProducer) -> usize {
+    if !fleet_producer_shares(game, producer) {
+        return 0;
+    }
+    let position = fleet_producer_position(game, producer);
+    let system = fleet_producer_system(game, producer);
+    let active = usize::from(
+        !matches!(producer, FleetProducer::Active)
+            && game.share_inventory
+            && game.current_system_id == system
+            && game.ship.position.distance(position) <= OWNED_SHIP_TRANSFER_RANGE,
+    );
+    active
+        + game
+            .owned_ships
+            .iter()
+            .enumerate()
+            .filter(|(index, owned)| {
+                !matches!(producer, FleetProducer::Owned(producer_index) if *index == producer_index)
+                    && owned.instance_id != game.active_owned_ship_id
+                    && owned.share_inventory
+                    && owned.system_id == system
+                    && owned.ship.position.distance(position) <= OWNED_SHIP_TRANSFER_RANGE
+            })
+            .count()
 }
 
 fn research_view(game: &GameState) -> egui_research::ResearchView {
@@ -19123,19 +20918,28 @@ fn upgrades_view(game: &GameState, purchase_count: u32) -> egui_upgrades::Upgrad
         rows: game
             .ship_upgrades
             .iter()
-            .map(|upgrade| {
+            .enumerate()
+            .filter(|(_, upgrade)| {
+                ship_upgrade_is_available(&game.content_registry, &game.ship_id, upgrade.kind)
+            })
+            .map(|(upgrade_index, upgrade)| {
                 let cost = upgrade.next_cost(&game.content_registry);
                 egui_upgrades::UpgradeRow {
+                    upgrade_index,
                     name: upgrade.kind.name().to_string(),
                     level: upgrade.level,
                     effect: upgrade.kind.effect_text().to_string(),
-                    affordable: can_afford_cost(&game.inventory, &cost),
+                    affordable: fleet_can_afford(game, FleetProducer::Active, &cost),
                     cost: cost
                         .iter()
                         .map(|stack| egui_upgrades::CostRow {
                             item: stack.item.name.clone(),
                             required: stack.count,
-                            available: game.inventory.count(&stack.item),
+                            available: fleet_inventory_count(
+                                game,
+                                FleetProducer::Active,
+                                &stack.item,
+                            ),
                         })
                         .collect(),
                 }
@@ -20144,6 +21948,270 @@ fn content_object_artwork(
     }
 }
 
+fn mining_drone_destination_options<'a>(game: &'a GameState, owned: &OwnedShip) -> Vec<&'a Planet> {
+    game.planets
+        .iter()
+        .filter(|planet| planet.system == owned.system_id)
+        .filter(|planet| planet_has_composition_scan(planet))
+        .filter(|planet| !planet.info.mineables.is_empty())
+        .collect()
+}
+
+fn selected_mining_drone_planet<'a>(game: &'a GameState, owned: &OwnedShip) -> Option<&'a Planet> {
+    let destinations = mining_drone_destination_options(game, owned);
+    game.fleet_mining_planet
+        .as_ref()
+        .and_then(|id| destinations.iter().copied().find(|planet| &planet.id == id))
+        .or_else(|| destinations.first().copied())
+}
+
+fn mining_drone_delivery_options<'a>(game: &'a GameState, drone: &OwnedShip) -> Vec<&'a OwnedShip> {
+    game.owned_ships
+        .iter()
+        .filter(|ship| ship.instance_id != drone.instance_id)
+        .filter(|ship| ship.system_id == drone.system_id)
+        .filter(|ship| ship.ship.systems.hull.current > 0.0)
+        .filter(|ship| game.content_registry.ships.contains_key(&ship.ship_id))
+        .collect()
+}
+
+fn selected_mining_drone_delivery_ship<'a>(
+    game: &'a GameState,
+    drone: &OwnedShip,
+) -> Option<&'a OwnedShip> {
+    let options = mining_drone_delivery_options(game, drone);
+    game.fleet_mining_delivery_ship
+        .as_ref()
+        .and_then(|id| options.iter().copied().find(|ship| &ship.instance_id == id))
+        .or_else(|| {
+            options
+                .iter()
+                .copied()
+                .find(|ship| ship.instance_id == game.active_owned_ship_id)
+        })
+        .or_else(|| options.first().copied())
+}
+
+fn selected_mining_drone_route_leg(game: &GameState) -> Option<MiningDroneLeg> {
+    let owned = game.owned_ships.get(game.selected_owned_ship_index)?;
+    let profile = game
+        .content_registry
+        .ships
+        .get(&owned.ship_id)?
+        .mining_drone
+        .as_ref()?;
+    let planet = selected_mining_drone_planet(game, owned)?;
+    let resource = game
+        .fleet_mining_resource
+        .as_ref()
+        .filter(|resource| {
+            planet
+                .info
+                .mineables
+                .iter()
+                .any(|mineable| &mineable.item.id == *resource)
+        })
+        .cloned()
+        .or_else(|| {
+            planet
+                .info
+                .mineables
+                .first()
+                .map(|mineable| mineable.item.id.clone())
+        })?;
+    Some(MiningDroneLeg {
+        planet: planet.id.clone(),
+        resource,
+        quota: game
+            .fleet_mining_quota
+            .clamp(1, mining_drone_max_quota(profile, &owned.upgrades)),
+        mined: 0,
+    })
+}
+
+fn mining_drone_job_status(game: &GameState, job: &MiningDroneJob) -> String {
+    let blocker = job
+        .blocker
+        .map(|blocker| format!(" · {}", blocker.label()))
+        .unwrap_or_default();
+    let progress = if job.state == MiningDroneJobState::Mining {
+        format!(" · cycle {:.0}%", job.progress.clamp(0.0, 1.0) * 100.0)
+    } else {
+        String::new()
+    };
+    let return_label = if job.return_behavior == MiningDroneReturnBehavior::DeliverToShip {
+        job.delivery_ship
+            .as_ref()
+            .and_then(|id| game.owned_ships.iter().find(|ship| &ship.instance_id == id))
+            .map(|ship| format!("Deliver cargo to {}", ship.callsign))
+            .unwrap_or_else(|| job.return_behavior.label().to_string())
+    } else {
+        job.return_behavior.label().to_string()
+    };
+    format!(
+        "{} · leg {}/{} · {}/{} {} · {}{}{}",
+        job.state.label(),
+        job.active_leg.saturating_add(1).min(job.route.len().max(1)),
+        job.route.len().max(1),
+        job.mined,
+        job.quota,
+        local_content_id(&job.resource),
+        return_label,
+        progress,
+        blocker
+    )
+}
+
+fn mining_drone_view(
+    game: &GameState,
+    owned: &OwnedShip,
+    active: bool,
+) -> Option<egui_fleet::MiningDroneView> {
+    let profile = game
+        .content_registry
+        .ships
+        .get(&owned.ship_id)?
+        .mining_drone
+        .as_ref()?;
+    let throughput = mining_drone_throughput(profile, &owned.upgrades);
+    let operating_range = mining_drone_operating_range(profile, &owned.upgrades);
+    let max_quota = mining_drone_max_quota(profile, &owned.upgrades);
+    let destinations = mining_drone_destination_options(game, owned);
+    let selected_planet = selected_mining_drone_planet(game, owned);
+    let resources: Vec<egui_fleet::MiningJobOption> = selected_planet
+        .map(|planet| {
+            planet
+                .info
+                .mineables
+                .iter()
+                .map(|mineable| egui_fleet::MiningJobOption {
+                    id: mineable.item.id.clone(),
+                    label: mineable.item.name.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let selected_resource = game
+        .fleet_mining_resource
+        .as_ref()
+        .filter(|id| resources.iter().any(|option| &option.id == *id))
+        .cloned()
+        .or_else(|| resources.first().map(|option| option.id.clone()));
+    let delivery_ships = mining_drone_delivery_options(game, owned);
+    let selected_delivery_ship = selected_mining_drone_delivery_ship(game, owned);
+    let job = owned.mining_job.as_ref();
+    let terminal = job.is_none_or(|job| {
+        matches!(
+            job.state,
+            MiningDroneJobState::Completed
+                | MiningDroneJobState::Blocked
+                | MiningDroneJobState::Holding
+                | MiningDroneJobState::Destroyed
+        )
+    });
+    let controllable = !active && owned.ship.systems.hull.current > 0.0;
+    let route_edit_status = if active {
+        Some("Switch control to another ship before assigning autonomous work.".to_string())
+    } else if owned.ship.systems.hull.current <= 0.0 {
+        Some("Destroyed drones cannot accept mining routes.".to_string())
+    } else if !terminal {
+        Some("Pause, recall, or cancel the current job before editing its route.".to_string())
+    } else if selected_planet.is_none() {
+        Some("Select a composition-scanned planet with mineable resources.".to_string())
+    } else {
+        None
+    };
+    Some(egui_fleet::MiningDroneView {
+        profile: format!(
+            "Throughput ×{:.1} · range {:.0} · maximum quota {}",
+            throughput, operating_range, max_quota
+        ),
+        destinations: destinations
+            .iter()
+            .map(|planet| egui_fleet::MiningJobOption {
+                id: planet.id.clone(),
+                label: local_content_id(&planet.id).to_string(),
+            })
+            .collect(),
+        resources,
+        selected_planet: selected_planet.map(|planet| planet.id.clone()),
+        selected_resource,
+        quota: game.fleet_mining_quota.clamp(1, max_quota),
+        max_quota,
+        route: game
+            .fleet_mining_route
+            .iter()
+            .map(|leg| egui_fleet::MiningRouteLegView {
+                planet: game
+                    .planets
+                    .iter()
+                    .find(|planet| planet.id == leg.planet)
+                    .map(|planet| local_content_id(&planet.id).to_string())
+                    .unwrap_or_else(|| local_content_id(&leg.planet).to_string()),
+                resource: game
+                    .content_registry
+                    .items
+                    .get(&leg.resource)
+                    .map(|item| item.name.clone())
+                    .unwrap_or_else(|| local_content_id(&leg.resource).to_string()),
+                quota: leg.quota,
+            })
+            .collect(),
+        add_leg_enabled: controllable && terminal && selected_planet.is_some(),
+        route_edit_status,
+        deliver_to_ship: game.fleet_mining_deliver_to_ship,
+        delivery_ships: delivery_ships
+            .iter()
+            .map(|ship| egui_fleet::MiningJobOption {
+                id: ship.instance_id.clone(),
+                label: if ship.instance_id == game.active_owned_ship_id {
+                    format!("{} · active", ship.callsign)
+                } else {
+                    ship.callsign.clone()
+                },
+            })
+            .collect(),
+        selected_delivery_ship: selected_delivery_ship.map(|ship| ship.instance_id.clone()),
+        job_status: job.map(|job| mining_drone_job_status(game, job)),
+        start_enabled: controllable
+            && terminal
+            && !game.fleet_mining_route.is_empty()
+            && (!game.fleet_mining_deliver_to_ship || selected_delivery_ship.is_some()),
+        pause_enabled: controllable
+            && job.is_some_and(|job| {
+                matches!(
+                    job.state,
+                    MiningDroneJobState::Traveling
+                        | MiningDroneJobState::Mining
+                        | MiningDroneJobState::Paused
+                )
+            }),
+        paused: job.is_some_and(|job| job.state == MiningDroneJobState::Paused),
+        recall_enabled: controllable
+            && job.is_some_and(|job| {
+                !matches!(
+                    job.state,
+                    MiningDroneJobState::Returning
+                        | MiningDroneJobState::Completed
+                        | MiningDroneJobState::Destroyed
+                )
+            }),
+        cancel_enabled: controllable && job.is_some(),
+        smelter_installed: ship_upgrade_level(&owned.upgrades, ShipUpgradeKind::Smelter) > 0,
+        smelt_rows: game
+            .smelt_recipes
+            .iter()
+            .zip(owned.smelt_settings.iter())
+            .map(|(recipe, setting)| egui_fleet::DroneSmeltRow {
+                name: format!("{} x{}", recipe.output.item.name, recipe.output.count),
+                queued: setting.queued,
+                progress: setting.progress,
+                unlocked: recipe_is_unlocked(game, &recipe.id),
+            })
+            .collect(),
+    })
+}
+
 fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPaneView {
     let ships = game
         .owned_ships
@@ -20166,12 +22234,21 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
                 callsign: owned.callsign.clone(),
                 hull_name,
                 system: local_content_id(&owned.system_id).to_string(),
-                condition: format!(
-                    "Hull {:.0}/{:.0} · Cargo {}",
-                    ship.systems.hull.current,
-                    ship.systems.hull.max,
-                    format_mass(inventory.total_mass())
-                ),
+                condition: if ship.systems.hull.current <= 0.0 && owned.salvage_progress > 0.0 {
+                    format!(
+                        "DESTROYED · Salvage {:.0}% · Cargo {}",
+                        (owned.salvage_progress / OWNED_SHIP_SALVAGE_SECONDS).clamp(0.0, 1.0)
+                            * 100.0,
+                        format_mass(inventory.total_mass())
+                    )
+                } else {
+                    format!(
+                        "Hull {:.0}/{:.0} · Cargo {}",
+                        ship.systems.hull.current,
+                        ship.systems.hull.max,
+                        format_mass(inventory.total_mass())
+                    )
+                },
                 active,
                 resolved: game.content_registry.ships.contains_key(&owned.ship_id),
             }
@@ -20248,6 +22325,24 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
             turrets: weapons.len(),
             active,
             switch_enabled: !active && resolved && ship.systems.hull.current > 0.0,
+            share_inventory: if active {
+                game.share_inventory
+            } else {
+                owned.share_inventory
+            },
+            linked_inventory_status: {
+                let producer = if active {
+                    FleetProducer::Active
+                } else {
+                    FleetProducer::Owned(selected_index)
+                };
+                let linked = linked_fleet_ship_count(game, producer);
+                if !fleet_producer_shares(game, producer) {
+                    "Fleet inventory sharing disabled for this ship.".to_string()
+                } else {
+                    format!("Linked cargo access: {linked} nearby fleet ship(s)")
+                }
+            },
             transfer_available,
             transfer_status: if active {
                 "Select another ship to transfer cargo.".to_string()
@@ -20262,33 +22357,7 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
                 )
             },
             cargo_rows: fleet_cargo_rows(inventory),
-        }
-    });
-
-    let shipyard = nearby_garage_index(game).map(|station_index| {
-        let station = &game.stations[station_index];
-        let offers = game
-            .content_registry
-            .ship_order
-            .iter()
-            .filter_map(|ship_id| game.content_registry.ships.get(ship_id))
-            .filter_map(|ship| {
-                let price = ship.purchase_price?;
-                Some(egui_fleet::ShipOffer {
-                    ship_id: ship.id.clone(),
-                    name: ship.name.clone(),
-                    price,
-                    affordable: game.credits >= price,
-                    cargo_capacity: format_mass(ship.cargo_capacity),
-                    mass: format_mass(ship.mass),
-                    forward_acceleration: ship.forward_acceleration,
-                    turn_acceleration: ship.turn_acceleration,
-                })
-            })
-            .collect();
-        egui_fleet::ShipyardView {
-            station_name: station.name.clone(),
-            offers,
+            mining_drone: mining_drone_view(game, owned, active),
         }
     });
 
@@ -20301,11 +22370,15 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
         transfer_quantity: game.fleet_transfer_quantity,
         quantity_step,
         credits: game.credits,
-        shipyard,
         latest_operation: game
             .operation_feedback
             .iter()
-            .find(|entry| matches!(entry.category.as_str(), "Fleet" | "Shipyard"))
+            .find(|entry| {
+                matches!(
+                    entry.category.as_str(),
+                    "Fleet" | "Shipyard" | "Mining drone"
+                )
+            })
             .map(|entry| format!("{} / {}", entry.category, entry.message)),
     }
 }
@@ -21026,6 +23099,28 @@ fn apply_station_ui_actions(game: &mut GameState, actions: Vec<egui_station::Sta
                     purchase_recipe_unlock(game, station_index, service_index, unlock_index)
                 })
             }
+            egui_station::StationUiAction::BuyShip(ship_id) => {
+                let selected_shipyard = game
+                    .selected_station_service
+                    .and_then(|service_index| {
+                        game.stations.get(station_index).and_then(|station| {
+                            let has_explicit_shipyard = station
+                                .services
+                                .iter()
+                                .any(|service| service.kind == "shipyard");
+                            station
+                                .services
+                                .get(service_index)
+                                .map(|service| (station, service, has_explicit_shipyard))
+                        })
+                    })
+                    .is_some_and(|(station, service, has_explicit_shipyard)| {
+                        (service.kind == "shipyard"
+                            || (service.kind == "garage" && !has_explicit_shipyard))
+                            && station_service_is_available(game, station, service)
+                    });
+                selected_shipyard && acquire_owned_ship(game, station_index, &ship_id)
+            }
         };
         game.audio.play(if handled {
             audio::AudioCue::Confirm
@@ -21033,6 +23128,131 @@ fn apply_station_ui_actions(game: &mut GameState, actions: Vec<egui_station::Sta
             audio::AudioCue::Warning
         });
     }
+}
+
+fn start_selected_mining_drone_job(game: &mut GameState) -> bool {
+    let index = game.selected_owned_ship_index;
+    let Some(owned) = game.owned_ships.get(index) else {
+        return false;
+    };
+    if owned.instance_id == game.active_owned_ship_id || owned.ship.systems.hull.current <= 0.0 {
+        return false;
+    }
+    let Some(profile) = game
+        .content_registry
+        .ships
+        .get(&owned.ship_id)
+        .and_then(|definition| definition.mining_drone.clone())
+    else {
+        return false;
+    };
+    let route = if game.fleet_mining_route.is_empty() {
+        selected_mining_drone_route_leg(game).into_iter().collect()
+    } else {
+        game.fleet_mining_route.clone()
+    };
+    let Some(first_leg) = route.first() else {
+        return false;
+    };
+    let system_id = owned.system_id.clone();
+    let dispatch = owned.ship.position;
+    let callsign = owned.callsign.clone();
+    let delivery_ship = game
+        .fleet_mining_deliver_to_ship
+        .then(|| selected_mining_drone_delivery_ship(game, owned))
+        .flatten()
+        .map(|ship| ship.instance_id.clone());
+    if game.fleet_mining_deliver_to_ship && delivery_ship.is_none() {
+        return false;
+    }
+    let mut job = MiningDroneJob {
+        system: system_id,
+        planet: first_leg.planet.clone(),
+        resource: first_leg.resource.clone(),
+        quota: first_leg.quota,
+        mined: 0,
+        route,
+        active_leg: 0,
+        return_behavior: if game.fleet_mining_deliver_to_ship {
+            MiningDroneReturnBehavior::DeliverToShip
+        } else {
+            MiningDroneReturnBehavior::HoldAtTarget
+        },
+        delivery_ship,
+        dispatch_position: [dispatch.x, dispatch.y],
+        state: MiningDroneJobState::Traveling,
+        blocker: None,
+        progress: 0.0,
+    };
+    if let Some(blocker) = mining_drone_job_blocker(&game.planets, owned, &job, &profile) {
+        job.state = MiningDroneJobState::Blocked;
+        job.blocker = Some(blocker);
+    }
+    let status = mining_drone_job_status(game, &job);
+    game.owned_ships[index].mining_job = Some(job);
+    game.save_dirty = true;
+    push_operation_feedback(game, "Mining drone", format!("{callsign}: {status}"));
+    true
+}
+
+fn toggle_selected_mining_drone_pause(game: &mut GameState) -> bool {
+    let Some(owned) = game.owned_ships.get_mut(game.selected_owned_ship_index) else {
+        return false;
+    };
+    if owned.instance_id == game.active_owned_ship_id {
+        return false;
+    }
+    let Some(job) = &mut owned.mining_job else {
+        return false;
+    };
+    job.state = match job.state {
+        MiningDroneJobState::Paused => MiningDroneJobState::Traveling,
+        MiningDroneJobState::Traveling | MiningDroneJobState::Mining => {
+            owned.ship.velocity = Vec2::ZERO;
+            MiningDroneJobState::Paused
+        }
+        _ => return false,
+    };
+    game.save_dirty = true;
+    true
+}
+
+fn recall_selected_mining_drone(game: &mut GameState) -> bool {
+    let Some(owned) = game.owned_ships.get_mut(game.selected_owned_ship_index) else {
+        return false;
+    };
+    if owned.instance_id == game.active_owned_ship_id {
+        return false;
+    }
+    let Some(job) = &mut owned.mining_job else {
+        return false;
+    };
+    if matches!(
+        job.state,
+        MiningDroneJobState::Destroyed | MiningDroneJobState::Completed
+    ) {
+        return false;
+    }
+    job.state = MiningDroneJobState::Returning;
+    job.return_behavior = MiningDroneReturnBehavior::ReturnToDispatch;
+    job.delivery_ship = None;
+    job.blocker = None;
+    job.progress = 0.0;
+    game.save_dirty = true;
+    true
+}
+
+fn cancel_selected_mining_drone_job(game: &mut GameState) -> bool {
+    let Some(owned) = game.owned_ships.get_mut(game.selected_owned_ship_index) else {
+        return false;
+    };
+    if owned.instance_id == game.active_owned_ship_id || owned.mining_job.is_none() {
+        return false;
+    }
+    owned.mining_job = None;
+    owned.ship.velocity = Vec2::ZERO;
+    game.save_dirty = true;
+    true
 }
 
 fn apply_fleet_ui_actions(
@@ -21054,8 +23274,46 @@ fn apply_fleet_ui_actions(
                     false
                 }
             }
+            egui_fleet::FleetUiAction::QueueDroneSmelt(row) => {
+                let index = game.selected_owned_ship_index;
+                let enabled = game.owned_ships.get(index).is_some_and(|owned| {
+                    owned.instance_id != game.active_owned_ship_id
+                        && ship_upgrade_level(&owned.upgrades, ShipUpgradeKind::Smelter) > 0
+                }) && game
+                    .smelt_recipes
+                    .get(row)
+                    .is_some_and(|recipe| recipe_is_unlocked(game, &recipe.id));
+                if enabled {
+                    if let Some(setting) = game
+                        .owned_ships
+                        .get_mut(index)
+                        .and_then(|owned| owned.smelt_settings.get_mut(row))
+                    {
+                        setting.queued = setting.queued.saturating_add(1).min(999);
+                        game.save_dirty = true;
+                    }
+                }
+                enabled
+            }
             egui_fleet::FleetUiAction::SwitchControl => {
                 switch_active_owned_ship(game, game.selected_owned_ship_index)
+            }
+            egui_fleet::FleetUiAction::SetShareInventory(value) => {
+                let index = game.selected_owned_ship_index;
+                if game
+                    .owned_ships
+                    .get(index)
+                    .is_some_and(|owned| owned.instance_id == game.active_owned_ship_id)
+                {
+                    game.share_inventory = value;
+                    game.sync_active_owned_ship();
+                } else if let Some(owned) = game.owned_ships.get_mut(index) {
+                    owned.share_inventory = value;
+                } else {
+                    return;
+                }
+                game.save_dirty = true;
+                true
             }
             egui_fleet::FleetUiAction::AdjustTransferQuantity(direction) => {
                 if !owned_ship_in_transfer_range(game, game.selected_owned_ship_index)
@@ -21090,8 +23348,112 @@ fn apply_fleet_ui_actions(
                     game.fleet_transfer_quantity,
                 ) > 0
             }
-            egui_fleet::FleetUiAction::BuyShip(ship_id) => nearby_garage_index(game)
-                .is_some_and(|station_index| acquire_owned_ship(game, station_index, &ship_id)),
+            egui_fleet::FleetUiAction::TakeAllFromSelected => {
+                take_all_owned_ship_cargo(game, game.selected_owned_ship_index) > 0
+            }
+            egui_fleet::FleetUiAction::SelectMiningPlanet(planet_id) => {
+                let valid = game
+                    .owned_ships
+                    .get(game.selected_owned_ship_index)
+                    .is_some_and(|owned| {
+                        mining_drone_destination_options(game, owned)
+                            .iter()
+                            .any(|planet| planet.id == planet_id)
+                    });
+                if valid {
+                    game.fleet_mining_planet = Some(planet_id);
+                    game.fleet_mining_resource = None;
+                }
+                valid
+            }
+            egui_fleet::FleetUiAction::SelectMiningResource(resource_id) => {
+                let valid = game
+                    .owned_ships
+                    .get(game.selected_owned_ship_index)
+                    .and_then(|owned| selected_mining_drone_planet(game, owned))
+                    .is_some_and(|planet| {
+                        planet
+                            .info
+                            .mineables
+                            .iter()
+                            .any(|mineable| mineable.item.id == resource_id)
+                    });
+                if valid {
+                    game.fleet_mining_resource = Some(resource_id);
+                }
+                valid
+            }
+            egui_fleet::FleetUiAction::AdjustMiningQuota(direction) => {
+                let max_quota = game
+                    .owned_ships
+                    .get(game.selected_owned_ship_index)
+                    .and_then(|owned| game.content_registry.ships.get(&owned.ship_id))
+                    .and_then(|definition| definition.mining_drone.as_ref())
+                    .map(|profile| {
+                        mining_drone_max_quota(
+                            profile,
+                            &game.owned_ships[game.selected_owned_ship_index].upgrades,
+                        )
+                    });
+                match max_quota {
+                    Some(max_quota) if direction != 0 => {
+                        game.fleet_mining_quota = if direction < 0 {
+                            game.fleet_mining_quota.saturating_sub(quantity_step).max(1)
+                        } else {
+                            game.fleet_mining_quota
+                                .saturating_add(quantity_step)
+                                .min(max_quota)
+                        };
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            egui_fleet::FleetUiAction::AddMiningRouteLeg => {
+                if let Some(leg) = selected_mining_drone_route_leg(game) {
+                    game.fleet_mining_route.push(leg);
+                    true
+                } else {
+                    false
+                }
+            }
+            egui_fleet::FleetUiAction::RemoveMiningRouteLeg(index) => {
+                if index < game.fleet_mining_route.len() {
+                    game.fleet_mining_route.remove(index);
+                    true
+                } else {
+                    false
+                }
+            }
+            egui_fleet::FleetUiAction::ClearMiningRoute => {
+                let changed = !game.fleet_mining_route.is_empty();
+                game.fleet_mining_route.clear();
+                changed
+            }
+            egui_fleet::FleetUiAction::SetMiningDeliverToShip(value) => {
+                game.fleet_mining_deliver_to_ship = value;
+                true
+            }
+            egui_fleet::FleetUiAction::SelectMiningDeliveryShip(instance_id) => {
+                let valid = game
+                    .owned_ships
+                    .get(game.selected_owned_ship_index)
+                    .is_some_and(|drone| {
+                        mining_drone_delivery_options(game, drone)
+                            .iter()
+                            .any(|ship| ship.instance_id == instance_id)
+                    });
+                if valid {
+                    game.fleet_mining_delivery_ship = Some(instance_id);
+                }
+                valid
+            }
+            egui_fleet::FleetUiAction::StartMiningJob => start_selected_mining_drone_job(game),
+            egui_fleet::FleetUiAction::ToggleMiningJobPause => {
+                toggle_selected_mining_drone_pause(game)
+            }
+            egui_fleet::FleetUiAction::RecallMiningJob => recall_selected_mining_drone(game),
+            egui_fleet::FleetUiAction::CancelMiningJob => cancel_selected_mining_drone_job(game),
         };
         game.audio.play(if handled {
             audio::AudioCue::Confirm
@@ -23407,7 +25769,155 @@ mod tests {
     }
 
     #[test]
-    fn fleet_egui_view_and_actions_cover_transfer_switching_and_shipyard_purchase() {
+    fn take_all_salvages_every_fitting_stack_from_a_destroyed_drone() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let copper = required_item(&registry, "core:copper_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = Vec2::ZERO;
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", vec2(20.0, 0.0));
+        game.owned_ships[drone_index].ship.systems.hull.current = 0.0;
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(iron.clone(), 7);
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(copper.clone(), 4);
+
+        assert_eq!(take_all_owned_ship_cargo(&mut game, drone_index), 11);
+        assert_eq!(game.inventory.count(&iron), 7);
+        assert_eq!(game.inventory.count(&copper), 4);
+        assert_eq!(game.owned_ships[drone_index].inventory.count(&iron), 0);
+        assert_eq!(game.owned_ships[drone_index].inventory.count(&copper), 0);
+        assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn take_all_leaves_cargo_that_does_not_fit_and_requires_transfer_range() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = Vec2::ZERO;
+        let drone_index = add_test_mining_drone(
+            &mut game,
+            "core:prospector_mining_drone",
+            vec2(OWNED_SHIP_TRANSFER_RANGE + 1.0, 0.0),
+        );
+        game.owned_ships[drone_index].ship.systems.hull.current = 0.0;
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(iron.clone(), 100_000);
+
+        assert_eq!(take_all_owned_ship_cargo(&mut game, drone_index), 0);
+        assert_eq!(game.inventory.count(&iron), 0);
+        game.owned_ships[drone_index].ship.position = vec2(20.0, 0.0);
+
+        let moved = take_all_owned_ship_cargo(&mut game, drone_index);
+        assert!(moved > 0);
+        assert!(moved < 100_000);
+        assert_eq!(game.inventory.count(&iron), moved);
+        assert_eq!(
+            game.owned_ships[drone_index].inventory.count(&iron),
+            100_000 - moved
+        );
+    }
+
+    #[test]
+    fn emptied_destroyed_drone_exposes_resumable_salvage_context_action() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = Vec2::ZERO;
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", vec2(20.0, 0.0));
+        game.owned_ships[drone_index].ship.systems.hull.current = 0.0;
+
+        let entries = context_action_entries(&game, ContextTarget::OwnedShip(drone_index));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, ContextAction::Salvage);
+        assert!(entries[0].enabled);
+        execute_context_action(
+            &mut game,
+            ContextTarget::OwnedShip(drone_index),
+            ContextAction::Salvage,
+        );
+        update_owned_ship_salvage(&mut game, 45.0);
+        assert_eq!(game.owned_ships[drone_index].salvage_progress, 45.0);
+
+        game.ship.position = vec2(OWNED_SHIP_TRANSFER_RANGE + 40.0, 0.0);
+        update_owned_ship_salvage(&mut game, 30.0);
+        assert_eq!(game.owned_ships[drone_index].salvage_progress, 45.0);
+        assert!(!game.owned_ships[drone_index].salvage_active);
+
+        let saved = game.owned_ships[drone_index].to_save(&game.smelt_recipes);
+        let restored = OwnedShip::from_save(&game.content_registry, &game.smelt_recipes, saved);
+        assert_eq!(restored.salvage_progress, 45.0);
+    }
+
+    #[test]
+    fn salvage_completion_removes_wreck_and_awards_materials() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron_plate = required_item(&registry, "core:iron_plate");
+        let copper_plate = required_item(&registry, "core:copper_plate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = Vec2::ZERO;
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", vec2(20.0, 0.0));
+        let wreck_id = game.owned_ships[drone_index].instance_id.clone();
+        game.owned_ships[drone_index].ship.systems.hull.current = 0.0;
+        game.owned_ships[drone_index].salvage_active = true;
+
+        update_owned_ship_salvage(&mut game, OWNED_SHIP_SALVAGE_SECONDS - 0.1);
+        assert!(game
+            .owned_ships
+            .iter()
+            .any(|owned| owned.instance_id == wreck_id));
+        update_owned_ship_salvage(&mut game, 0.1);
+
+        assert!(!game
+            .owned_ships
+            .iter()
+            .any(|owned| owned.instance_id == wreck_id));
+        assert_eq!(game.inventory.count(&iron_plate), 2);
+        assert_eq!(game.inventory.count(&copper_plate), 1);
+        assert!(operation_feedback_contains(&game, "Fleet", "Salvaged"));
+    }
+
+    #[test]
+    fn salvage_requires_empty_cargo_and_pauses_completion_when_yield_will_not_fit() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = Vec2::ZERO;
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", vec2(20.0, 0.0));
+        game.owned_ships[drone_index].ship.systems.hull.current = 0.0;
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(iron.clone(), 1);
+        assert!(!context_action_entries(&game, ContextTarget::OwnedShip(drone_index))[0].enabled);
+
+        game.owned_ships[drone_index]
+            .inventory
+            .remove_item(&iron, 1);
+        game.owned_ships[drone_index].salvage_active = true;
+        game.ship.attributes.cargo_capacity = 0.0;
+        update_owned_ship_salvage(&mut game, OWNED_SHIP_SALVAGE_SECONDS);
+
+        assert_eq!(
+            game.owned_ships[drone_index].salvage_progress,
+            OWNED_SHIP_SALVAGE_SECONDS
+        );
+        assert!(game.owned_ships[drone_index].salvage_active);
+    }
+
+    #[test]
+    fn fleet_egui_view_and_actions_cover_transfer_and_switching() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let iron = required_item(&registry, "core:iron_ore");
@@ -23437,14 +25947,6 @@ mod tests {
             .active_cargo
             .iter()
             .any(|cargo| cargo.item_id == iron.id && cargo.count == 10));
-        let offer = view
-            .shipyard
-            .as_ref()
-            .and_then(|shipyard| shipyard.offers.first())
-            .expect("nearby garage should expose purchasable hulls")
-            .ship_id
-            .clone();
-
         apply_fleet_ui_actions(
             &mut game,
             vec![
@@ -23460,14 +25962,663 @@ mod tests {
         apply_fleet_ui_actions(&mut game, vec![egui_fleet::FleetUiAction::SwitchControl], 1);
         assert_eq!(game.active_owned_ship_id, "ship-2");
 
-        let owned_before_purchase = game.owned_ships.len();
-        apply_fleet_ui_actions(
-            &mut game,
-            vec![egui_fleet::FleetUiAction::BuyShip(offer)],
-            1,
-        );
-        assert_eq!(game.owned_ships.len(), owned_before_purchase + 1);
         assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn station_shipyard_service_lists_and_sells_hulls_and_mining_drones() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.credits = 100_000;
+        game.selected_station = Some(0);
+        game.selected_station_service = Some(2);
+        game.stations[0].services[2].artwork = Some("test:shipyard-art".to_string());
+
+        let view = station_pane_view(&game);
+        assert!(!view.garage);
+        assert_eq!(
+            view.services[2].artwork.as_deref(),
+            Some("test:shipyard-art")
+        );
+        assert_eq!(view.services[2].description, "A test ship-sales service.");
+        assert!(view
+            .shipyard
+            .iter()
+            .any(|offer| offer.ship_id == "core:prospector_mining_drone" && offer.purchasable));
+        assert!(view
+            .shipyard
+            .iter()
+            .any(|offer| offer.ship_id == "core:industrial_mining_drone"
+                && offer.mining_profile.is_some()));
+
+        let owned_before = game.owned_ships.len();
+        apply_station_ui_actions(
+            &mut game,
+            vec![egui_station::StationUiAction::BuyShip(
+                "core:prospector_mining_drone".to_string(),
+            )],
+        );
+        assert_eq!(game.owned_ships.len(), owned_before + 1);
+        assert_eq!(
+            game.owned_ships.last().map(|owned| owned.ship_id.as_str()),
+            Some("core:prospector_mining_drone")
+        );
+    }
+
+    #[test]
+    fn mining_drone_job_travels_mines_and_delivers_to_selected_ship() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:test_drone_mine",
+            STARTER_SYSTEM_ID,
+            vec2(900.0, 0.0),
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        game.ship.position = vec2(-240.0, 120.0);
+        game.selected_owned_ship_index = drone_index;
+        game.fleet_mining_quota = 3;
+        game.fleet_mining_deliver_to_ship = true;
+        game.fleet_mining_delivery_ship = Some(game.active_owned_ship_id.clone());
+        let copper = required_item(&game.content_registry, "core:copper_ore");
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(copper.clone(), 2);
+
+        assert!(start_selected_mining_drone_job(&mut game));
+        for _ in 0..2_000 {
+            update_owned_mining_drone_jobs(&mut game, 0.1);
+            if game.owned_ships[drone_index]
+                .mining_job
+                .as_ref()
+                .is_some_and(|job| job.state == MiningDroneJobState::Completed)
+            {
+                break;
+            }
+        }
+
+        let iron = required_item(&game.content_registry, "core:iron_ore");
+        let drone = &game.owned_ships[drone_index];
+        let job = drone
+            .mining_job
+            .as_ref()
+            .expect("job should remain inspectable");
+        assert_eq!(job.state, MiningDroneJobState::Completed);
+        assert_eq!(job.mined, 3);
+        assert_eq!(drone.inventory.count(&iron), 0);
+        assert_eq!(drone.inventory.count(&copper), 0);
+        assert_eq!(game.inventory.count(&iron), 3);
+        assert_eq!(game.inventory.count(&copper), 2);
+        let rendezvous_distance = drone.ship.position.distance(game.ship.position);
+        assert!(rendezvous_distance <= OWNED_SHIP_TRANSFER_RANGE);
+        assert!(rendezvous_distance >= drone.ship.radius() + game.ship.radius());
+        assert_eq!(drone.ship.velocity, Vec2::ZERO);
+        assert!(game.operation_feedback.iter().any(|entry| {
+            entry.category == "Mining drone" && entry.message.contains("delivered 5 cargo unit")
+        }));
+    }
+
+    #[test]
+    fn mining_drone_route_mines_ordered_planet_legs_then_delivers_combined_cargo() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut iron_planet = test_planet_with_mineables(
+            &registry,
+            "core:test_iron_route",
+            STARTER_SYSTEM_ID,
+            vec2(500.0, 0.0),
+            &["core:iron_ore"],
+        );
+        let mut copper_planet = test_planet_with_mineables(
+            &registry,
+            "core:test_copper_route",
+            STARTER_SYSTEM_ID,
+            vec2(-500.0, 0.0),
+            &["core:copper_ore"],
+        );
+        iron_planet.scan_level = 2;
+        copper_planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![iron_planet, copper_planet]);
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        game.ship.position = vec2(0.0, 300.0);
+        game.selected_owned_ship_index = drone_index;
+        game.fleet_mining_deliver_to_ship = true;
+        game.fleet_mining_delivery_ship = Some(game.active_owned_ship_id.clone());
+        game.fleet_mining_route = vec![
+            MiningDroneLeg {
+                planet: "core:test_iron_route".to_string(),
+                resource: "core:iron_ore".to_string(),
+                quota: 2,
+                mined: 0,
+            },
+            MiningDroneLeg {
+                planet: "core:test_copper_route".to_string(),
+                resource: "core:copper_ore".to_string(),
+                quota: 3,
+                mined: 0,
+            },
+        ];
+
+        assert!(start_selected_mining_drone_job(&mut game));
+        for _ in 0..4_000 {
+            update_owned_mining_drone_jobs(&mut game, 0.1);
+            if game.owned_ships[drone_index]
+                .mining_job
+                .as_ref()
+                .is_some_and(|job| job.state == MiningDroneJobState::Completed)
+            {
+                break;
+            }
+        }
+
+        let iron = required_item(&game.content_registry, "core:iron_ore");
+        let copper = required_item(&game.content_registry, "core:copper_ore");
+        let job = game.owned_ships[drone_index]
+            .mining_job
+            .as_ref()
+            .expect("route should remain inspectable");
+        assert_eq!(job.state, MiningDroneJobState::Completed);
+        assert_eq!(job.active_leg, 1);
+        assert_eq!(job.route[0].mined, 2);
+        assert_eq!(job.route[1].mined, 3);
+        assert_eq!(game.inventory.count(&iron), 2);
+        assert_eq!(game.inventory.count(&copper), 3);
+        assert!(game.owned_ships[drone_index].inventory.count(&iron) == 0);
+        assert!(game.owned_ships[drone_index].inventory.count(&copper) == 0);
+    }
+
+    #[test]
+    fn mining_drone_jobs_handle_hold_damage_blockers_and_multiple_drones() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:test_drone_mine",
+            STARTER_SYSTEM_ID,
+            vec2(600.0, 0.0),
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        let first = add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        let second =
+            add_test_mining_drone(&mut game, "core:industrial_mining_drone", vec2(0.0, 40.0));
+        game.fleet_mining_quota = 1;
+        game.fleet_mining_deliver_to_ship = false;
+        game.selected_owned_ship_index = first;
+        assert!(start_selected_mining_drone_job(&mut game));
+        game.selected_owned_ship_index = second;
+        assert!(start_selected_mining_drone_job(&mut game));
+
+        for _ in 0..1_000 {
+            update_owned_mining_drone_jobs(&mut game, 0.1);
+            if [first, second].iter().all(|index| {
+                game.owned_ships[*index]
+                    .mining_job
+                    .as_ref()
+                    .is_some_and(|job| job.state == MiningDroneJobState::Holding)
+            }) {
+                break;
+            }
+        }
+        assert!([first, second].iter().all(|index| {
+            game.owned_ships[*index]
+                .mining_job
+                .as_ref()
+                .is_some_and(|job| job.mined == 1 && job.state == MiningDroneJobState::Holding)
+        }));
+        game.selected_owned_ship_index = first;
+        let held_view = mining_drone_view(&game, &game.owned_ships[first], false)
+            .expect("held mining drone should project a Fleet editor");
+        assert!(held_view.add_leg_enabled);
+        assert_eq!(held_view.route_edit_status, None);
+
+        apply_owned_ship_weapon_damage(&mut game.owned_ships[first], 1.0);
+        assert_eq!(
+            game.owned_ships[first]
+                .mining_job
+                .as_ref()
+                .expect("damaged drone should retain job")
+                .state,
+            MiningDroneJobState::Interrupted
+        );
+        update_owned_mining_drone_jobs(&mut game, 0.1);
+        assert_eq!(
+            game.owned_ships[first]
+                .mining_job
+                .as_ref()
+                .expect("interrupted drone should retain job")
+                .state,
+            MiningDroneJobState::Returning
+        );
+
+        let mut unreachable = game.owned_ships[second]
+            .mining_job
+            .clone()
+            .expect("second job should exist");
+        unreachable.state = MiningDroneJobState::Traveling;
+        unreachable.dispatch_position = [-20_000.0, 0.0];
+        game.owned_ships[second].mining_job = Some(unreachable);
+        update_owned_mining_drone_jobs(&mut game, 0.1);
+        let blocked = game.owned_ships[second]
+            .mining_job
+            .as_ref()
+            .expect("blocked job should remain visible");
+        assert_eq!(blocked.state, MiningDroneJobState::Blocked);
+        assert_eq!(blocked.blocker, Some(MiningDroneBlocker::OutOfRange));
+    }
+
+    #[test]
+    fn mining_drone_job_round_trips_through_owned_ship_save() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = make_smelting_recipes(&game.content_registry);
+        game.smelt_settings = vec![CraftSetting::starter(); game.smelt_recipes.len()];
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", vec2(12.0, 34.0));
+        game.owned_ships[drone_index].mining_job = Some(MiningDroneJob {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:test".to_string(),
+            resource: "core:iron_ore".to_string(),
+            quota: 12,
+            mined: 4,
+            route: vec![MiningDroneLeg {
+                planet: "core:test".to_string(),
+                resource: "core:iron_ore".to_string(),
+                quota: 12,
+                mined: 4,
+            }],
+            active_leg: 0,
+            return_behavior: MiningDroneReturnBehavior::DeliverToShip,
+            delivery_ship: Some(game.active_owned_ship_id.clone()),
+            dispatch_position: [12.0, 34.0],
+            state: MiningDroneJobState::Mining,
+            blocker: None,
+            progress: 0.75,
+        });
+
+        let saved = game.owned_ships[drone_index].to_save(&game.smelt_recipes);
+        let restored = OwnedShip::from_save(&game.content_registry, &game.smelt_recipes, saved);
+        assert_eq!(
+            restored.mining_job,
+            game.owned_ships[drone_index].mining_job
+        );
+        assert_eq!(restored.ship.position, vec2(12.0, 34.0));
+    }
+
+    #[test]
+    fn upgraded_drone_smelts_its_own_cargo_and_persists_its_queue() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = make_smelting_recipes(&game.content_registry);
+        game.smelt_settings = vec![CraftSetting::starter(); game.smelt_recipes.len()];
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        game.owned_ships[drone_index]
+            .upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::Smelter)
+            .expect("drone smelter upgrade should be registered")
+            .level = 1;
+        let recipe_index = 0;
+        let ingredients = game.smelt_recipes[recipe_index].ingredients.clone();
+        let output = game.smelt_recipes[recipe_index].output.clone();
+        for ingredient in &ingredients {
+            game.owned_ships[drone_index]
+                .inventory
+                .add_item(ingredient.item.clone(), ingredient.count);
+        }
+        game.owned_ships[drone_index].smelt_settings[recipe_index].queued = 1;
+
+        let saved = game.owned_ships[drone_index].to_save(&game.smelt_recipes);
+        let restored = OwnedShip::from_save(&game.content_registry, &game.smelt_recipes, saved);
+        assert_eq!(restored.smelt_settings[recipe_index].queued, 1);
+
+        update_autonomous_drone_smelting(&mut game, 10.0);
+        let drone = &game.owned_ships[drone_index];
+        for ingredient in &ingredients {
+            assert_eq!(drone.inventory.count(&ingredient.item), 0);
+        }
+        assert_eq!(drone.inventory.count(&output.item), output.count);
+        assert_eq!(drone.smelt_settings[recipe_index].queued, 0);
+        assert_eq!(game.inventory.count(&output.item), 0);
+    }
+
+    #[test]
+    fn production_uses_linked_cargo_local_first_and_keeps_output_on_producer() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = make_smelting_recipes(&game.content_registry);
+        game.smelt_settings = vec![CraftSetting::starter(); game.smelt_recipes.len()];
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        let recipe = game.smelt_recipes[0].clone();
+        let ingredient = recipe.ingredients[0].clone();
+        game.inventory.add_item(ingredient.item.clone(), 1);
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(ingredient.item.clone(), ingredient.count - 1);
+        game.smelt_settings[0].queued = recipe.output.count;
+
+        update_production(&mut game, 10.0);
+
+        assert_eq!(game.inventory.count(&ingredient.item), 0);
+        assert_eq!(
+            game.owned_ships[drone_index]
+                .inventory
+                .count(&ingredient.item),
+            0
+        );
+        assert_eq!(
+            game.inventory.count(&recipe.output.item),
+            recipe.output.count
+        );
+        assert_eq!(
+            game.owned_ships[drone_index]
+                .inventory
+                .count(&recipe.output.item),
+            0
+        );
+    }
+
+    #[test]
+    fn linked_cargo_costs_are_atomic_and_require_range_and_both_toggles() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = make_smelting_recipes(&game.content_registry);
+        game.smelt_settings = vec![CraftSetting::starter(); game.smelt_recipes.len()];
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        let recipe = game.smelt_recipes[0].clone();
+        let ingredient = recipe.ingredients[0].clone();
+        game.inventory.add_item(ingredient.item.clone(), 1);
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(ingredient.item.clone(), ingredient.count - 1);
+        game.smelt_settings[0].queued = recipe.output.count;
+
+        game.owned_ships[drone_index].share_inventory = false;
+        update_production(&mut game, 10.0);
+        assert_eq!(game.inventory.count(&ingredient.item), 1);
+        assert_eq!(game.smelt_settings[0].progress, 0.0);
+
+        game.owned_ships[drone_index].share_inventory = true;
+        game.owned_ships[drone_index].ship.position = vec2(OWNED_SHIP_TRANSFER_RANGE + 1.0, 0.0);
+        update_production(&mut game, 10.0);
+        assert_eq!(game.inventory.count(&ingredient.item), 1);
+        assert_eq!(game.smelt_settings[0].progress, 0.0);
+
+        game.owned_ships[drone_index].ship.position = Vec2::ZERO;
+        update_production(&mut game, 10.0);
+        assert_eq!(game.inventory.count(&ingredient.item), 0);
+        assert_eq!(
+            game.inventory.count(&recipe.output.item),
+            recipe.output.count
+        );
+    }
+
+    #[test]
+    fn linked_cargo_supports_drone_auto_repair_and_ship_upgrades() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        game.completed_research
+            .push("core:autonomous_hull_patching".to_string());
+        game.owned_ships[drone_index].auto_repair_enabled = true;
+        game.owned_ships[drone_index].ship.systems.hull.current -= 10.0;
+        let damaged_hull = game.owned_ships[drone_index].ship.systems.hull.current;
+        game.inventory.add_item(iron.clone(), 1);
+
+        update_inactive_owned_ship_systems(&mut game, AUTO_REPAIR_CYCLE_SECONDS);
+
+        assert_eq!(game.inventory.count(&iron), 0);
+        assert_eq!(
+            game.owned_ships[drone_index].ship.systems.hull.current,
+            damaged_hull + 5.0
+        );
+
+        let upgrade_index = game
+            .ship_upgrades
+            .iter()
+            .position(|upgrade| upgrade.kind == ShipUpgradeKind::Engine)
+            .expect("engine upgrade should exist");
+        let cost = game.ship_upgrades[upgrade_index].next_cost(&game.content_registry);
+        for stack in &cost {
+            game.owned_ships[drone_index]
+                .inventory
+                .add_item(stack.item.clone(), stack.count);
+        }
+        assert!(buy_ship_upgrade(&mut game, upgrade_index));
+        assert_eq!(game.ship_upgrades[upgrade_index].level, 1);
+        for stack in &cost {
+            assert_eq!(
+                game.owned_ships[drone_index].inventory.count(&stack.item),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn inventory_sharing_preference_round_trips_and_defaults_on_for_legacy_saves() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        game.share_inventory = false;
+        game.owned_ships[drone_index].share_inventory = false;
+        let serialized = toml::to_string_pretty(&game.to_save()).expect("save should serialize");
+        let saved = toml::from_str::<SaveData>(&serialized).expect("save should deserialize");
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(saved);
+        assert!(!restored.share_inventory);
+        assert!(restored
+            .owned_ships
+            .iter()
+            .any(|owned| owned.instance_id.starts_with("test-drone") && !owned.share_inventory));
+
+        let legacy = serialized
+            .lines()
+            .filter(|line| !line.starts_with("share_inventory"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let saved = toml::from_str::<SaveData>(&legacy).expect("legacy save should deserialize");
+        assert!(saved.share_inventory);
+        assert!(saved.owned_ships.iter().all(|owned| owned.share_inventory));
+    }
+
+    #[test]
+    fn owned_drone_click_opens_inventory_and_double_click_switches_control() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        let original_active = game.active_owned_ship_id.clone();
+
+        handle_owned_ship_click(&mut game, drone_index, 10.0);
+        assert!(!game.fleet_open);
+        resolve_pending_owned_ship_click(&mut game, 10.36);
+        assert!(game.fleet_open);
+        assert_eq!(game.selected_owned_ship_index, drone_index);
+        assert_eq!(game.active_owned_ship_id, original_active);
+
+        game.fleet_open = false;
+        handle_owned_ship_click(&mut game, drone_index, 20.0);
+        handle_owned_ship_click(&mut game, drone_index, 20.1);
+        assert_eq!(
+            game.active_owned_ship_id,
+            game.owned_ships[drone_index].instance_id
+        );
+        assert!(game.pending_owned_ship_click.is_none());
+        assert!(!game.fleet_open);
+    }
+
+    #[test]
+    fn legacy_mining_job_without_delivery_ship_still_deserializes() {
+        let job: MiningDroneJob = serde_json::from_value(serde_json::json!({
+            "system": STARTER_SYSTEM_ID,
+            "planet": "core:test",
+            "resource": "core:iron_ore",
+            "quota": 4,
+            "mined": 2,
+            "return_behavior": "return_to_dispatch",
+            "dispatch_position": [12.0, 34.0],
+            "state": "returning",
+            "blocker": null,
+            "progress": 0.0
+        }))
+        .expect("legacy mining job should deserialize");
+
+        assert_eq!(
+            job.return_behavior,
+            MiningDroneReturnBehavior::ReturnToDispatch
+        );
+        assert_eq!(job.delivery_ship, None);
+        let migrated = sanitized_mining_drone_job(&job);
+        assert_eq!(migrated.route.len(), 1);
+        assert_eq!(migrated.route[0].planet, "core:test");
+        assert_eq!(migrated.route[0].resource, "core:iron_ore");
+        assert_eq!(migrated.route[0].quota, 4);
+        assert_eq!(migrated.route[0].mined, 2);
+    }
+
+    #[test]
+    fn mining_drone_delivery_blocks_without_discarding_cargo_when_recipient_is_full() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let active_position = game.ship.position;
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", active_position);
+        let iron = required_item(&game.content_registry, "core:iron_ore");
+        game.inventory.add_item(iron.clone(), 10_000);
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(iron.clone(), 3);
+        game.owned_ships[drone_index].mining_job = Some(MiningDroneJob {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:test".to_string(),
+            resource: iron.id.clone(),
+            quota: 3,
+            mined: 3,
+            route: vec![MiningDroneLeg {
+                planet: "core:test".to_string(),
+                resource: iron.id.clone(),
+                quota: 3,
+                mined: 3,
+            }],
+            active_leg: 0,
+            return_behavior: MiningDroneReturnBehavior::DeliverToShip,
+            delivery_ship: Some(game.active_owned_ship_id.clone()),
+            dispatch_position: [0.0, 0.0],
+            state: MiningDroneJobState::Returning,
+            blocker: None,
+            progress: 0.0,
+        });
+
+        update_owned_mining_drone_jobs(&mut game, 0.1);
+
+        let drone = &game.owned_ships[drone_index];
+        let job = drone
+            .mining_job
+            .as_ref()
+            .expect("job should remain visible");
+        assert_eq!(job.state, MiningDroneJobState::Blocked);
+        assert_eq!(job.blocker, Some(MiningDroneBlocker::DeliveryShipCargoFull));
+        assert_eq!(drone.inventory.count(&iron), 3);
+    }
+
+    #[test]
+    fn mining_drone_full_cargo_destruction_and_control_switch_are_explicit() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:test_drone_mine",
+            STARTER_SYSTEM_ID,
+            vec2(500.0, 0.0),
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        game.selected_owned_ship_index = drone_index;
+        assert!(start_selected_mining_drone_job(&mut game));
+        assert!(switch_active_owned_ship(&mut game, drone_index));
+        assert_eq!(
+            game.owned_ships[drone_index]
+                .mining_job
+                .as_ref()
+                .expect("controlled drone should retain job")
+                .state,
+            MiningDroneJobState::Paused
+        );
+
+        assert!(switch_active_owned_ship(&mut game, 0));
+        let iron = required_item(&game.content_registry, "core:iron_ore");
+        game.owned_ships[drone_index]
+            .inventory
+            .add_item(iron, 10_000);
+        let target = game.planets[0].position
+            + vec2(
+                body_approach_stop_radius(
+                    game.planets[0].radius,
+                    game.owned_ships[drone_index].ship.radius(),
+                    planet_interaction_radius(
+                        &game.owned_ships[drone_index].ship,
+                        &game.planets[0],
+                    ),
+                ),
+                0.0,
+            );
+        game.owned_ships[drone_index].ship.position = target;
+        let job = game.owned_ships[drone_index]
+            .mining_job
+            .as_mut()
+            .expect("job should remain after control switch");
+        job.state = MiningDroneJobState::Mining;
+        update_owned_mining_drone_jobs(&mut game, 0.1);
+        let full_job = game.owned_ships[drone_index]
+            .mining_job
+            .as_ref()
+            .expect("full-cargo job should remain visible");
+        assert_eq!(full_job.state, MiningDroneJobState::Returning);
+        assert_eq!(full_job.blocker, Some(MiningDroneBlocker::CargoFull));
+
+        game.owned_ships[drone_index].ship.systems.hull.current = 0.0;
+        update_owned_mining_drone_jobs(&mut game, 0.1);
+        assert_eq!(
+            game.owned_ships[drone_index]
+                .mining_job
+                .as_ref()
+                .expect("destroyed job should remain visible")
+                .state,
+            MiningDroneJobState::Destroyed
+        );
     }
 
     #[test]
@@ -26404,6 +29555,10 @@ mod tests {
             .services
             .iter()
             .any(|service| service.kind == "garage"));
+        assert!(cinder
+            .services
+            .iter()
+            .any(|service| service.kind == "shipyard" && service.name == "Hull Showroom"));
     }
 
     #[test]
@@ -27453,7 +30608,7 @@ mod tests {
         game.auto_repair_damage_lockout_remaining = 4.0;
         let serialized = toml::to_string_pretty(&game.to_save()).expect("save should serialize");
         let legacy = serialized
-            .replace("version = 6", "version = 5")
+            .replace("version = 7", "version = 5")
             .lines()
             .filter(|line| {
                 !line.starts_with("auto_repair_enabled")
@@ -28197,7 +31352,7 @@ mod tests {
         }
 
         let view = upgrades_view(&game, 2);
-        assert_eq!(view.rows.len(), SHIP_UPGRADE_COUNT);
+        assert_eq!(view.rows.len(), 8);
         assert_eq!(view.purchase_count, 2);
         assert!(view.rows[0].affordable);
         assert_eq!(view.rows[0].level, 0);
@@ -28214,6 +31369,50 @@ mod tests {
 
         assert_eq!(game.ship_upgrades[0].level, 2);
         assert!(operation_feedback_contains(&game, "Upgrade", "level 2"));
+    }
+
+    #[test]
+    fn mining_drone_upgrade_catalog_uses_drone_specific_saved_slots_and_effects() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let drone_index =
+            add_test_mining_drone(&mut game, "core:prospector_mining_drone", Vec2::ZERO);
+        assert!(switch_active_owned_ship(&mut game, drone_index));
+
+        let view = upgrades_view(&game, 1);
+        assert_eq!(view.rows.len(), 9);
+        assert_eq!(view.rows[0].name, "Mining head");
+        assert_eq!(view.rows[0].upgrade_index, 8);
+        assert_eq!(view.rows[2].name, "Drone smelter");
+        assert_eq!(view.rows[2].upgrade_index, 10);
+        assert_eq!(view.rows[8].name, "Drone shield matrix");
+        assert_eq!(view.rows[8].upgrade_index, 16);
+
+        let mining_head_index = view.rows[0].upgrade_index;
+        let cost = game.ship_upgrades[mining_head_index].next_cost(&game.content_registry);
+        for stack in cost {
+            game.inventory.add_item(stack.item, stack.count);
+        }
+        apply_upgrades_ui_actions(
+            &mut game,
+            vec![egui_upgrades::UpgradesUiAction::Purchase(mining_head_index)],
+            1,
+        );
+        assert_eq!(game.ship_upgrades[mining_head_index].level, 1);
+        assert_eq!(game.ship_upgrades[0].level, 0);
+        let profile = game
+            .content_registry
+            .ships
+            .get("core:prospector_mining_drone")
+            .and_then(|ship| ship.mining_drone.as_ref())
+            .expect("prospector profile should load");
+        assert!((mining_drone_throughput(profile, &game.ship_upgrades) - 0.896).abs() < 0.001);
+        assert!(!ship_upgrade_is_available(
+            &game.content_registry,
+            &game.ship_id,
+            ShipUpgradeKind::Engine
+        ));
     }
 
     #[test]
@@ -28696,6 +31895,25 @@ mod tests {
     }
 
     #[test]
+    fn starmap_npc_labels_preserve_scan_gating() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.npc_ships = vec![test_npc_ship(
+            NpcBehaviorMode::HostileIntercept,
+            vec2(300.0, 100.0),
+        )];
+
+        assert_eq!(
+            starmap_npc_label(&game, &game.npc_ships[0]),
+            "Unknown contact"
+        );
+        game.combat_intel
+            .insert(game.npc_ships[0].id.clone(), CombatIntelLevel::Identity);
+        assert_eq!(starmap_npc_label(&game, &game.npc_ships[0]), "Test NPC");
+    }
+
+    #[test]
     fn starmap_camera_is_fixed_across_frames_and_uses_panel_aspect_ratio() {
         let first = starmap_camera(24.0, 40.0, 900.0, 600.0);
         let repeated = starmap_camera(24.0, 40.0, 900.0, 600.0);
@@ -29148,6 +32366,51 @@ mod tests {
         planet
     }
 
+    fn add_test_mining_drone(game: &mut GameState, ship_id: &str, position: Vec2) -> usize {
+        let definition = game
+            .content_registry
+            .ships
+            .get(ship_id)
+            .unwrap_or_else(|| panic!("test mining drone `{ship_id}` should exist"))
+            .clone();
+        assert!(definition.mining_drone.is_some());
+        let sequence = game.next_owned_ship_sequence;
+        game.next_owned_ship_sequence += 1;
+        let mut ship = Ship::from_content(&definition);
+        ship.position = position;
+        game.owned_ships.push(OwnedShip {
+            instance_id: format!("test-drone-{sequence}"),
+            callsign: format!("Test Drone {sequence}"),
+            ship_id: ship_id.to_string(),
+            system_id: STARTER_SYSTEM_ID.to_string(),
+            ship,
+            installed_power_modules: installed_power_modules_from_ids(
+                &game.content_registry,
+                &definition.power_modules,
+            ),
+            equipped_shields: equipped_shields_from_ids(
+                &game.content_registry,
+                &definition.shield_slots,
+            ),
+            equipped_weapons: equipped_weapons_from_ids(
+                &game.content_registry,
+                &definition.weapon_slots,
+            ),
+            inventory: Inventory::empty(),
+            share_inventory: true,
+            salvage_active: false,
+            salvage_progress: 0.0,
+            upgrades: make_ship_upgrades(),
+            shield_recharge_delay_remaining: 0.0,
+            auto_repair_enabled: false,
+            auto_repair_cycle_progress: 0.0,
+            auto_repair_damage_lockout_remaining: 0.0,
+            mining_job: None,
+            smelt_settings: vec![CraftSetting::starter(); game.smelt_recipes.len()],
+        });
+        game.owned_ships.len() - 1
+    }
+
     fn test_station_destination(id: &str, system: &str, position: Vec2) -> StationDestination {
         StationDestination {
             id: id.to_string(),
@@ -29165,6 +32428,7 @@ mod tests {
                     id: "core:test_market".to_string(),
                     name: "Test Market".to_string(),
                     kind: "shop".to_string(),
+                    artwork: None,
                     description: Some("A test shop service.".to_string()),
                     vendor: None,
                     trade: Vec::new(),
@@ -29177,7 +32441,21 @@ mod tests {
                     id: "core:test_garage".to_string(),
                     name: "Test Garage".to_string(),
                     kind: "garage".to_string(),
+                    artwork: None,
                     description: Some("A test garage service.".to_string()),
+                    vendor: None,
+                    trade: Vec::new(),
+                    research: Vec::new(),
+                    recipe_unlocks: Vec::new(),
+                    contracts: Vec::new(),
+                    reputation_required: None,
+                },
+                StationService {
+                    id: "core:test_shipyard".to_string(),
+                    name: "Test Shipyard".to_string(),
+                    kind: "shipyard".to_string(),
+                    artwork: None,
+                    description: Some("A test ship-sales service.".to_string()),
                     vendor: None,
                     trade: Vec::new(),
                     research: Vec::new(),
@@ -29629,6 +32907,7 @@ mod tests {
             starmap_resize_previous_mouse: None,
             open_turret_bank: None,
             inventory,
+            share_inventory: true,
             smelt_recipes: Vec::new(),
             smelt_settings: Vec::new(),
             craft_recipes: Vec::new(),
@@ -29647,6 +32926,13 @@ mod tests {
             operations_open: false,
             selected_owned_ship_index: 0,
             fleet_transfer_quantity: 1,
+            fleet_mining_planet: None,
+            fleet_mining_resource: None,
+            fleet_mining_quota: 10,
+            fleet_mining_route: Vec::new(),
+            fleet_mining_deliver_to_ship: true,
+            fleet_mining_delivery_ship: None,
+            pending_owned_ship_click: None,
             content_browser: ContentBrowserState::default(),
             escape_dialog_open: false,
             quit_to_title_requested: false,

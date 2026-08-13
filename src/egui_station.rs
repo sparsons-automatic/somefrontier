@@ -4,6 +4,8 @@ use egui_macroquad::egui::{self, Id, Vec2};
 pub struct ServiceRow {
     pub name: String,
     pub context: String,
+    pub description: String,
+    pub artwork: Option<String>,
     pub available: bool,
 }
 
@@ -43,6 +45,20 @@ pub struct ResearchRow {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ShipOffer {
+    pub ship_id: String,
+    pub name: String,
+    pub price: u32,
+    pub purchasable: bool,
+    pub status: String,
+    pub cargo_capacity: String,
+    pub mass: String,
+    pub forward_acceleration: f32,
+    pub turn_acceleration: f32,
+    pub mining_profile: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct StationPaneView {
     pub pinned: bool,
     pub name: String,
@@ -63,6 +79,7 @@ pub struct StationPaneView {
     pub contracts: Vec<ContractRow>,
     pub recipes: Vec<RecipeRow>,
     pub research: Vec<ResearchRow>,
+    pub shipyard: Vec<ShipOffer>,
     pub latest_operation: Option<String>,
 }
 
@@ -75,18 +92,25 @@ pub enum StationUiAction {
     Repair,
     Contract(usize),
     PurchaseRecipe(usize),
+    BuyShip(String),
 }
 
 pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &StationPaneView) -> Vec<StationUiAction> {
     ctx.set_style(egui::Style::default());
     let mut actions = Vec::new();
     let height = 620.0_f32.min((screen[1] - 96.0).max(300.0));
+    let width = 900.0_f32.min((screen[0] - 32.0).max(360.0));
+    let has_selected_service = selected_service(&view.services, view.selected_service).is_some();
 
     egui::Window::new("Station")
         .id(Id::new("station-workspace-window"))
         .default_pos(egui::pos2(16.0, 48.0))
-        .default_size(Vec2::new(520.0, height))
-        .min_width(360.0)
+        .default_size(Vec2::new(width, height))
+        .min_width(if has_selected_service {
+            680.0_f32.min(width)
+        } else {
+            360.0
+        })
         .resizable(true)
         .collapsible(true)
         .vscroll(true)
@@ -116,31 +140,56 @@ fn draw_contents(ui: &mut egui::Ui, view: &StationPaneView, actions: &mut Vec<St
     ui.heading("Services");
     if view.services.is_empty() {
         ui.label("No services declared");
-    } else {
-        ui.horizontal_wrapped(|ui| {
-            for (index, service) in view.services.iter().enumerate() {
-                let response = ui
-                    .add_enabled(
-                        service.available,
-                        egui::Button::new(&service.name)
-                            .selected(view.selected_service == Some(index)),
-                    )
-                    .on_hover_text(&service.context);
-                if response.clicked() {
-                    actions.push(StationUiAction::SelectService(index));
-                }
-            }
-        });
+        return;
     }
 
-    let Some(selected) = view.selected_service else {
-        ui.label("Select a station service.");
+    if selected_service(&view.services, view.selected_service).is_some() {
+        ui.columns(2, |columns| {
+            draw_service_cards(&mut columns[0], view, actions);
+            egui::Frame::group(columns[1].style())
+                .inner_margin(10.0)
+                .show(&mut columns[1], |ui| draw_service_rail(ui, view, actions));
+        });
+    } else {
+        draw_service_cards(ui, view, actions);
+    }
+}
+
+fn selected_service(services: &[ServiceRow], selected: Option<usize>) -> Option<&ServiceRow> {
+    selected.and_then(|selected| services.get(selected))
+}
+
+fn draw_service_cards(
+    ui: &mut egui::Ui,
+    view: &StationPaneView,
+    actions: &mut Vec<StationUiAction>,
+) {
+    for (index, service) in view.services.iter().enumerate() {
+        let label = format!(
+            "{}\n{}\n{}",
+            service.name, service.description, service.context
+        );
+        let response = crate::egui_art::card_button(
+            ui,
+            service.artwork.as_deref(),
+            label,
+            view.selected_service == Some(index),
+            service.available,
+        );
+        if response.clicked() {
+            actions.push(StationUiAction::SelectService(index));
+        }
+    }
+}
+
+fn draw_service_rail(
+    ui: &mut egui::Ui,
+    view: &StationPaneView,
+    actions: &mut Vec<StationUiAction>,
+) {
+    let Some(service) = selected_service(&view.services, view.selected_service) else {
         return;
     };
-    let Some(service) = view.services.get(selected) else {
-        return;
-    };
-    ui.separator();
     ui.heading(&service.name);
     ui.label(&service.context);
     if let Some(status) = &view.service_status {
@@ -164,10 +213,46 @@ fn draw_contents(ui: &mut egui::Ui, view: &StationPaneView, actions: &mut Vec<St
     draw_contracts(ui, view, actions);
     draw_recipes(ui, view, actions);
     draw_research(ui, view);
+    draw_shipyard(ui, view, actions);
 
     if let Some(latest) = &view.latest_operation {
         ui.separator();
         ui.label(format!("Latest: {latest}"));
+    }
+}
+
+fn draw_shipyard(ui: &mut egui::Ui, view: &StationPaneView, actions: &mut Vec<StationUiAction>) {
+    if view.shipyard.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.heading("Available hulls");
+    for offer in &view.shipyard {
+        ui.group(|ui| {
+            ui.strong(&offer.name);
+            ui.small(format!(
+                "Cargo {} · Mass {} · Thrust {:.0} · Turn {:.1}",
+                offer.cargo_capacity,
+                offer.mass,
+                offer.forward_acceleration,
+                offer.turn_acceleration
+            ));
+            if let Some(profile) = &offer.mining_profile {
+                ui.small(profile);
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        offer.purchasable,
+                        egui::Button::new(format!("Buy · {} cr", offer.price)),
+                    )
+                    .clicked()
+                {
+                    actions.push(StationUiAction::BuyShip(offer.ship_id.clone()));
+                }
+                ui.small(&offer.status);
+            });
+        });
     }
 }
 
@@ -287,9 +372,31 @@ fn fact_row(ui: &mut egui::Ui, label: &str, value: &str) {
 mod tests {
     use super::*;
 
+    fn service_row(name: &str) -> ServiceRow {
+        ServiceRow {
+            name: name.to_string(),
+            context: "Dock range reached".to_string(),
+            description: "Service description".to_string(),
+            artwork: None,
+            available: true,
+        }
+    }
+
     #[test]
     fn station_actions_are_typed_by_row() {
         assert_eq!(StationUiAction::Buy(2), StationUiAction::Buy(2));
         assert_ne!(StationUiAction::Buy(2), StationUiAction::Sell(2));
+    }
+
+    #[test]
+    fn service_detail_rail_requires_a_valid_selection() {
+        let services = vec![service_row("Supply Counter")];
+
+        assert!(selected_service(&services, None).is_none());
+        assert!(selected_service(&services, Some(1)).is_none());
+        assert_eq!(
+            selected_service(&services, Some(0)).map(|service| service.name.as_str()),
+            Some("Supply Counter")
+        );
     }
 }

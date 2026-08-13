@@ -506,6 +506,7 @@ summary = "A modular trade station where refinery crews, haulers, and survey pil
 id = "market"
 name = "Exchange Market"
 kind = "shop"
+artwork = "./assets/services/exchange-market.png"
 description = "Cargo buying and selling counter."
 
 [[stations.services.trade]]
@@ -540,9 +541,15 @@ Rules:
 - Service `id` values resolve to namespaced IDs and must be unique within the
   station.
 - Service `name` and `kind` must not be empty.
+- Service `artwork` is optional and follows the same pack-relative path and
+  existence validation as other textures. When present, the Station window
+  displays it as the left-hand thumbnail of the service's clickable card;
+  services without artwork retain a text-only card. Use a runtime-supported
+  image format such as PNG; Macroquad builds in this repository do not enable
+  WebP decoding.
 - Service `kind` is player-facing context unless the base game has specific
   behavior for it. Supported mechanics currently include trade stock, research
-  leads, legacy recipe unlock rows, garage repair actions, and hauling/survey
+  leads, legacy recipe unlock rows, garage repair actions, shipyard hull sales, and hauling/survey
   contract boards. Other concise kinds such as `cargo`, `navigation`, or
   `signals` can label future hooks without adding behavior.
 - Trade `item` values must reference existing items. `buy_price` and
@@ -876,6 +883,8 @@ purchase_price = 8500
 power_modules = ["compact_fission_cell"]
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
+upgrade_catalog = ["mining_head", "cargo_pods", "navigation_core"]
+mining_drone = { throughput_multiplier = 0.8, operating_range = 6500.0, max_job_quota = 50 }
 ```
 
 Rules:
@@ -912,8 +921,9 @@ Rules:
   speed cap.
 - `purchase_price` is optional. When present, it must be a positive credit
   amount and makes the hull available while the player is in range of an
-  available station service whose kind is `garage`; normal service reputation
-  requirements still apply. Omit it for preview, scenario-only, or otherwise
+  available station service whose kind is `shipyard`; legacy packs with a
+  `garage` and no explicit `shipyard` retain the combined repair-and-sales view.
+  Normal service reputation requirements still apply. Omit it for preview, scenario-only, or otherwise
   unavailable hulls. Purchased ships receive their configured default modules
   and slots but do not receive starter inventory.
 - `power_modules` defaults to an empty list. Entries resolve to namespaced power
@@ -924,6 +934,18 @@ Rules:
   configurable `Turret Bank` and supplies that bank's initially fitted weapon.
   List order is bank order, repeated weapon IDs are allowed, and every entry
   resolves to a namespaced weapon ID that must reference a loaded weapon.
+- `upgrade_catalog` is optional. Entries resolve to namespaced upgrade IDs and
+  must reference loaded records from `upgrades.toml`. When present, the Ship
+  Upgrades window exposes only those entries for that hull while every owned
+  ship retains independent levels. When omitted, the base game's conventional
+  eight-upgrade catalog is used for compatibility with existing content packs.
+- `mining_drone` is optional. When present, the hull gains the Fleet autonomous
+  mining-job editor and runtime. `throughput_multiplier` scales the shared
+  mining cycle speed, `operating_range` is the maximum dispatch-to-planet
+  distance in local-space units, and `max_job_quota` caps a single job. All
+  three values must be positive and `max_job_quota` must be nonzero. Planet and
+  item IDs remain sourced from composition-scanned, namespaced content, so no
+  core-only resource list is embedded in the hull definition.
 
 `content/packs/turrets-galore/ships.toml` is the reference multi-bank player
 ship. Its two ordered `weapon_slots` entries produce two independently swappable
@@ -940,8 +962,12 @@ Inactive owned ships in the current system remain visible at their saved
 positions. Their configured power modules, shields, and automatic weapons keep
 running: shields and energy recharge, turrets acquire hostile targets, and
 ammunition is consumed from that ship's independent cargo. Hostiles can target
-and damage these ships. Inactive ships do not currently navigate or follow the
-active ship, so pack authors should not depend on autonomous fleet movement.
+and damage these ships. Inactive ships do not follow the active ship. Hulls with
+a `mining_drone` profile are the exception to stationary fleet behavior: a
+configured job can navigate between its saved dispatch point and a same-system
+planet, mine into the ship's own cargo, and return or hold. Job identity, route
+endpoints, progress, blockers, cargo, damage, and position persist in the
+owned-ship save. Cross-system autonomous travel is intentionally blocked.
 
 ## `npc_ships.toml`
 

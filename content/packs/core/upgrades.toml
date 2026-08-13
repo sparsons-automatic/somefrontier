@@ -61,3 +61,74 @@ costs = [
   { item = "core:aluminum_plate", base_count = 4, per_level = 2 },
   { item = "core:gear", base_count = 1, per_level = 1, per_levels = 2 },
 ]
+
+[[upgrades]]
+id = "mining_head"
+costs = [
+  { item = "core:structural_alloy", base_count = 2, per_level = 1 },
+  { item = "core:gear", base_count = 2, per_level = 1 },
+  { item = "core:plasma_torch_cell", base_count = 1, per_level = 1, per_levels = 2 },
+]
+
+[[upgrades]]
+id = "ore_processor"
+costs = [
+  { item = "core:electronics", base_count = 2, per_level = 1 },
+  { item = "core:circuit", base_count = 2, per_level = 1 },
+  { item = "core:silver_contact", base_count = 1, per_level = 1, per_levels = 2 },
+]
+
+[[upgrades]]
+id = "smelter"
+costs = [
+  { item = "core:structural_alloy", base_count = 2, per_level = 1 },
+  { item = "core:electronics", base_count = 2, per_level = 1 },
+  { item = "core:coolant", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "cargo_pods"
+costs = [
+  { item = "core:structural_alloy", base_count = 2, per_level = 1 },
+  { item = "core:aluminum_plate", base_count = 3, per_level = 2 },
+  { item = "core:gear", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "navigation_core"
+costs = [
+  { item = "core:advanced_scanner_core", base_count = 0, per_level = 1, per_levels = 2 },
+  { item = "core:electronics", base_count = 2, per_level = 1 },
+  { item = "core:copper_wire", base_count = 3, per_level = 1 },
+]
+
+[[upgrades]]
+id = "job_controller"
+costs = [
+  { item = "core:circuit", base_count = 2, per_level = 1 },
+  { item = "core:electronics", base_count = 2, per_level = 1 },
+  { item = "core:improved_survey_drone", base_count = 0, per_level = 1, per_levels = 3 },
+]
+
+[[upgrades]]
+id = "delivery_thrusters"
+costs = [
+  { item = "core:cobalt_alloy", base_count = 0, per_level = 1, per_levels = 2 },
+  { item = "core:gear", base_count = 2, per_level = 1 },
+  { item = "core:fuel_canister", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
+id = "industrial_plating"
+costs = [
+  { item = "core:structural_alloy", base_count = 3, per_level = 1 },
+  { item = "core:aluminum_plate", base_count = 3, per_level = 2 },
+]
+
+[[upgrades]]
+id = "drone_shield_matrix"
+costs = [
+  { item = "core:copper_wire", base_count = 5, per_level = 2 },
+  { item = "core:circuit", base_count = 2, per_level = 1 },
+  { item = "core:balanced_shield_matrix", base_count = 0, per_level = 1, per_levels = 3 },
+]

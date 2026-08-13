@@ -175,6 +175,15 @@ pub struct ShipDef {
     pub power_modules: Vec<String>,
     pub shield_slots: Vec<String>,
     pub weapon_slots: Vec<String>,
+    pub upgrade_catalog: Vec<String>,
+    pub mining_drone: Option<MiningDroneDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MiningDroneDef {
+    pub throughput_multiplier: f32,
+    pub operating_range: f32,
+    pub max_job_quota: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -569,6 +578,7 @@ pub struct StationServiceDef {
     pub id: String,
     pub name: String,
     pub kind: String,
+    pub artwork: Option<String>,
     pub description: Option<String>,
     pub trade: Vec<TradeStockDef>,
     pub research: Vec<ResearchLeadDef>,
@@ -808,6 +818,16 @@ struct ShipFileDef {
     shield_slots: Vec<String>,
     #[serde(default)]
     weapon_slots: Vec<String>,
+    #[serde(default)]
+    upgrade_catalog: Vec<String>,
+    mining_drone: Option<MiningDroneFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MiningDroneFileDef {
+    throughput_multiplier: f32,
+    operating_range: f32,
+    max_job_quota: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1239,6 +1259,7 @@ struct StationServiceFileDef {
     id: String,
     name: String,
     kind: String,
+    artwork: Option<String>,
     description: Option<String>,
     #[serde(default)]
     trade: Vec<TradeStockFileDef>,
@@ -1976,6 +1997,27 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         if ship.purchase_price == Some(0) {
             errors.push(format!("Ship `{id}` has a zero purchase price"));
         }
+        if let Some(mining_drone) = &ship.mining_drone {
+            validate_positive(
+                mining_drone.throughput_multiplier,
+                "Ship mining drone",
+                &id,
+                "throughput multiplier",
+                errors,
+            );
+            validate_positive(
+                mining_drone.operating_range,
+                "Ship mining drone",
+                &id,
+                "operating range",
+                errors,
+            );
+            if mining_drone.max_job_quota == 0 {
+                errors.push(format!(
+                    "Ship mining drone `{id}` has a zero maximum job quota"
+                ));
+            }
+        }
         let texture = ship
             .texture
             .map(|texture| resolve_texture_path(&raw_pack.path, &texture, &id, errors));
@@ -2014,6 +2056,16 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                         .into_iter()
                         .map(|weapon| namespaced_id(&pack_id, &weapon))
                         .collect(),
+                    upgrade_catalog: ship
+                        .upgrade_catalog
+                        .into_iter()
+                        .map(|upgrade| namespaced_id(&pack_id, &upgrade))
+                        .collect(),
+                    mining_drone: ship.mining_drone.map(|mining_drone| MiningDroneDef {
+                        throughput_multiplier: mining_drone.throughput_multiplier,
+                        operating_range: mining_drone.operating_range,
+                        max_job_quota: mining_drone.max_job_quota,
+                    }),
                 },
             )
             .is_none();
@@ -2640,7 +2692,8 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         let texture = station
             .texture
             .map(|texture| resolve_texture_path(&raw_pack.path, &texture, &id, errors));
-        let services = resolve_station_services(&pack_id, &id, station.services, errors);
+        let services =
+            resolve_station_services(&raw_pack.path, &pack_id, &id, station.services, errors);
         let system = station
             .system
             .map(|system| namespaced_id(&pack_id, &system));
@@ -2825,6 +2878,7 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
 }
 
 fn resolve_station_services(
+    pack_path: &Path,
     pack_id: &str,
     station_id: &str,
     services: Vec<StationServiceFileDef>,
@@ -2850,6 +2904,9 @@ fn resolve_station_services(
                 "Duplicate station service id `{id}` on `{station_id}`"
             ));
         }
+        let artwork = service
+            .artwork
+            .map(|artwork| resolve_texture_path(pack_path, &artwork, &id, errors));
         let trade = service
             .trade
             .into_iter()
@@ -2972,6 +3029,7 @@ fn resolve_station_services(
             id,
             name: service.name,
             kind: service.kind,
+            artwork,
             description: service.description,
             trade,
             research,
@@ -3260,6 +3318,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                 &ship.id,
                 "weapon",
                 weapon,
+                errors,
+            );
+        }
+        for upgrade in &ship.upgrade_catalog {
+            validate_reference(
+                registry.upgrades.contains_key(upgrade),
+                "Ship",
+                &ship.id,
+                "upgrade catalog entry",
+                upgrade,
                 errors,
             );
         }
@@ -4717,6 +4785,23 @@ mod tests {
                         .iter()
                         .any(|stock| stock.item == "core:point_defense_turret")
             }));
+        let service_art = registry
+            .stations
+            .values()
+            .flat_map(|station| station.services.iter())
+            .filter_map(|service| service.artwork.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(service_art.len(), 7);
+        for path in service_art {
+            assert!(path.ends_with(".png"), "unexpected service artwork: {path}");
+            let bytes = std::fs::read(path).expect("service artwork should be readable");
+            let image = macroquad::prelude::Image::from_file_with_format(
+                &bytes,
+                Some(macroquad::prelude::ImageFormat::Png),
+            )
+            .expect("service artwork should decode through Macroquad");
+            assert!(image.width() > 0 && image.height() > 0);
+        }
         assert!(registry
             .stations
             .get("core:freebelt_commissary")
@@ -4766,6 +4851,50 @@ mod tests {
             .starter_inventory
             .iter()
             .any(|stack| stack.item == "core:interceptor_round" && stack.count == 120));
+        let prospector_ship = registry
+            .ships
+            .get("core:prospector_mining_drone")
+            .expect("prospector mining drone should load");
+        let industrial_ship = registry
+            .ships
+            .get("core:industrial_mining_drone")
+            .expect("industrial mining drone should load");
+        let prospector = prospector_ship
+            .mining_drone
+            .as_ref()
+            .expect("prospector mining profile should load");
+        let industrial = industrial_ship
+            .mining_drone
+            .as_ref()
+            .expect("industrial mining profile should load");
+        assert_eq!(prospector.throughput_multiplier, 0.8);
+        assert_eq!(prospector.operating_range, 6_500.0);
+        assert_eq!(prospector.max_job_quota, 50);
+        assert_eq!(industrial.throughput_multiplier, 1.5);
+        assert_eq!(industrial.operating_range, 16_000.0);
+        assert_eq!(industrial.max_job_quota, 200);
+        let drone_textures = [
+            prospector_ship
+                .texture
+                .as_deref()
+                .expect("prospector should have unique artwork"),
+            industrial_ship
+                .texture
+                .as_deref()
+                .expect("industrial drone should have unique artwork"),
+        ];
+        assert_ne!(drone_textures[0], drone_textures[1]);
+        for texture in drone_textures {
+            assert!(texture.ends_with("mining-drone.png"));
+            let bytes = std::fs::read(texture).expect("drone artwork should be readable");
+            let image = macroquad::prelude::Image::from_file_with_format(
+                &bytes,
+                Some(macroquad::prelude::ImageFormat::Png),
+            )
+            .expect("drone artwork should decode through Macroquad");
+            assert!(image.width() > 0 && image.height() > 0);
+            assert!(image.get_image_data().iter().any(|pixel| pixel[3] == 0));
+        }
         assert!(!registry.warnings.iter().any(|warning| {
             warning.contains("station `core:processing`")
                 && warning.contains("output `core:reactor_pellet`")
@@ -6026,6 +6155,7 @@ shield_capacity = 50.0
 power_modules = ["bad_reactor", "missing_module"]
 shield_slots = ["bad_shield", "missing_shield"]
 weapon_slots = ["point_defense", "missing_weapon"]
+mining_drone = { throughput_multiplier = 0.0, operating_range = 0.0, max_job_quota = 0 }
 "#,
         )
         .expect("ships should be written");
@@ -6101,6 +6231,16 @@ weapon_slots = ["missing_npc_weapon"]
             .any(|error| { error == "Ship `bad-ship-pack:bad_ship` has non-positive radius" }));
         assert!(errors.iter().any(|error| {
             error == "Ship `bad-ship-pack:bad_ship` has non-positive cargo capacity"
+        }));
+        assert!(errors.iter().any(|error| {
+            error
+                == "Ship mining drone `bad-ship-pack:bad_ship` has non-positive throughput multiplier"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Ship mining drone `bad-ship-pack:bad_ship` has non-positive operating range"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Ship mining drone `bad-ship-pack:bad_ship` has a zero maximum job quota"
         }));
         assert!(errors.iter().any(|error| {
             error

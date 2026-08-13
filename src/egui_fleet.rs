@@ -18,6 +18,52 @@ pub struct CargoRow {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct MiningJobOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MiningRouteLegView {
+    pub planet: String,
+    pub resource: String,
+    pub quota: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DroneSmeltRow {
+    pub name: String,
+    pub queued: u32,
+    pub progress: f32,
+    pub unlocked: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MiningDroneView {
+    pub profile: String,
+    pub destinations: Vec<MiningJobOption>,
+    pub resources: Vec<MiningJobOption>,
+    pub selected_planet: Option<String>,
+    pub selected_resource: Option<String>,
+    pub quota: u32,
+    pub max_quota: u32,
+    pub route: Vec<MiningRouteLegView>,
+    pub add_leg_enabled: bool,
+    pub route_edit_status: Option<String>,
+    pub deliver_to_ship: bool,
+    pub delivery_ships: Vec<MiningJobOption>,
+    pub selected_delivery_ship: Option<String>,
+    pub job_status: Option<String>,
+    pub start_enabled: bool,
+    pub pause_enabled: bool,
+    pub paused: bool,
+    pub recall_enabled: bool,
+    pub cancel_enabled: bool,
+    pub smelter_installed: bool,
+    pub smelt_rows: Vec<DroneSmeltRow>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SelectedShip {
     pub callsign: String,
     pub hull_name: String,
@@ -32,27 +78,12 @@ pub struct SelectedShip {
     pub turrets: usize,
     pub active: bool,
     pub switch_enabled: bool,
+    pub share_inventory: bool,
+    pub linked_inventory_status: String,
     pub transfer_available: bool,
     pub transfer_status: String,
     pub cargo_rows: Vec<CargoRow>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShipOffer {
-    pub ship_id: String,
-    pub name: String,
-    pub price: u32,
-    pub affordable: bool,
-    pub cargo_capacity: String,
-    pub mass: String,
-    pub forward_acceleration: f32,
-    pub turn_acceleration: f32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShipyardView {
-    pub station_name: String,
-    pub offers: Vec<ShipOffer>,
+    pub mining_drone: Option<MiningDroneView>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +96,6 @@ pub struct FleetPaneView {
     pub transfer_quantity: u32,
     pub quantity_step: u32,
     pub credits: u32,
-    pub shipyard: Option<ShipyardView>,
     pub latest_operation: Option<String>,
 }
 
@@ -73,11 +103,25 @@ pub struct FleetPaneView {
 pub enum FleetUiAction {
     TogglePin,
     SelectShip(usize),
+    QueueDroneSmelt(usize),
     SwitchControl,
+    SetShareInventory(bool),
     AdjustTransferQuantity(i32),
     TransferToSelected(String),
     TransferToActive(String),
-    BuyShip(String),
+    TakeAllFromSelected,
+    SelectMiningPlanet(String),
+    SelectMiningResource(String),
+    AdjustMiningQuota(i32),
+    AddMiningRouteLeg,
+    RemoveMiningRouteLeg(usize),
+    ClearMiningRoute,
+    SetMiningDeliverToShip(bool),
+    SelectMiningDeliveryShip(String),
+    StartMiningJob,
+    ToggleMiningJobPause,
+    RecallMiningJob,
+    CancelMiningJob,
 }
 
 pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &FleetPaneView) -> Vec<FleetUiAction> {
@@ -109,7 +153,9 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
         ui.separator();
         ui.label(format!("Credits {}", view.credits));
     });
-    ui.small("Select a ship to inspect it. Press F to close the fleet workspace.");
+    ui.small(
+        "Click a ship to inspect its inventory. Double-click an available ship to switch control.",
+    );
 
     if view.ships.is_empty() {
         ui.label("No owned ships are available.");
@@ -125,14 +171,15 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
                 "{}{}\n{} · {}\n{}{}",
                 ship.callsign, active, ship.hull_name, ship.system, ship.condition, unavailable
             );
-            if ui
-                .add_sized(
-                    [ui.available_width(), 64.0],
-                    egui::Button::new(label).selected(view.selected == Some(index)),
-                )
-                .clicked()
-            {
+            let response = ui.add_sized(
+                [ui.available_width(), 64.0],
+                egui::Button::new(label).selected(view.selected == Some(index)),
+            );
+            if response.clicked() {
                 actions.push(FleetUiAction::SelectShip(index));
+            }
+            if response.double_clicked() && !ship.active && ship.resolved {
+                actions.push(FleetUiAction::SwitchControl);
             }
         }
     }
@@ -170,10 +217,227 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
     {
         actions.push(FleetUiAction::SwitchControl);
     }
+    let mut share_inventory = selected.share_inventory;
+    if ui
+        .checkbox(&mut share_inventory, "Share inventory with nearby fleet")
+        .changed()
+    {
+        actions.push(FleetUiAction::SetShareInventory(share_inventory));
+    }
+    ui.small(&selected.linked_inventory_status);
+
+    if let Some(drone) = &selected.mining_drone {
+        ui.separator();
+        ui.heading("Autonomous mining");
+        ui.small(&drone.profile);
+        if let Some(status) = &drone.job_status {
+            ui.label(status);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Destination");
+            let selected_label = drone
+                .selected_planet
+                .as_ref()
+                .and_then(|id| drone.destinations.iter().find(|option| &option.id == id))
+                .map(|option| option.label.as_str())
+                .unwrap_or("Select scanned planet");
+            egui::ComboBox::from_id_salt("fleet-mining-destination")
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for option in &drone.destinations {
+                        if ui
+                            .selectable_label(
+                                drone.selected_planet.as_ref() == Some(&option.id),
+                                &option.label,
+                            )
+                            .clicked()
+                        {
+                            actions.push(FleetUiAction::SelectMiningPlanet(option.id.clone()));
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Resource");
+            let selected_label = drone
+                .selected_resource
+                .as_ref()
+                .and_then(|id| drone.resources.iter().find(|option| &option.id == id))
+                .map(|option| option.label.as_str())
+                .unwrap_or("Select resource");
+            egui::ComboBox::from_id_salt("fleet-mining-resource")
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for option in &drone.resources {
+                        if ui
+                            .selectable_label(
+                                drone.selected_resource.as_ref() == Some(&option.id),
+                                &option.label,
+                            )
+                            .clicked()
+                        {
+                            actions.push(FleetUiAction::SelectMiningResource(option.id.clone()));
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Quota");
+            if ui.button("−").clicked() {
+                actions.push(FleetUiAction::AdjustMiningQuota(-1));
+            }
+            ui.label(format!("{} / {}", drone.quota, drone.max_quota));
+            if ui.button("+").clicked() {
+                actions.push(FleetUiAction::AdjustMiningQuota(1));
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(drone.add_leg_enabled, egui::Button::new("Add route leg"))
+                .clicked()
+            {
+                actions.push(FleetUiAction::AddMiningRouteLeg);
+            }
+            if ui
+                .add_enabled(!drone.route.is_empty(), egui::Button::new("Clear route"))
+                .clicked()
+            {
+                actions.push(FleetUiAction::ClearMiningRoute);
+            }
+        });
+        if let Some(status) = &drone.route_edit_status {
+            ui.small(status);
+        }
+        if drone.route.is_empty() {
+            ui.small("No route legs yet. Add the selected planet, ore, and quota.");
+        } else {
+            ui.strong("Mining route");
+            for (index, leg) in drone.route.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{}. {} · {} ×{}",
+                        index + 1,
+                        leg.planet,
+                        leg.resource,
+                        leg.quota
+                    ));
+                    if ui.small_button("Remove").clicked() {
+                        actions.push(FleetUiAction::RemoveMiningRouteLeg(index));
+                    }
+                });
+            }
+        }
+        let mut auto_transfer = drone.deliver_to_ship;
+        if ui
+            .checkbox(
+                &mut auto_transfer,
+                "Auto-transfer inventory to a fleet ship",
+            )
+            .changed()
+        {
+            actions.push(FleetUiAction::SetMiningDeliverToShip(auto_transfer));
+        }
+        if drone.deliver_to_ship {
+            ui.horizontal(|ui| {
+                ui.label("Deliver to");
+                let selected_label = drone
+                    .selected_delivery_ship
+                    .as_ref()
+                    .and_then(|id| drone.delivery_ships.iter().find(|option| &option.id == id))
+                    .map(|option| option.label.as_str())
+                    .unwrap_or("Select fleet ship");
+                egui::ComboBox::from_id_salt("fleet-mining-delivery-ship")
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        for option in &drone.delivery_ships {
+                            if ui
+                                .selectable_label(
+                                    drone.selected_delivery_ship.as_ref() == Some(&option.id),
+                                    &option.label,
+                                )
+                                .clicked()
+                            {
+                                actions.push(FleetUiAction::SelectMiningDeliveryShip(
+                                    option.id.clone(),
+                                ));
+                            }
+                        }
+                    });
+            });
+            ui.small(
+                "The drone unloads its entire inventory on arrival. If the receiving hold fills, \
+                 remaining cargo stays aboard.",
+            );
+        } else {
+            ui.small("The drone will hold at the final mining target with its cargo aboard.");
+        }
+        ui.separator();
+        ui.heading("Onboard smelting");
+        if drone.smelter_installed {
+            ui.small("Queues run autonomously from this drone's own inventory.");
+            for (index, row) in drone.smelt_rows.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{} · queued {} · {:.0}%",
+                        row.name,
+                        row.queued,
+                        row.progress * 100.0
+                    ));
+                    if ui
+                        .add_enabled(row.unlocked, egui::Button::new("Queue"))
+                        .clicked()
+                    {
+                        actions.push(FleetUiAction::QueueDroneSmelt(index));
+                    }
+                });
+            }
+        } else {
+            ui.small("Install the Drone smelter upgrade to process ore autonomously.");
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(drone.start_enabled, egui::Button::new("Start job"))
+                .clicked()
+            {
+                actions.push(FleetUiAction::StartMiningJob);
+            }
+            if ui
+                .add_enabled(
+                    drone.pause_enabled,
+                    egui::Button::new(if drone.paused { "Resume" } else { "Pause" }),
+                )
+                .clicked()
+            {
+                actions.push(FleetUiAction::ToggleMiningJobPause);
+            }
+            if ui
+                .add_enabled(drone.recall_enabled, egui::Button::new("Recall"))
+                .clicked()
+            {
+                actions.push(FleetUiAction::RecallMiningJob);
+            }
+            if ui
+                .add_enabled(drone.cancel_enabled, egui::Button::new("Cancel job"))
+                .clicked()
+            {
+                actions.push(FleetUiAction::CancelMiningJob);
+            }
+        });
+    }
 
     ui.separator();
     ui.heading("Cargo transfer");
     ui.label(&selected.transfer_status);
+    if ui
+        .add_enabled(
+            selected.transfer_available && !selected.cargo_rows.is_empty(),
+            egui::Button::new("Take all from selected ship"),
+        )
+        .on_hover_text("Move every item that fits into the active ship; excess cargo stays aboard")
+        .clicked()
+    {
+        actions.push(FleetUiAction::TakeAllFromSelected);
+    }
     ui.horizontal(|ui| {
         ui.label("Quantity");
         if ui
@@ -210,32 +474,6 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
             actions,
         );
     });
-
-    if let Some(shipyard) = &view.shipyard {
-        ui.separator();
-        ui.heading(format!("Shipyard · {}", shipyard.station_name));
-        if shipyard.offers.is_empty() {
-            ui.label("No hulls are currently offered.");
-        }
-        for offer in &shipyard.offers {
-            ui.small(format!(
-                "Cargo {} · Mass {} · Thrust {:.0} · Turn {:.1}",
-                offer.cargo_capacity,
-                offer.mass,
-                offer.forward_acceleration,
-                offer.turn_acceleration
-            ));
-            if ui
-                .add_enabled(
-                    offer.affordable,
-                    egui::Button::new(format!("Buy {} · {} cr", offer.name, offer.price)),
-                )
-                .clicked()
-            {
-                actions.push(FleetUiAction::BuyShip(offer.ship_id.clone()));
-            }
-        }
-    }
 
     if let Some(latest) = &view.latest_operation {
         ui.separator();
@@ -291,6 +529,18 @@ mod tests {
         assert_ne!(
             FleetUiAction::TransferToSelected("core:iron_ore".to_string()),
             FleetUiAction::TransferToActive("core:iron_ore".to_string())
+        );
+        assert_ne!(
+            FleetUiAction::TakeAllFromSelected,
+            FleetUiAction::TransferToActive("core:iron_ore".to_string())
+        );
+    }
+
+    #[test]
+    fn auto_transfer_action_preserves_checkbox_state() {
+        assert_ne!(
+            FleetUiAction::SetMiningDeliverToShip(true),
+            FleetUiAction::SetMiningDeliverToShip(false)
         );
     }
 }

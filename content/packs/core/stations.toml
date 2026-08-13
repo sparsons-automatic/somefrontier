@@ -156,12 +156,21 @@ summary = "Repair and refit yard for hull work, turret swaps, shield matrices, a
 id = "cinder_yard_garage"
 name = "Repair Gantry"
 kind = "garage"
+artwork = "./assets/services/repair-gantry.png"
 description = "Primary repair, refit, and drydock service group for damaged or pressure-worn ships."
+
+[[stations.services]]
+id = "cinder_yard_shipyard"
+name = "Hull Showroom"
+kind = "shipyard"
+artwork = "./assets/services/hull-showroom.png"
+description = "New and refurbished hull sales, including autonomous mining drones and working ships."
 
 [[stations.services]]
 id = "cinder_yard_parts"
 name = "Parts Cage"
 kind = "shop"
+artwork = "./assets/services/parts-cage.png"
 description = "Ship parts, turret hardware, shield matrices, and upgrade-support components."
 
 [[stations.services.trade]]
@@ -217,6 +226,7 @@ restock_days = 12.0
 id = "cinder_yard_bar"
 name = "Torchcut Bar"
 kind = "bar"
+artwork = "./assets/services/torchcut-bar.png"
 description = "Mechanic talk, repair rumors, and future yard-faction hooks."
 
 [[stations]]
@@ -290,6 +300,7 @@ summary = "Independent hauler supply stop for drones, fuel, and consumables befo
 id = "freebelt_supply"
 name = "Supply Counter"
 kind = "shop"
+artwork = "./assets/services/supply-counter.png"
 description = "Drones, route fuel, and hauler supplies stocked for independent pilots."
 
 [[stations.services.trade]]
@@ -331,12 +342,14 @@ restock_days = 5.0
 id = "freebelt_saloon"
 name = "Hauler Tables"
 kind = "saloon"
+artwork = "./assets/services/hauler-tables.png"
 description = "Hauler contacts, supply rumors, and independent-faction introduction hooks."
 
 [[stations.services]]
 id = "freebelt_board"
 name = "Job Board"
 kind = "contracts"
+artwork = "./assets/services/job-board.png"
 description = "Future hauling, survey, delivery, and fuel-run contract hooks."
 
 [[stations]]
