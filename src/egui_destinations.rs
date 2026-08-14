@@ -14,7 +14,10 @@ pub struct DestinationCandidate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteStopState {
     Completed,
-    Active,
+    Traveling,
+    Mining,
+    Blocked,
+    Skipped,
     Paused,
     Pending,
 }
@@ -23,7 +26,10 @@ impl RouteStopState {
     fn label(self) -> &'static str {
         match self {
             Self::Completed => "Reached",
-            Self::Active => "Approaching",
+            Self::Traveling => "Traveling",
+            Self::Mining => "Mining",
+            Self::Blocked => "Blocked",
+            Self::Skipped => "Skipped",
             Self::Paused => "Paused",
             Self::Pending => "Pending",
         }
@@ -36,6 +42,8 @@ pub struct RouteStopView {
     pub system: String,
     pub distance: String,
     pub state: RouteStopState,
+    pub mining_progress: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,6 +54,8 @@ pub struct DestinationsView {
     pub route: Vec<RouteStopView>,
     pub route_active: bool,
     pub route_started: bool,
+    pub mining_mode_unlocked: bool,
+    pub mining_mode_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +68,7 @@ pub enum DestinationsUiAction {
     MoveDown(usize),
     Activate,
     Pause,
+    ToggleMiningMode,
     Clear,
 }
 
@@ -130,6 +141,22 @@ fn draw_contents(
         ui.strong("Itinerary");
         ui.label(format!("{} stop(s)", view.route.len()));
     });
+    if view.mining_mode_unlocked {
+        let label = if view.mining_mode_enabled {
+            "Mining holds: enabled"
+        } else {
+            "Mining holds: disabled"
+        };
+        if ui
+            .add_enabled(!view.route_active, egui::Button::new(label).small())
+            .on_hover_text("Use configured planet ore work as quotas at itinerary stops")
+            .clicked()
+        {
+            actions.push(DestinationsUiAction::ToggleMiningMode);
+        }
+    } else {
+        ui.small("Mining holds locked · research Automated Extraction Routes");
+    }
     let route_controls_enabled = !view.route_active;
     egui::ScrollArea::vertical()
         .id_salt("destination-itinerary-list")
@@ -149,6 +176,12 @@ fn draw_contents(
                         });
                     });
                     ui.small(format!("{} · {}", stop.system, stop.distance));
+                    if let Some(progress) = &stop.mining_progress {
+                        ui.small(progress);
+                    }
+                    if let Some(reason) = &stop.reason {
+                        ui.small(reason);
+                    }
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
@@ -226,7 +259,10 @@ mod tests {
     #[test]
     fn route_stop_labels_distinguish_progress_states() {
         assert_eq!(RouteStopState::Completed.label(), "Reached");
-        assert_eq!(RouteStopState::Active.label(), "Approaching");
+        assert_eq!(RouteStopState::Traveling.label(), "Traveling");
+        assert_eq!(RouteStopState::Mining.label(), "Mining");
+        assert_eq!(RouteStopState::Blocked.label(), "Blocked");
+        assert_eq!(RouteStopState::Skipped.label(), "Skipped");
         assert_eq!(RouteStopState::Paused.label(), "Paused");
         assert_eq!(RouteStopState::Pending.label(), "Pending");
     }

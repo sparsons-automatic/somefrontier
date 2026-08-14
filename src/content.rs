@@ -3917,6 +3917,14 @@ fn validate_research_reward(
                 ));
             }
         }
+        "mining_itinerary_unlock" => {
+            if reward.target.is_some() || reward.amount.is_some() {
+                errors.push(format!(
+                    "Research `{}` mining_itinerary_unlock reward does not accept target or amount",
+                    research.id
+                ));
+            }
+        }
         "auto_repair_material" => {
             let Some(target) = reward.target.as_deref() else {
                 errors.push(format!(
@@ -4517,6 +4525,16 @@ mod tests {
                             && reward.target.as_deref() == Some("core:titanium_ore")
                             && reward.amount == Some(20.0)
                     })
+            }));
+        assert!(registry
+            .research
+            .get("core:automated_extraction_routes")
+            .is_some_and(|research| {
+                research.requires == ["core:mining_calibration_i"]
+                    && research
+                        .rewards
+                        .iter()
+                        .any(|reward| reward.kind == "mining_itinerary_unlock")
             }));
         assert!(registry
             .research
@@ -5163,6 +5181,10 @@ amount = -1.0
 kind = "unknown_reward"
 
 [[research.rewards]]
+kind = "mining_itinerary_unlock"
+target = "not_allowed"
+
+[[research.rewards]]
 kind = "auto_repair_material"
 target = "core_item"
 amount = -2.0
@@ -5198,6 +5220,9 @@ amount = 5.0
         }));
         assert!(errors.iter().any(|error| {
             error == "Research `core:bad_node` has unsupported reward kind `unknown_reward`"
+        }));
+        assert!(errors.iter().any(|error| {
+            error == "Research `core:bad_node` mining_itinerary_unlock reward does not accept target or amount"
         }));
         assert!(errors.iter().any(|error| {
             error == "Research `core:bad_node` auto repair material `core:core_item` is not a raw_resource item"
