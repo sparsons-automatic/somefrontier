@@ -87,6 +87,21 @@ kind = "combat_scan_depth"
 amount = 1.0
 
 [[research]]
+id = "automated_extraction_routes"
+name = "Automated Extraction Routes"
+tier = 2
+column = 2
+row = 1
+price = 900
+duration_seconds = 18.0
+requires = ["mining_calibration_i"]
+revealed_by = ["mining_calibration_i"]
+summary = "Navigation and mining controllers coordinate itinerary holds until configured ore quotas are fulfilled."
+
+[[research.rewards]]
+kind = "mining_itinerary_unlock"
+
+[[research]]
 id = "yield_optimization_i"
 name = "Yield Optimization I"
 tier = 2

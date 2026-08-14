@@ -83,6 +83,7 @@ const PLANET_INTERACTION_PADDING: f32 = 96.0;
 const PLANET_ORBIT_CLEARANCE: f32 = 48.0;
 const STATION_INTERACTION_PADDING: f32 = 86.0;
 const BASE_MINING_SECONDS: f32 = 3.0;
+const ITINERARY_MINING_ENERGY_PER_SECOND: f32 = 1.0;
 const BASE_SMELTING_SECONDS: f32 = 2.0;
 const BASE_CRAFTING_SECONDS: f32 = 1.5;
 const BASE_PROCESSING_SECONDS: f32 = 2.0;
@@ -394,6 +395,7 @@ struct GameState {
     navigation_route: Vec<NavigationStop>,
     navigation_route_current: Option<usize>,
     navigation_route_active: bool,
+    navigation_route_mining_enabled: bool,
     pending_warp: Option<PendingWarp>,
     camera_zoom: f32,
     starmap_zoom: f32,
@@ -570,10 +572,36 @@ struct ApproachPath {
     stage: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NavigationStopState {
+    #[default]
+    Pending,
+    Traveling,
+    Mining,
+    Completed,
+    Blocked,
+    Skipped,
+    Paused,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct NavigationMiningJob {
+    resource: String,
+    quota: u32,
+    #[serde(default)]
+    mined: u32,
+    #[serde(default)]
+    progress: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct NavigationStop {
     system: String,
     planet: String,
+    state: NavigationStopState,
+    mining_jobs: Vec<NavigationMiningJob>,
+    reason: Option<String>,
 }
 
 struct ContextMenuEntry {
@@ -1594,6 +1622,8 @@ struct SaveData {
     #[serde(default)]
     navigation_route_active: bool,
     #[serde(default)]
+    navigation_route_mining_enabled: bool,
+    #[serde(default)]
     content_pack_options: Vec<PackOptionSelection>,
     #[serde(default)]
     completed_research: Vec<String>,
@@ -1756,6 +1786,12 @@ struct SaveSystemDestination {
 struct SaveNavigationStop {
     system: String,
     planet: String,
+    #[serde(default)]
+    state: NavigationStopState,
+    #[serde(default)]
+    mining_jobs: Vec<NavigationMiningJob>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 struct PendingWarp {
@@ -2074,6 +2110,7 @@ impl GameState {
             navigation_route: Vec::new(),
             navigation_route_current: None,
             navigation_route_active: false,
+            navigation_route_mining_enabled: false,
             pending_warp: None,
             camera_zoom: 1.0,
             starmap_zoom: 1.0,
@@ -2343,6 +2380,13 @@ impl GameState {
                     NavigationStop {
                         system: stop.system,
                         planet: stop.planet,
+                        state: stop.state,
+                        mining_jobs: stop
+                            .mining_jobs
+                            .into_iter()
+                            .map(sanitized_navigation_mining_job)
+                            .collect(),
+                        reason: stop.reason,
                     }
                 })
             })
@@ -2354,6 +2398,8 @@ impl GameState {
             && self
                 .navigation_route_current
                 .is_some_and(|current| current < self.navigation_route.len());
+        self.navigation_route_mining_enabled = save.navigation_route_mining_enabled
+            && mining_itineraries_unlocked(&self.content_registry, &self.completed_research);
         if let Some(destination_planet) = save.destination_planet {
             if let Some(planet) = self.planets.iter().find(|planet| {
                 planet.id == destination_planet && planet.system == self.current_system_id
@@ -2540,10 +2586,14 @@ impl GameState {
                 .map(|stop| SaveNavigationStop {
                     system: stop.system.clone(),
                     planet: stop.planet.clone(),
+                    state: stop.state,
+                    mining_jobs: stop.mining_jobs.clone(),
+                    reason: stop.reason.clone(),
                 })
                 .collect(),
             navigation_route_current: self.navigation_route_current,
             navigation_route_active: self.navigation_route_active,
+            navigation_route_mining_enabled: self.navigation_route_mining_enabled,
             content_pack_options: self.content_pack_options.clone(),
             completed_research: self.completed_research.clone(),
             active_research: self
@@ -6967,6 +7017,31 @@ fn completed_research_reward_amount(
         .sum()
 }
 
+fn completed_research_has_reward(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+    reward_kind: &str,
+) -> bool {
+    completed_research
+        .iter()
+        .filter_map(|research_id| registry.research.get(research_id))
+        .flat_map(|research| research.rewards.iter())
+        .any(|reward| reward.kind == reward_kind)
+}
+
+fn mining_itineraries_unlocked(
+    registry: &content::ContentRegistry,
+    completed_research: &[String],
+) -> bool {
+    completed_research_has_reward(registry, completed_research, "mining_itinerary_unlock")
+}
+
+fn sanitized_navigation_mining_job(mut job: NavigationMiningJob) -> NavigationMiningJob {
+    job.mined = job.mined.min(job.quota);
+    job.progress = finite_nonnegative_or(job.progress, 0.0).min(1.0);
+    job
+}
+
 fn mining_operation_seconds(
     registry: &content::ContentRegistry,
     completed_research: &[String],
@@ -10695,6 +10770,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
 
     update_production(game, dt);
+    update_navigation_route_mining(game, dt);
     update_mining(game, dt);
     update_orbital_hazards(game, dt);
     update_shield_recharge(game, dt);
@@ -10886,6 +10962,15 @@ fn update_game(game: &mut GameState, dt: f32) {
             update_ship_approach(game, dt);
         }
     } else {
+        if game.navigation_route_active
+            && game
+                .navigation_route_current
+                .and_then(|current| game.navigation_route.get(current))
+                .is_some_and(|stop| stop.state == NavigationStopState::Mining)
+            && movement_input_pressed()
+        {
+            pause_navigation_route(game, Some("Manual flight input paused mining itinerary"));
+        }
         let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
         update_ship(&mut game.ship, dt, energy_recharge);
     }
@@ -12622,6 +12707,9 @@ fn selected_starmap_navigation_stop(game: &GameState) -> Option<NavigationStop> 
         .map(|planet| NavigationStop {
             system: planet.system.clone(),
             planet: planet.id.clone(),
+            state: NavigationStopState::Pending,
+            mining_jobs: Vec::new(),
+            reason: None,
         })
 }
 
@@ -12645,7 +12733,12 @@ fn add_selected_starmap_planet_to_route(game: &mut GameState) -> bool {
     let Some(stop) = selected_starmap_navigation_stop(game) else {
         return false;
     };
-    game.navigation_route.push(stop);
+    game.navigation_route.push(NavigationStop {
+        state: NavigationStopState::Pending,
+        mining_jobs: Vec::new(),
+        reason: None,
+        ..stop
+    });
     game.save_dirty = true;
     push_operation_feedback(game, "Route", "Destination added to itinerary".to_string());
     true
@@ -12655,13 +12748,24 @@ fn activate_navigation_route(game: &mut GameState) -> bool {
     if game.navigation_route.is_empty() {
         return false;
     }
-    if game
+    let restarting = game
         .navigation_route_current
-        .is_none_or(|current| current >= game.navigation_route.len())
-    {
+        .is_none_or(|current| current >= game.navigation_route.len());
+    if restarting {
         game.navigation_route_current = Some(0);
+        for stop in &mut game.navigation_route {
+            stop.state = NavigationStopState::Pending;
+            stop.mining_jobs.clear();
+            stop.reason = None;
+        }
     }
+    refresh_pending_navigation_mining_jobs(game);
     game.navigation_route_active = true;
+    if resume_current_navigation_mining_stop(game) {
+        game.map_open = false;
+        game.save_dirty = true;
+        return true;
+    }
     if !start_current_navigation_stop(game) {
         game.navigation_route_active = false;
         return false;
@@ -12679,6 +12783,12 @@ fn start_current_navigation_stop(game: &mut GameState) -> bool {
         return false;
     };
     if stop.system != game.current_system_id {
+        set_navigation_stop_state(
+            game,
+            current,
+            NavigationStopState::Blocked,
+            Some("Next stop is in another system".to_string()),
+        );
         push_operation_feedback(
             game,
             "Route",
@@ -12687,13 +12797,22 @@ fn start_current_navigation_stop(game: &mut GameState) -> bool {
         return false;
     }
     let Some(planet_index) = navigation_stop_planet_index(game, &stop) else {
-        push_operation_feedback(
+        skip_current_navigation_stop(
             game,
-            "Route",
-            "Route paused: the next destination is unavailable".to_string(),
+            "Destination content is unavailable; stop skipped".to_string(),
         );
-        return false;
+        return game.navigation_route_active;
     };
+    if stop.state == NavigationStopState::Pending
+        && game.navigation_route_mining_enabled
+        && mining_itineraries_unlocked(&game.content_registry, &game.completed_research)
+    {
+        let jobs = navigation_mining_jobs_for_planet(game, planet_index);
+        if let Some(current_stop) = game.navigation_route.get_mut(current) {
+            current_stop.mining_jobs = jobs;
+        }
+    }
+    set_navigation_stop_state(game, current, NavigationStopState::Traveling, None);
     game.starmap_selected_planet = Some(planet_index);
     set_destination_planet(game, Some(planet_index));
     begin_approach(game, ApproachTarget::Planet(planet_index));
@@ -12712,6 +12831,21 @@ fn pause_navigation_route(game: &mut GameState, message: Option<&str>) {
     game.navigation_route_active = false;
     game.approach_target = None;
     game.approach_path = None;
+    if let Some(current) = game.navigation_route_current {
+        if game.navigation_route.get(current).is_some_and(|stop| {
+            matches!(
+                stop.state,
+                NavigationStopState::Traveling | NavigationStopState::Mining
+            )
+        }) {
+            set_navigation_stop_state(
+                game,
+                current,
+                NavigationStopState::Paused,
+                message.map(str::to_string),
+            );
+        }
+    }
     game.save_dirty = true;
     if let Some(message) = message {
         push_operation_feedback(game, "Route", message.to_string());
@@ -12736,6 +12870,32 @@ fn advance_navigation_route_after_arrival(game: &mut GameState, planet_index: us
         return;
     }
 
+    if game.navigation_route_mining_enabled
+        && mining_itineraries_unlocked(&game.content_registry, &game.completed_research)
+        && stop.mining_jobs.iter().any(|job| job.mined < job.quota)
+    {
+        set_navigation_stop_state(game, current, NavigationStopState::Mining, None);
+        push_operation_feedback(
+            game,
+            "Route",
+            format!(
+                "Mining itinerary stop {} until its ore quota is complete",
+                current + 1
+            ),
+        );
+        game.save_dirty = true;
+        return;
+    }
+
+    complete_current_navigation_stop(game);
+}
+
+fn complete_current_navigation_stop(game: &mut GameState) {
+    let Some(current) = game.navigation_route_current else {
+        return;
+    };
+    set_navigation_stop_state(game, current, NavigationStopState::Completed, None);
+
     let next = current + 1;
     game.navigation_route_current = Some(next);
     game.save_dirty = true;
@@ -12747,7 +12907,132 @@ fn advance_navigation_route_after_arrival(game: &mut GameState, planet_index: us
     }
 }
 
+fn set_navigation_stop_state(
+    game: &mut GameState,
+    index: usize,
+    state: NavigationStopState,
+    reason: Option<String>,
+) {
+    if let Some(stop) = game.navigation_route.get_mut(index) {
+        stop.state = state;
+        stop.reason = reason;
+    }
+}
+
+fn navigation_mining_jobs_for_planet(
+    game: &GameState,
+    planet_index: usize,
+) -> Vec<NavigationMiningJob> {
+    let Some(planet) = game.planets.get(planet_index) else {
+        return Vec::new();
+    };
+    if !planet_has_composition_scan(planet) {
+        return Vec::new();
+    }
+    planet
+        .info
+        .mineables
+        .iter()
+        .zip(&planet.mining)
+        .filter_map(|(mineable, setting)| {
+            let keep_remaining = setting
+                .keep
+                .saturating_sub(game.inventory.count(&mineable.item));
+            let quota = setting.queued.max(keep_remaining);
+            (quota > 0).then(|| NavigationMiningJob {
+                resource: mineable.item.id.clone(),
+                quota,
+                mined: 0,
+                progress: 0.0,
+            })
+        })
+        .collect()
+}
+
+fn refresh_pending_navigation_mining_jobs(game: &mut GameState) {
+    if !game.navigation_route_mining_enabled
+        || !mining_itineraries_unlocked(&game.content_registry, &game.completed_research)
+    {
+        return;
+    }
+    let pending = game
+        .navigation_route
+        .iter()
+        .enumerate()
+        .filter(|(_, stop)| stop.state == NavigationStopState::Pending)
+        .filter_map(|(index, stop)| {
+            navigation_stop_planet_index(game, stop).map(|planet| (index, planet))
+        })
+        .collect::<Vec<_>>();
+    for (index, planet_index) in pending {
+        let jobs = navigation_mining_jobs_for_planet(game, planet_index);
+        if let Some(stop) = game.navigation_route.get_mut(index) {
+            stop.mining_jobs = jobs;
+        }
+    }
+}
+
+fn resume_current_navigation_mining_stop(game: &mut GameState) -> bool {
+    let Some(current) = game.navigation_route_current else {
+        return false;
+    };
+    let Some(stop) = game.navigation_route.get(current) else {
+        return false;
+    };
+    if !matches!(
+        stop.state,
+        NavigationStopState::Paused | NavigationStopState::Blocked
+    ) || stop.mining_jobs.iter().all(|job| job.mined >= job.quota)
+    {
+        return false;
+    }
+    let Some(planet_index) = navigation_stop_planet_index(game, stop) else {
+        skip_current_navigation_stop(
+            game,
+            "Destination content is unavailable; stop skipped".to_string(),
+        );
+        return game.navigation_route_active;
+    };
+    if !planet_in_interaction_range(&game.ship, &game.planets[planet_index]) {
+        return false;
+    }
+    set_navigation_stop_state(game, current, NavigationStopState::Mining, None);
+    push_operation_feedback(
+        game,
+        "Route",
+        format!("Resumed mining itinerary stop {}", current + 1),
+    );
+    true
+}
+
+fn skip_current_navigation_stop(game: &mut GameState, reason: String) {
+    let Some(current) = game.navigation_route_current else {
+        return;
+    };
+    set_navigation_stop_state(
+        game,
+        current,
+        NavigationStopState::Skipped,
+        Some(reason.clone()),
+    );
+    push_operation_feedback(game, "Route", reason);
+    let next = current + 1;
+    game.navigation_route_current = Some(next);
+    if next >= game.navigation_route.len() {
+        game.navigation_route_active = false;
+        push_operation_feedback(
+            game,
+            "Route",
+            "Itinerary complete with skipped stop(s)".to_string(),
+        );
+    } else if !start_current_navigation_stop(game) {
+        game.navigation_route_active = false;
+    }
+    game.save_dirty = true;
+}
+
 fn clear_navigation_route(game: &mut GameState) {
+    let had_route = !game.navigation_route.is_empty();
     if game.navigation_route_active {
         game.approach_target = None;
         game.approach_path = None;
@@ -12756,6 +13041,9 @@ fn clear_navigation_route(game: &mut GameState) {
     game.navigation_route_current = None;
     game.navigation_route_active = false;
     game.save_dirty = true;
+    if had_route {
+        push_operation_feedback(game, "Route", "Itinerary cancelled and cleared".to_string());
+    }
 }
 
 fn remove_navigation_route_stop(game: &mut GameState, index: usize) -> bool {
@@ -14334,6 +14622,17 @@ fn update_mining(game: &mut GameState, dt: f32) {
         mining_operation_seconds(&game.content_registry, &game.completed_research);
 
     for planet_index in 0..game.planets.len() {
+        let route_controls_mining = game
+            .navigation_route_current
+            .and_then(|current| game.navigation_route.get(current))
+            .is_some_and(|stop| {
+                game.navigation_route_active
+                    && stop.state == NavigationStopState::Mining
+                    && navigation_stop_planet_index(game, stop) == Some(planet_index)
+            });
+        if route_controls_mining {
+            continue;
+        }
         let Some(planet) = game.planets.get(planet_index) else {
             continue;
         };
@@ -16614,6 +16913,147 @@ fn next_mining_bill_index(inventory: &Inventory, planet: &Planet) -> Option<usiz
             let current = inventory.count(&mineable.item);
             (current < setting.keep).then_some(index)
         })
+}
+
+fn block_current_navigation_stop(game: &mut GameState, reason: String) {
+    let Some(current) = game.navigation_route_current else {
+        return;
+    };
+    set_navigation_stop_state(
+        game,
+        current,
+        NavigationStopState::Blocked,
+        Some(reason.clone()),
+    );
+    game.navigation_route_active = false;
+    game.approach_target = None;
+    game.approach_path = None;
+    game.save_dirty = true;
+    push_operation_feedback(game, "Route", format!("Itinerary blocked: {reason}"));
+}
+
+fn update_navigation_route_mining(game: &mut GameState, dt: f32) {
+    if !game.navigation_route_active || dt <= 0.0 {
+        return;
+    }
+    let Some(current) = game.navigation_route_current else {
+        return;
+    };
+    let Some(stop) = game.navigation_route.get(current) else {
+        return;
+    };
+    if stop.state != NavigationStopState::Mining {
+        return;
+    }
+    if stop.mining_jobs.iter().any(|job| job.quota == 0) {
+        skip_current_navigation_stop(
+            game,
+            "Impossible zero mining quota; stop skipped".to_string(),
+        );
+        return;
+    }
+    let Some(planet_index) = navigation_stop_planet_index(game, stop) else {
+        skip_current_navigation_stop(game, "Mining target was lost; stop skipped".to_string());
+        return;
+    };
+    if !planet_in_interaction_range(&game.ship, &game.planets[planet_index]) {
+        skip_current_navigation_stop(game, "Ship left mining range; stop skipped".to_string());
+        return;
+    }
+    let Some(job_index) = game.navigation_route[current]
+        .mining_jobs
+        .iter()
+        .position(|job| job.mined < job.quota)
+    else {
+        push_operation_feedback(
+            game,
+            "Route",
+            format!("Mining quota complete at itinerary stop {}", current + 1),
+        );
+        complete_current_navigation_stop(game);
+        return;
+    };
+    let (resource_id, quota) = {
+        let job = &game.navigation_route[current].mining_jobs[job_index];
+        (job.resource.clone(), job.quota)
+    };
+    let Some(mineable_index) = game.planets[planet_index]
+        .info
+        .mineables
+        .iter()
+        .position(|mineable| mineable.item.id == resource_id)
+    else {
+        skip_current_navigation_stop(
+            game,
+            format!("Resource {resource_id} is unavailable; stop skipped"),
+        );
+        return;
+    };
+    let item = game.planets[planet_index].info.mineables[mineable_index]
+        .item
+        .clone();
+    if inventory_receivable_count(&game.inventory, &game.ship, &game.ship_upgrades, &item, 1) == 0 {
+        block_current_navigation_stop(game, "cargo hold is full".to_string());
+        return;
+    }
+    let energy_cost = ITINERARY_MINING_ENERGY_PER_SECOND * dt;
+    let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
+    if game.ship.systems.energy.max + f32::EPSILON < ITINERARY_MINING_ENERGY_PER_SECOND
+        || (energy_recharge <= 0.0 && game.ship.systems.energy.current + f32::EPSILON < energy_cost)
+    {
+        block_current_navigation_stop(game, "insufficient mining energy".to_string());
+        return;
+    }
+    if game.ship.systems.energy.current + f32::EPSILON < energy_cost {
+        game.navigation_route[current].reason = Some("Waiting for mining energy".to_string());
+        return;
+    }
+    game.navigation_route[current].reason = None;
+    game.ship.systems.energy.spend(energy_cost);
+    let operation_seconds =
+        mining_operation_seconds(&game.content_registry, &game.completed_research)
+            * planet_hazard_mining_slowdown(&game.planets[planet_index])
+            / mineable_richness_multiplier(&game.planets[planet_index], mineable_index);
+    let job = &mut game.navigation_route[current].mining_jobs[job_index];
+    job.progress += dt / operation_seconds.max(0.01);
+    if job.progress < 1.0 {
+        game.save_dirty = true;
+        return;
+    }
+    job.progress -= 1.0;
+    job.mined = job.mined.saturating_add(1).min(job.quota);
+    let mined = job.mined;
+    game.inventory.add_item(item.clone(), 1);
+    if let Some(setting) = game.planets[planet_index].mining.get_mut(mineable_index) {
+        setting.queued = setting.queued.saturating_sub(1);
+    }
+    push_aggregate_operation_feedback(
+        game,
+        "Mining",
+        format!("itinerary-mine:{}", item.id),
+        1,
+        |count| format!("Itinerary recovered {} x{count}", item.name),
+    );
+    if mined >= quota {
+        push_operation_feedback(
+            game,
+            "Route",
+            format!("Completed {} quota {mined}/{quota}", item.name),
+        );
+    }
+    game.save_dirty = true;
+    if game.navigation_route[current]
+        .mining_jobs
+        .iter()
+        .all(|job| job.mined >= job.quota)
+    {
+        push_operation_feedback(
+            game,
+            "Route",
+            format!("Mining quota complete at itinerary stop {}", current + 1),
+        );
+        complete_current_navigation_stop(game);
+    }
 }
 
 fn work_setting_step() -> i32 {
@@ -20844,17 +21284,15 @@ fn destinations_view(game: &GameState) -> egui_destinations::DestinationsView {
     let route = game
         .navigation_route
         .iter()
-        .enumerate()
-        .map(|(index, stop)| {
-            let current = game.navigation_route_current;
-            let state = if current.is_some_and(|current| index < current) {
-                egui_destinations::RouteStopState::Completed
-            } else if current == Some(index) && game.navigation_route_active {
-                egui_destinations::RouteStopState::Active
-            } else if current == Some(index) {
-                egui_destinations::RouteStopState::Paused
-            } else {
-                egui_destinations::RouteStopState::Pending
+        .map(|stop| {
+            let state = match stop.state {
+                NavigationStopState::Pending => egui_destinations::RouteStopState::Pending,
+                NavigationStopState::Traveling => egui_destinations::RouteStopState::Traveling,
+                NavigationStopState::Mining => egui_destinations::RouteStopState::Mining,
+                NavigationStopState::Completed => egui_destinations::RouteStopState::Completed,
+                NavigationStopState::Blocked => egui_destinations::RouteStopState::Blocked,
+                NavigationStopState::Skipped => egui_destinations::RouteStopState::Skipped,
+                NavigationStopState::Paused => egui_destinations::RouteStopState::Paused,
             };
             let planet = navigation_stop_planet_index(game, stop)
                 .and_then(|planet_index| game.planets.get(planet_index));
@@ -20874,6 +21312,12 @@ fn destinations_view(game: &GameState) -> egui_destinations::DestinationsView {
                     .map(|planet| format!("{:.0}u", game.ship.position.distance(planet.position)))
                     .unwrap_or_else(|| "Other system".to_string()),
                 state,
+                mining_progress: (!stop.mining_jobs.is_empty()).then(|| {
+                    let mined = stop.mining_jobs.iter().map(|job| job.mined).sum::<u32>();
+                    let quota = stop.mining_jobs.iter().map(|job| job.quota).sum::<u32>();
+                    format!("Ore quota {mined}/{quota}")
+                }),
+                reason: stop.reason.clone(),
             }
         })
         .collect();
@@ -20887,6 +21331,11 @@ fn destinations_view(game: &GameState) -> egui_destinations::DestinationsView {
         route_started: game
             .navigation_route_current
             .is_some_and(|current| current < game.navigation_route.len()),
+        mining_mode_unlocked: mining_itineraries_unlocked(
+            &game.content_registry,
+            &game.completed_research,
+        ),
+        mining_mode_enabled: game.navigation_route_mining_enabled,
     }
 }
 
@@ -23682,6 +24131,40 @@ fn apply_destinations_ui_actions(
                 pause_navigation_route(game, Some("Itinerary paused"));
                 was_active
             }
+            egui_destinations::DestinationsUiAction::ToggleMiningMode => {
+                if game.navigation_route_active
+                    || !mining_itineraries_unlocked(
+                        &game.content_registry,
+                        &game.completed_research,
+                    )
+                {
+                    false
+                } else {
+                    game.navigation_route_mining_enabled = !game.navigation_route_mining_enabled;
+                    if game.navigation_route_mining_enabled {
+                        refresh_pending_navigation_mining_jobs(game);
+                    } else {
+                        for stop in &mut game.navigation_route {
+                            if !matches!(
+                                stop.state,
+                                NavigationStopState::Completed | NavigationStopState::Skipped
+                            ) {
+                                stop.mining_jobs.clear();
+                                stop.state = NavigationStopState::Pending;
+                                stop.reason = None;
+                            }
+                        }
+                    }
+                    let state = if game.navigation_route_mining_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    push_operation_feedback(game, "Route", format!("Mining holds {state}"));
+                    game.save_dirty = true;
+                    true
+                }
+            }
             egui_destinations::DestinationsUiAction::Clear => {
                 let had_route = !game.navigation_route.is_empty();
                 clear_navigation_route(game);
@@ -24052,6 +24535,7 @@ fn research_reward_label(
         "combat_scan_depth" => {
             format!("Combat scan depth +{:.0}", reward.amount.unwrap_or(0.0))
         }
+        "mining_itinerary_unlock" => "Unlock mining-aware itineraries".to_string(),
         "auto_repair_material" => {
             let material = reward
                 .target
@@ -31798,9 +32282,20 @@ mod tests {
         game.navigation_route = vec![NavigationStop {
             system: STARTER_SYSTEM_ID.to_string(),
             planet: "turrets-galore:route_proof".to_string(),
+            state: NavigationStopState::Traveling,
+            mining_jobs: vec![NavigationMiningJob {
+                resource: "core:iron_ore".to_string(),
+                quota: 4,
+                mined: 2,
+                progress: 0.5,
+            }],
+            reason: Some("Waiting for mining energy".to_string()),
         }];
         game.navigation_route_current = Some(0);
         game.navigation_route_active = true;
+        game.navigation_route_mining_enabled = true;
+        game.completed_research
+            .push("core:automated_extraction_routes".to_string());
 
         let serialized = toml::to_string(&game.to_save()).expect("route save should serialize");
         let restored: SaveData = toml::from_str(&serialized).expect("route save should load");
@@ -31812,6 +32307,22 @@ mod tests {
         );
         assert_eq!(restored.navigation_route_current, Some(0));
         assert!(restored.navigation_route_active);
+        assert!(restored.navigation_route_mining_enabled);
+        assert_eq!(
+            restored.navigation_route[0].state,
+            NavigationStopState::Traveling
+        );
+        assert_eq!(restored.navigation_route[0].mining_jobs[0].mined, 2);
+        assert_eq!(
+            restored.navigation_route[0].reason.as_deref(),
+            Some("Waiting for mining energy")
+        );
+
+        game.apply_save(restored);
+        assert!(game.navigation_route_mining_enabled);
+        assert_eq!(game.navigation_route[0].mining_jobs[0].quota, 4);
+        assert_eq!(game.navigation_route[0].mining_jobs[0].mined, 2);
+        assert_eq!(game.navigation_route[0].mining_jobs[0].progress, 0.5);
     }
 
     #[test]
@@ -32095,10 +32606,16 @@ mod tests {
             SaveNavigationStop {
                 system: STARTER_SYSTEM_ID.to_string(),
                 planet: "turrets-galore:route_proof".to_string(),
+                state: NavigationStopState::Pending,
+                mining_jobs: Vec::new(),
+                reason: None,
             },
             SaveNavigationStop {
                 system: STARTER_SYSTEM_ID.to_string(),
                 planet: "missing-pack:missing-planet".to_string(),
+                state: NavigationStopState::Pending,
+                mining_jobs: Vec::new(),
+                reason: None,
             },
         ];
         save.navigation_route_current = Some(0);
@@ -32136,10 +32653,16 @@ mod tests {
             NavigationStop {
                 system: STARTER_SYSTEM_ID.to_string(),
                 planet: "core:route_one".to_string(),
+                state: NavigationStopState::Pending,
+                mining_jobs: Vec::new(),
+                reason: None,
             },
             NavigationStop {
                 system: STARTER_SYSTEM_ID.to_string(),
                 planet: "core:route_two".to_string(),
+                state: NavigationStopState::Pending,
+                mining_jobs: Vec::new(),
+                reason: None,
             },
         ];
 
@@ -32177,6 +32700,9 @@ mod tests {
         game.navigation_route = vec![NavigationStop {
             system: STARTER_SYSTEM_ID.to_string(),
             planet: "core:route_pause".to_string(),
+            state: NavigationStopState::Traveling,
+            mining_jobs: Vec::new(),
+            reason: None,
         }];
         game.navigation_route_current = Some(0);
         game.navigation_route_active = true;
@@ -32188,6 +32714,246 @@ mod tests {
         assert_eq!(game.navigation_route_current, Some(0));
         assert_eq!(game.navigation_route.len(), 1);
         assert_eq!(game.approach_target, None);
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Paused);
+    }
+
+    #[test]
+    fn mining_itinerary_holds_for_configured_quota_then_advances() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:mining_route",
+            STARTER_SYSTEM_ID,
+            vec2(360.0, 0.0),
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        planet.mining[0].queued = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        game.completed_research
+            .push("core:automated_extraction_routes".to_string());
+        game.navigation_route_mining_enabled = true;
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:mining_route".to_string(),
+            state: NavigationStopState::Pending,
+            mining_jobs: Vec::new(),
+            reason: None,
+        }];
+
+        assert!(activate_navigation_route(&mut game));
+        assert_eq!(game.navigation_route[0].mining_jobs[0].quota, 2);
+        game.ship.position = game.planets[0].position;
+        advance_navigation_route_after_arrival(&mut game, 0);
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Mining);
+
+        update_navigation_route_mining(&mut game, BASE_MINING_SECONDS);
+        assert!(game.navigation_route_active);
+        assert_eq!(game.navigation_route[0].mining_jobs[0].mined, 1);
+        update_navigation_route_mining(&mut game, BASE_MINING_SECONDS);
+
+        assert!(!game.navigation_route_active);
+        assert_eq!(game.navigation_route_current, Some(1));
+        assert_eq!(
+            game.navigation_route[0].state,
+            NavigationStopState::Completed
+        );
+        assert_eq!(game.inventory.count_id("core:iron_ore"), 2);
+        assert_eq!(game.planets[0].mining[0].queued, 0);
+        assert!(operation_feedback_contains(
+            &game,
+            "Route",
+            "Mining quota complete"
+        ));
+
+        game.planets[0].mining[0].queued = 1;
+        assert!(activate_navigation_route(&mut game));
+        assert_eq!(
+            game.navigation_route[0].state,
+            NavigationStopState::Traveling
+        );
+        assert_eq!(game.navigation_route[0].mining_jobs[0].quota, 1);
+        assert_eq!(game.navigation_route[0].mining_jobs[0].mined, 0);
+    }
+
+    #[test]
+    fn mining_itinerary_mode_is_research_gated() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+
+        apply_destinations_ui_actions(
+            &mut game,
+            vec![egui_destinations::DestinationsUiAction::ToggleMiningMode],
+        );
+        assert!(!game.navigation_route_mining_enabled);
+        assert!(!destinations_view(&game).mining_mode_unlocked);
+
+        game.completed_research
+            .push("core:automated_extraction_routes".to_string());
+        apply_destinations_ui_actions(
+            &mut game,
+            vec![egui_destinations::DestinationsUiAction::ToggleMiningMode],
+        );
+
+        assert!(game.navigation_route_mining_enabled);
+        assert!(destinations_view(&game).mining_mode_unlocked);
+    }
+
+    #[test]
+    fn mining_itinerary_blocks_on_full_cargo_and_can_resume() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:mining_route_full",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:mining_route_full".to_string(),
+            state: NavigationStopState::Mining,
+            mining_jobs: vec![NavigationMiningJob {
+                resource: "core:iron_ore".to_string(),
+                quota: 1,
+                mined: 0,
+                progress: 0.0,
+            }],
+            reason: None,
+        }];
+        game.navigation_route_current = Some(0);
+        game.navigation_route_active = true;
+        game.navigation_route_mining_enabled = true;
+        game.ship.attributes.cargo_capacity = 0.0;
+
+        update_navigation_route_mining(&mut game, 0.1);
+
+        assert!(!game.navigation_route_active);
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Blocked);
+        assert_eq!(
+            game.navigation_route[0].reason.as_deref(),
+            Some("cargo hold is full")
+        );
+        game.ship.attributes.cargo_capacity = 20_000.0;
+        assert!(activate_navigation_route(&mut game));
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Mining);
+    }
+
+    #[test]
+    fn mining_itinerary_skips_unavailable_resource_without_deadlock() {
+        let mut game = test_game_with_systems(
+            content::ContentRegistry::default(),
+            vec![test_planet(
+                "core:mining_route_missing",
+                STARTER_SYSTEM_ID,
+                Vec2::ZERO,
+                true,
+            )],
+        );
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:mining_route_missing".to_string(),
+            state: NavigationStopState::Mining,
+            mining_jobs: vec![NavigationMiningJob {
+                resource: "missing:ore".to_string(),
+                quota: 1,
+                mined: 0,
+                progress: 0.0,
+            }],
+            reason: None,
+        }];
+        game.navigation_route_current = Some(0);
+        game.navigation_route_active = true;
+
+        update_navigation_route_mining(&mut game, 0.1);
+
+        assert!(!game.navigation_route_active);
+        assert_eq!(game.navigation_route_current, Some(1));
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Skipped);
+        assert!(game.navigation_route[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("unavailable")));
+    }
+
+    #[test]
+    fn mining_itinerary_blocks_when_ship_cannot_supply_energy() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut planet = test_planet_with_mineables(
+            &registry,
+            "core:mining_route_energy",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+            &["core:iron_ore"],
+        );
+        planet.scan_level = 2;
+        let mut game = test_game_with_systems(registry, vec![planet]);
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:mining_route_energy".to_string(),
+            state: NavigationStopState::Mining,
+            mining_jobs: vec![NavigationMiningJob {
+                resource: "core:iron_ore".to_string(),
+                quota: 1,
+                mined: 0,
+                progress: 0.0,
+            }],
+            reason: None,
+        }];
+        game.navigation_route_current = Some(0);
+        game.navigation_route_active = true;
+        game.ship.systems.energy.current = 0.0;
+        game.ship.systems.energy.max = 0.0;
+
+        update_navigation_route_mining(&mut game, 0.1);
+
+        assert!(!game.navigation_route_active);
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Blocked);
+        assert_eq!(
+            game.navigation_route[0].reason.as_deref(),
+            Some("insufficient mining energy")
+        );
+    }
+
+    #[test]
+    fn mining_itinerary_skips_impossible_zero_quota() {
+        let mut game = test_game_with_systems(
+            content::ContentRegistry::default(),
+            vec![test_planet(
+                "core:mining_route_zero",
+                STARTER_SYSTEM_ID,
+                Vec2::ZERO,
+                true,
+            )],
+        );
+        game.navigation_route = vec![NavigationStop {
+            system: STARTER_SYSTEM_ID.to_string(),
+            planet: "core:mining_route_zero".to_string(),
+            state: NavigationStopState::Mining,
+            mining_jobs: vec![NavigationMiningJob {
+                resource: "missing:ore".to_string(),
+                quota: 0,
+                mined: 0,
+                progress: 0.0,
+            }],
+            reason: None,
+        }];
+        game.navigation_route_current = Some(0);
+        game.navigation_route_active = true;
+
+        update_navigation_route_mining(&mut game, 0.1);
+
+        assert_eq!(game.navigation_route[0].state, NavigationStopState::Skipped);
+        assert_eq!(
+            game.navigation_route[0].reason.as_deref(),
+            Some("Impossible zero mining quota; stop skipped")
+        );
     }
 
     #[test]
@@ -32896,6 +33662,7 @@ mod tests {
             navigation_route: Vec::new(),
             navigation_route_current: None,
             navigation_route_active: false,
+            navigation_route_mining_enabled: false,
             pending_warp: None,
             camera_zoom: 1.0,
             starmap_zoom: 1.0,

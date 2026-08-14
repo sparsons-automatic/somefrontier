@@ -435,6 +435,9 @@ target = "advanced_scanner_core"
 kind = "auto_repair_material"
 target = "core:iron_ore"
 amount = 5.0
+
+[[research.rewards]]
+kind = "mining_itinerary_unlock"
 ```
 
 Rules:
@@ -477,6 +480,11 @@ Rules:
   successful shield or hull damage. It consumes no ship energy. When several
   materials are aboard, the runtime prefers the largest repair unit that will
   not be wasted, then the smallest available unit for minor damage.
+- `mining_itinerary_unlock` accepts no `target` or `amount`. Completing any
+  loaded research node with this reward unlocks the Destinations mining-hold
+  toggle. Route stops continue to use stable namespaced planet and resource IDs,
+  so pack-contributed destinations and ores remain save-compatible while their
+  packs are installed.
 
 ## `stations.toml`
 

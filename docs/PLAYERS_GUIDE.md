@@ -148,6 +148,23 @@ save/load while their packs remain installed. The current itinerary supports
 planets in the active system; a stop from another system pauses with an explicit
 message instead of initiating warp automatically.
 
+Research `Automated Extraction Routes` to unlock mining holds in Destinations.
+Enable `Mining holds`, then configure ore `Queue` or `Keep` work in a planet's
+Mining panel before activating the itinerary. Pending stops snapshot that work
+as ore quotas when the route starts. On arrival, the ship remains inside
+interaction range, spends ship energy, and mines each quota before approaching
+the next stop. Destinations shows traveling, mining, completed, blocked,
+skipped, and paused states together with quota progress and any hold reason;
+the Operations Log records the same transitions.
+
+A full cargo hold or a ship that cannot supply mining energy blocks the route
+without losing its remaining quotas. Free cargo or restore power, then choose
+`Resume Route`. Missing destination/resource content, an impossible zero quota,
+or leaving interaction range skips that stop so the itinerary cannot wait
+silently forever. Manual thrust pauses an active mining hold, and `Clear`
+cancels the itinerary and its captured quotas. Save/load preserves stop state,
+quota progress, and stable content-pack system, planet, and resource IDs.
+
 Pin the Destinations window before closing the map to keep route progress and
 controls visible during flight. Its position, size, collapsed state, and pin
 participate in the same persistence and `Reset Menus` behavior as other egui
