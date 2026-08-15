@@ -132,6 +132,14 @@ typed accept/deliver actions to gameplay code, which validates range and
 consumes delivery cargo through nearby shared-fleet inventory. The UI never
 advances objectives or grants rewards directly.
 
+Durable target interactions are written to a bounded save-backed contract fact
+ledger before they are projected into an active chain. Gameplay reconciliation
+replays the ledger after acceptance, restart, and save restoration, so the UI
+never needs target-specific repair logic. Station rows expose `Recover cargo`
+only when gameplay reports that unique contract cargo is globally absent and its
+source is irrecoverable; the typed station action still performs capacity,
+origin, inventory, progression, and reward validation in the gameplay layer.
+
 Research uses a data-driven graph canvas. Pure layout code normalizes authored
 column and row values into stable screen lanes, resolves duplicate positions by
 name and content ID, and derives scrollable content bounds without depending on

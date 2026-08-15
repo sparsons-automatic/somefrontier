@@ -109,7 +109,8 @@ const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const SAVE_VERSION: u32 = 9;
+const SAVE_VERSION: u32 = 10;
+const MAX_CONTRACT_FACTS: usize = 2_048;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
 #[cfg(target_os = "linux")]
@@ -384,6 +385,7 @@ struct GameState {
     active_contract_chains: Vec<contract_chain::ActiveContractChain>,
     completed_contract_chains: Vec<String>,
     contract_chain_event_sequence: u64,
+    contract_facts: Vec<contract_chain::ContractChainEvent>,
     faction_reputation: HashMap<String, i32>,
     selected_research: Option<String>,
     destination_planet: Option<usize>,
@@ -1663,6 +1665,8 @@ struct SaveData {
     #[serde(default, alias = "quest_event_sequence")]
     contract_chain_event_sequence: u64,
     #[serde(default)]
+    contract_facts: Vec<contract_chain::ContractChainEvent>,
+    #[serde(default)]
     faction_reputation: Vec<SaveFactionReputation>,
     #[serde(default, skip_serializing)]
     purchased_recipe_unlocks: Vec<String>,
@@ -2144,6 +2148,7 @@ impl GameState {
             active_contract_chains: Vec::new(),
             completed_contract_chains: Vec::new(),
             contract_chain_event_sequence: 0,
+            contract_facts: Vec::new(),
             faction_reputation: startup_faction_reputation,
             selected_research: None,
             destination_planet: Some(1),
@@ -2343,6 +2348,7 @@ impl GameState {
             &self.completed_contract_chains,
         );
         self.contract_chain_event_sequence = save.contract_chain_event_sequence;
+        self.contract_facts = sanitized_contract_facts(save.contract_facts);
         update_planet_runtime_positions(&mut self.planets, self.world_elapsed_days);
         self.current_system_id = if self
             .content_registry
@@ -2571,6 +2577,7 @@ impl GameState {
         if self.navigation_route_active && !start_current_navigation_stop(self) {
             self.navigation_route_active = false;
         }
+        reconcile_contract_chain_facts(self);
         self.collision_cooldowns.clear();
         self.collision_contacts.clear();
         self.collision_grace_remaining = COLLISION_GRACE_SECONDS;
@@ -2699,6 +2706,7 @@ impl GameState {
             active_contract_chains: self.active_contract_chains.clone(),
             completed_contract_chains: self.completed_contract_chains.clone(),
             contract_chain_event_sequence: self.contract_chain_event_sequence,
+            contract_facts: self.contract_facts.clone(),
             faction_reputation: self
                 .faction_reputation
                 .iter()
@@ -4900,6 +4908,13 @@ fn registry_item(content_registry: &content::ContentRegistry, item_id: &str) -> 
     content_registry.items.get(item_id).map(ItemRef::from_def)
 }
 
+fn contract_item_is_unique(content_registry: &content::ContentRegistry, item_id: &str) -> bool {
+    content_registry
+        .items
+        .get(item_id)
+        .is_some_and(|item| item.tier == "contract")
+}
+
 fn core_item(content_registry: &content::ContentRegistry, local_id: &str) -> Option<ItemRef> {
     registry_item(content_registry, &format!("core:{local_id}"))
 }
@@ -6805,6 +6820,16 @@ fn fleet_inventory_count(game: &GameState, producer: FleetProducer, item: &ItemR
     local
         .saturating_add(active_peer)
         .saturating_add(owned_peers)
+}
+
+fn owned_inventory_count(game: &GameState, item: &ItemRef) -> u32 {
+    game.inventory.count(item)
+        + game
+            .owned_ships
+            .iter()
+            .filter(|owned| owned.instance_id != game.active_owned_ship_id)
+            .map(|owned| owned.inventory.count(item))
+            .sum::<u32>()
 }
 
 fn fleet_can_afford(game: &GameState, producer: FleetProducer, cost: &[ItemStack]) -> bool {
@@ -13728,6 +13753,16 @@ fn update_combat_scan(game: &mut GameState, dt: f32) {
         "Contact",
         format!("{} scan complete: {name}", stage.label()),
     );
+    if stage == CombatIntelLevel::Identity {
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                format!("scan:{npc_id}"),
+                contract_chain::ContractChainEventKind::Scanned,
+            )
+            .target(npc_id),
+        );
+    }
 }
 
 fn remember_current_system_destination(game: &mut GameState) {
@@ -14119,6 +14154,12 @@ fn next_contract_chain_event_id(game: &mut GameState, prefix: &str) -> String {
 }
 
 fn record_contract_chain_event(game: &mut GameState, event: contract_chain::ContractChainEvent) {
+    record_durable_contract_facts(game, &event);
+    apply_contract_chain_event(game, &event);
+    reconcile_contract_chain_facts(game);
+}
+
+fn apply_contract_chain_event(game: &mut GameState, event: &contract_chain::ContractChainEvent) {
     let mut stage_messages = Vec::new();
     let mut completed = Vec::new();
     for active in &mut game.active_contract_chains {
@@ -14130,7 +14171,7 @@ fn record_contract_chain_event(game: &mut GameState, event: contract_chain::Cont
             active.mark_unavailable("Contract content is not present in the enabled content packs");
             continue;
         };
-        let update = contract_chain::apply_event(definition, active, &event);
+        let update = contract_chain::apply_event(definition, active, event);
         if update.changed {
             game.save_dirty = true;
         }
@@ -14153,6 +14194,197 @@ fn record_contract_chain_event(game: &mut GameState, event: contract_chain::Cont
     for contract_chain_id in completed {
         complete_contract_chain_once(game, &contract_chain_id);
     }
+}
+
+fn durable_contract_fact_kind(kind: contract_chain::ContractChainEventKind) -> bool {
+    matches!(
+        kind,
+        contract_chain::ContractChainEventKind::Reached
+            | contract_chain::ContractChainEventKind::Scanned
+            | contract_chain::ContractChainEventKind::Looted
+            | contract_chain::ContractChainEventKind::Destroyed
+            | contract_chain::ContractChainEventKind::Salvaged
+    )
+}
+
+fn sanitized_contract_facts(
+    facts: Vec<contract_chain::ContractChainEvent>,
+) -> Vec<contract_chain::ContractChainEvent> {
+    let mut seen = HashSet::new();
+    let mut sanitized = facts
+        .into_iter()
+        .filter(|fact| durable_contract_fact_kind(fact.kind))
+        .filter(|fact| !fact.id.trim().is_empty() && seen.insert(fact.id.clone()))
+        .collect::<Vec<_>>();
+    if sanitized.len() > MAX_CONTRACT_FACTS {
+        sanitized.drain(..sanitized.len() - MAX_CONTRACT_FACTS);
+    }
+    sanitized
+}
+
+fn push_contract_fact(game: &mut GameState, fact: contract_chain::ContractChainEvent) {
+    if !durable_contract_fact_kind(fact.kind)
+        || fact.id.trim().is_empty()
+        || game.contract_facts.iter().any(|saved| saved.id == fact.id)
+    {
+        return;
+    }
+    game.contract_facts.push(fact);
+    if game.contract_facts.len() > MAX_CONTRACT_FACTS {
+        game.contract_facts
+            .drain(..game.contract_facts.len() - MAX_CONTRACT_FACTS);
+    }
+    game.save_dirty = true;
+}
+
+fn inferred_contract_fact(
+    target: &str,
+    kind: contract_chain::ContractChainEventKind,
+) -> contract_chain::ContractChainEvent {
+    contract_chain::ContractChainEvent::new(
+        format!("fact:{}:{target}", contract_chain_event_kind_id(kind)),
+        kind,
+    )
+    .target(target)
+}
+
+fn contract_chain_event_kind_id(kind: contract_chain::ContractChainEventKind) -> &'static str {
+    match kind {
+        contract_chain::ContractChainEventKind::Reached => "reached",
+        contract_chain::ContractChainEventKind::Scanned => "scanned",
+        contract_chain::ContractChainEventKind::Acquired => "acquired",
+        contract_chain::ContractChainEventKind::Looted => "looted",
+        contract_chain::ContractChainEventKind::Manufactured => "manufactured",
+        contract_chain::ContractChainEventKind::Delivered => "delivered",
+        contract_chain::ContractChainEventKind::Mined => "mined",
+        contract_chain::ContractChainEventKind::Destroyed => "destroyed",
+        contract_chain::ContractChainEventKind::Salvaged => "salvaged",
+        contract_chain::ContractChainEventKind::Protected => "protected",
+        contract_chain::ContractChainEventKind::ResearchCompleted => "research_completed",
+        contract_chain::ContractChainEventKind::Survived => "survived",
+        contract_chain::ContractChainEventKind::Returned => "returned",
+    }
+}
+
+fn record_durable_contract_facts(game: &mut GameState, event: &contract_chain::ContractChainEvent) {
+    let Some(target) = event.target.as_deref() else {
+        if durable_contract_fact_kind(event.kind) {
+            push_contract_fact(game, event.clone());
+        }
+        return;
+    };
+    if matches!(
+        event.kind,
+        contract_chain::ContractChainEventKind::Scanned
+            | contract_chain::ContractChainEventKind::Looted
+            | contract_chain::ContractChainEventKind::Destroyed
+            | contract_chain::ContractChainEventKind::Salvaged
+    ) {
+        push_contract_fact(
+            game,
+            inferred_contract_fact(target, contract_chain::ContractChainEventKind::Reached),
+        );
+    }
+    if matches!(
+        event.kind,
+        contract_chain::ContractChainEventKind::Looted
+            | contract_chain::ContractChainEventKind::Destroyed
+            | contract_chain::ContractChainEventKind::Salvaged
+    ) {
+        push_contract_fact(
+            game,
+            inferred_contract_fact(target, contract_chain::ContractChainEventKind::Scanned),
+        );
+    }
+    if event.kind == contract_chain::ContractChainEventKind::Salvaged {
+        push_contract_fact(
+            game,
+            inferred_contract_fact(target, contract_chain::ContractChainEventKind::Destroyed),
+        );
+    }
+    if durable_contract_fact_kind(event.kind) {
+        push_contract_fact(game, event.clone());
+    }
+}
+
+fn held_contract_cargo_events(game: &GameState) -> Vec<contract_chain::ContractChainEvent> {
+    game.active_contract_chains
+        .iter()
+        .filter(|active| active.status == contract_chain::ContractChainRuntimeStatus::Active)
+        .filter_map(|active| {
+            let definition = game
+                .content_registry
+                .contract_chains
+                .get(&active.contract_chain_id)?;
+            let stage = definition
+                .stages
+                .iter()
+                .find(|stage| stage.id == active.stage_id)?;
+            Some((active, stage))
+        })
+        .flat_map(|(active, stage)| {
+            stage.objectives.iter().filter_map(move |objective| {
+                if objective.kind != content::ContractChainObjectiveKind::LootItem {
+                    return None;
+                }
+                let item_id = objective.item.as_deref()?;
+                let item = registry_item(&game.content_registry, item_id)?;
+                if !contract_item_is_unique(&game.content_registry, item_id) {
+                    return None;
+                }
+                let count = owned_inventory_count(game, &item);
+                let recorded = active.objective_progress(&stage.id, &objective.id).amount;
+                (count > recorded).then(|| {
+                    let mut event = contract_chain::ContractChainEvent::new(
+                        format!(
+                            "fact:held:{}:{}:{}:{count}",
+                            active.contract_chain_id, stage.id, objective.id
+                        ),
+                        contract_chain::ContractChainEventKind::Looted,
+                    )
+                    .item(item_id, count - recorded);
+                    if let Some(target) = &objective.target {
+                        event = event.target(target);
+                    }
+                    event
+                })
+            })
+        })
+        .collect()
+}
+
+fn reconcile_contract_chain_facts(game: &mut GameState) {
+    for active in &mut game.active_contract_chains {
+        if active.status == contract_chain::ContractChainRuntimeStatus::Blocked {
+            active.status = contract_chain::ContractChainRuntimeStatus::Active;
+            active.blocker = None;
+        }
+    }
+    let pass_limit = game
+        .content_registry
+        .contract_chains
+        .values()
+        .map(|definition| definition.stages.len())
+        .sum::<usize>()
+        .max(1);
+    for _ in 0..=pass_limit {
+        let before_active = game.active_contract_chains.clone();
+        let before_completed = game.completed_contract_chains.clone();
+        let facts = game.contract_facts.clone();
+        for fact in &facts {
+            apply_contract_chain_event(game, fact);
+        }
+        for event in held_contract_cargo_events(game) {
+            record_durable_contract_facts(game, &event);
+            apply_contract_chain_event(game, &event);
+        }
+        if game.active_contract_chains == before_active
+            && game.completed_contract_chains == before_completed
+        {
+            break;
+        }
+    }
+    refresh_contract_chain_blockers(game);
 }
 
 fn complete_contract_chain_once(game: &mut GameState, contract_chain_id: &str) {
@@ -14456,6 +14688,129 @@ fn update_contract_chain_observations(game: &mut GameState, dt: f32) {
     refresh_contract_chain_blockers(game);
 }
 
+#[derive(Clone)]
+struct ContractCargoRecovery {
+    kind: content::ContractChainObjectiveKind,
+    item_id: String,
+    target: Option<String>,
+    amount: u32,
+}
+
+fn contract_cargo_recovery(
+    game: &GameState,
+    contract_chain_id: &str,
+) -> Option<ContractCargoRecovery> {
+    let active = game
+        .active_contract_chains
+        .iter()
+        .find(|active| active.contract_chain_id == contract_chain_id)?;
+    let definition = game
+        .content_registry
+        .contract_chains
+        .get(contract_chain_id)?;
+    let stage = definition
+        .stages
+        .iter()
+        .find(|stage| stage.id == active.stage_id)?;
+    stage.objectives.iter().find_map(|objective| {
+        if !matches!(
+            objective.kind,
+            content::ContractChainObjectiveKind::LootItem
+                | content::ContractChainObjectiveKind::DeliverItem
+        ) {
+            return None;
+        }
+        let item_id = objective.item.as_deref()?;
+        if !contract_item_is_unique(&game.content_registry, item_id) {
+            return None;
+        }
+        let item = registry_item(&game.content_registry, item_id)?;
+        let missing = objective
+            .amount
+            .saturating_sub(owned_inventory_count(game, &item));
+        if missing == 0 {
+            return None;
+        }
+        let source_unavailable = if objective.kind == content::ContractChainObjectiveKind::LootItem
+        {
+            objective.target.as_deref().is_none_or(|target| {
+                game.npc_ships
+                    .iter()
+                    .find(|npc| npc.id == target)
+                    .is_none_or(|npc| {
+                        npc.salvaged
+                            || npc
+                                .cargo_defaults
+                                .iter()
+                                .filter(|stack| stack.item.id == item_id)
+                                .map(|stack| stack.count)
+                                .sum::<u32>()
+                                < missing
+                    })
+            })
+        } else {
+            true
+        };
+        source_unavailable.then(|| ContractCargoRecovery {
+            kind: objective.kind,
+            item_id: item_id.to_string(),
+            target: objective.target.clone(),
+            amount: missing,
+        })
+    })
+}
+
+fn recover_contract_cargo_at_issuer(game: &mut GameState, contract_chain_id: &str) -> bool {
+    let Some(recovery) = contract_cargo_recovery(game, contract_chain_id) else {
+        return false;
+    };
+    let Some(item) = registry_item(&game.content_registry, &recovery.item_id) else {
+        return false;
+    };
+    let receivable = inventory_receivable_count(
+        &game.inventory,
+        &game.ship,
+        &game.ship_upgrades,
+        &item,
+        recovery.amount,
+    );
+    if receivable < recovery.amount {
+        push_operation_feedback(
+            game,
+            "Contract",
+            format!(
+                "Clear cargo capacity for {} × {} before recovering it",
+                recovery.amount, item.name
+            ),
+        );
+        return true;
+    }
+    game.inventory.add_item(item.clone(), recovery.amount);
+    game.save_dirty = true;
+    if recovery.kind == content::ContractChainObjectiveKind::LootItem {
+        let mut event = contract_chain::ContractChainEvent::new(
+            next_contract_chain_event_id(game, "issuer_recovery"),
+            contract_chain::ContractChainEventKind::Looted,
+        )
+        .item(&recovery.item_id, recovery.amount);
+        if let Some(target) = recovery.target {
+            event = event.target(target);
+        }
+        record_contract_chain_event(game, event);
+    } else {
+        reconcile_contract_chain_facts(game);
+    }
+    push_operation_feedback(
+        game,
+        "Contract",
+        format!(
+            "Issuer restored {} × {}; the original target remains salvaged",
+            recovery.amount, item.name
+        ),
+    );
+    true
+}
+
 fn refresh_contract_chain_blockers(game: &mut GameState) {
     for index in 0..game.active_contract_chains.len() {
         if matches!(
@@ -14481,6 +14836,55 @@ fn refresh_contract_chain_blockers(game: &mut GameState) {
         let mut blocker = None;
         let mut hard_blocked = false;
         for objective in &stage.objectives {
+            if matches!(
+                objective.kind,
+                content::ContractChainObjectiveKind::LootItem
+                    | content::ContractChainObjectiveKind::DeliverItem
+            ) {
+                let Some(item_id) = objective.item.as_deref() else {
+                    continue;
+                };
+                let Some(item) = registry_item(&game.content_registry, item_id) else {
+                    continue;
+                };
+                let nearby = fleet_inventory_count(game, FleetProducer::Active, &item);
+                if nearby < objective.amount {
+                    let remote = game
+                        .owned_ships
+                        .iter()
+                        .enumerate()
+                        .find(|(index, owned)| {
+                            owned.instance_id != game.active_owned_ship_id
+                                && owned.inventory.count(&item) > 0
+                                && !owned_ship_in_transfer_range(game, *index)
+                        })
+                        .map(|(_, owned)| owned);
+                    if let Some(remote) = remote {
+                        blocker = Some(format!(
+                            "Required cargo is aboard {}; bring it into shared-fleet range",
+                            remote.callsign
+                        ));
+                    }
+                }
+                if contract_cargo_recovery(game, &contract_chain_id).is_some() {
+                    let origin = game
+                        .content_registry
+                        .contract_chains
+                        .get(&contract_chain_id)
+                        .and_then(|definition| {
+                            game.stations
+                                .iter()
+                                .find(|station| station.id == definition.origin_station)
+                        })
+                        .map(|station| station.name.clone())
+                        .unwrap_or_else(|| "the issuer".to_string());
+                    blocker = Some(format!(
+                        "Contract cargo is missing; return to {origin} to recover it"
+                    ));
+                    hard_blocked = true;
+                    break;
+                }
+            }
             let Some(target) = objective.target.as_deref() else {
                 continue;
             };
@@ -14500,7 +14904,12 @@ fn refresh_contract_chain_blockers(game: &mut GameState) {
                     break;
                 }
                 if let Some(npc) = target_npc {
-                    if npc.salvaged {
+                    let required_item_held = objective
+                        .item
+                        .as_deref()
+                        .and_then(|item| registry_item(&game.content_registry, item))
+                        .is_some_and(|item| owned_inventory_count(game, &item) >= objective.amount);
+                    if npc.salvaged && !required_item_held {
                         blocker = Some("The target has been fully salvaged".to_string());
                         hard_blocked = true;
                         break;
@@ -14521,9 +14930,7 @@ fn refresh_contract_chain_blockers(game: &mut GameState) {
                             .item
                             .as_deref()
                             .and_then(|item| registry_item(&game.content_registry, item))
-                            .is_some_and(|item| {
-                                fleet_inventory_count(game, FleetProducer::Active, &item) > 0
-                            });
+                            .is_some_and(|item| owned_inventory_count(game, &item) > 0);
                         if !item_in_wreck && !item_in_fleet {
                             blocker = Some(
                                 "Required cargo is no longer present in the wreck or nearby fleet"
@@ -14594,6 +15001,7 @@ fn accept_or_advance_contract_chain(
             *active = restarted;
             game.save_dirty = true;
             push_operation_feedback(game, "Contract", format!("Restarted {}", definition.name));
+            reconcile_contract_chain_facts(game);
         }
         return true;
     }
@@ -14606,7 +15014,14 @@ fn accept_or_advance_contract_chain(
             game.active_contract_chains.push(active);
             game.save_dirty = true;
             push_operation_feedback(game, "Contract", format!("Accepted {}", definition.name));
+            reconcile_contract_chain_facts(game);
         }
+        return true;
+    }
+
+    if definition.origin_station == station_id
+        && recover_contract_cargo_at_issuer(game, &contract_chain_id)
+    {
         return true;
     }
 
@@ -17325,6 +17740,7 @@ fn update_npc_ship_salvage(game: &mut GameState, dt: f32) {
     let Some((index, inventory, salvage)) = completed else {
         return;
     };
+    let source_id = game.npc_ships[index].id.clone();
     let name = game.npc_ships[index].name.clone();
     game.inventory = inventory;
     game.npc_ships[index].salvaged = true;
@@ -17343,6 +17759,14 @@ fn update_npc_ship_salvage(game: &mut GameState, dt: f32) {
         game,
         "Loot",
         format!("Salvaged {name}; recovered {recovered}"),
+    );
+    record_contract_chain_event(
+        game,
+        contract_chain::ContractChainEvent::new(
+            format!("salvage:{source_id}"),
+            contract_chain::ContractChainEventKind::Salvaged,
+        )
+        .target(source_id),
     );
 }
 
@@ -22464,6 +22888,8 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
                         active.status == contract_chain::ContractChainRuntimeStatus::Unavailable
                     }) {
                         "Unavailable"
+                    } else if contract_cargo_recovery(game, &definition.id).is_some() {
+                        "Recover cargo"
                     } else if stage.is_some_and(|stage| {
                         stage.objectives.iter().any(|objective| {
                             objective.kind == content::ContractChainObjectiveKind::DeliverItem
@@ -30278,6 +30704,10 @@ mod tests {
         assert!(game.npc_ships[0].salvaged);
         assert_eq!(game.selected_npc_ship, None);
         assert!(context_action_entries(&game, ContextTarget::NpcShip(0)).is_empty());
+        assert!(game.contract_facts.iter().any(|fact| {
+            fact.kind == contract_chain::ContractChainEventKind::Salvaged
+                && fact.target.as_deref() == Some("core:test_npc")
+        }));
     }
 
     #[test]
@@ -31372,6 +31802,10 @@ mod tests {
             "Contact",
             "Identity / disposition scan complete"
         ));
+        assert!(game.contract_facts.iter().any(|fact| {
+            fact.kind == contract_chain::ContractChainEventKind::Scanned
+                && fact.target.as_deref() == Some("core:test_npc")
+        }));
 
         update_combat_scan(&mut game, 2.0);
         assert_eq!(
@@ -33032,6 +33466,10 @@ mod tests {
         assert!(restored.active_contract_chains[0]
             .processed_events
             .contains("loot:archive"));
+        assert!(restored
+            .contract_facts
+            .iter()
+            .any(|fact| fact.id == "loot:archive"));
 
         let legacy_serialized = serialized
             .replace("active_contract_chains", "active_quests")
@@ -33046,6 +33484,270 @@ mod tests {
             "core:derelict_recovery"
         );
         assert_eq!(legacy_restored.active_contract_chains[0].stage_id, "return");
+    }
+
+    #[test]
+    fn pre_activation_wreck_loot_reconciles_when_contract_is_accepted() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let archive = required_item(&registry, "core:pale_relay_archive");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = vec2(120.0, 0.0);
+        let mut wreck = test_npc_ship(NpcBehaviorMode::Patrol, game.ship.position);
+        wreck.id = "core:pale_relay_derelict".to_string();
+        wreck.hull.current = 0.0;
+        wreck.cargo_defaults.push(ItemStack {
+            item: archive.clone(),
+            count: 1,
+        });
+        game.npc_ships.push(wreck);
+
+        assert_eq!(take_all_npc_wreck_cargo(&mut game, 0), 1);
+        assert!(game.active_contract_chains.is_empty());
+        assert_eq!(game.inventory.count(&archive), 1);
+
+        game.stations = vec![test_station_destination(
+            "core:frontier_exchange",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].contract_chains = vec!["core:derelict_recovery".to_string()];
+        assert!(accept_or_advance_contract_chain(&mut game, 0, 0, 0));
+
+        assert_eq!(game.active_contract_chains[0].stage_id, "return");
+        assert_eq!(game.inventory.count(&archive), 1);
+        assert!(game.contract_facts.iter().any(|fact| {
+            fact.kind == contract_chain::ContractChainEventKind::Looted
+                && fact.item.as_deref() == Some("core:pale_relay_archive")
+        }));
+    }
+
+    #[test]
+    fn pre_activation_scan_fact_advances_the_later_contract_to_recovery() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut wreck = test_npc_ship(NpcBehaviorMode::Patrol, vec2(500.0, 0.0));
+        wreck.id = "core:pale_relay_derelict".to_string();
+        wreck.cargo_defaults.push(ItemStack {
+            item: required_item(&game.content_registry, "core:pale_relay_archive"),
+            count: 1,
+        });
+        game.npc_ships.push(wreck);
+        record_contract_chain_event(
+            &mut game,
+            contract_chain::ContractChainEvent::new(
+                "scan:before_acceptance",
+                contract_chain::ContractChainEventKind::Scanned,
+            )
+            .target("core:pale_relay_derelict"),
+        );
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        game.active_contract_chains
+            .push(contract_chain::ActiveContractChain::start(&definition).unwrap());
+
+        reconcile_contract_chain_facts(&mut game);
+
+        assert_eq!(game.active_contract_chains[0].stage_id, "recover");
+    }
+
+    #[test]
+    fn save_load_reconciles_facts_into_an_active_contract() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        record_contract_chain_event(
+            &mut game,
+            contract_chain::ContractChainEvent::new(
+                "scan:before_save",
+                contract_chain::ContractChainEventKind::Scanned,
+            )
+            .target("core:pale_relay_derelict"),
+        );
+        game.active_contract_chains
+            .push(contract_chain::ActiveContractChain::start(&definition).unwrap());
+        let save = game.to_save();
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut loaded = test_game_with_systems(registry, Vec::new());
+
+        loaded.apply_save(save);
+
+        assert_eq!(loaded.active_contract_chains[0].stage_id, "recover");
+        assert!(loaded
+            .contract_facts
+            .iter()
+            .any(|fact| fact.id == "scan:before_save"));
+    }
+
+    #[test]
+    fn held_unique_cargo_reconciles_legacy_saves_without_a_fact_ledger() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let archive = required_item(&registry, "core:pale_relay_archive");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        let mut active = contract_chain::ActiveContractChain::start(&definition).unwrap();
+        active.stage_id = "recover".to_string();
+        game.active_contract_chains.push(active);
+        game.inventory.add_item(archive, 1);
+        assert!(game.contract_facts.is_empty());
+
+        reconcile_contract_chain_facts(&mut game);
+
+        assert_eq!(game.active_contract_chains[0].stage_id, "return");
+        assert!(game.contract_facts.iter().any(|fact| {
+            fact.kind == contract_chain::ContractChainEventKind::Looted
+                && fact.item.as_deref() == Some("core:pale_relay_archive")
+        }));
+    }
+
+    #[test]
+    fn pre_activation_destroy_and_salvage_facts_replay_destroy_objectives() {
+        for kind in [
+            contract_chain::ContractChainEventKind::Destroyed,
+            contract_chain::ContractChainEventKind::Salvaged,
+        ] {
+            let registry = content::load_content_packs(Path::new("content/packs"))
+                .expect("content packs should load and validate");
+            let mut game = test_game_with_systems(registry, Vec::new());
+            let mut definition =
+                game.content_registry.contract_chains["core:derelict_recovery"].clone();
+            definition.stages[2].objectives[0].kind =
+                content::ContractChainObjectiveKind::DestroyTarget;
+            definition.stages[2].objectives[0].item = None;
+            game.content_registry
+                .contract_chains
+                .insert(definition.id.clone(), definition.clone());
+            record_contract_chain_event(
+                &mut game,
+                contract_chain::ContractChainEvent::new(
+                    format!("pre_activation:{}", contract_chain_event_kind_id(kind)),
+                    kind,
+                )
+                .target("core:pale_relay_derelict"),
+            );
+            game.active_contract_chains
+                .push(contract_chain::ActiveContractChain::start(&definition).unwrap());
+
+            reconcile_contract_chain_facts(&mut game);
+
+            assert_eq!(game.active_contract_chains[0].stage_id, "return");
+        }
+    }
+
+    #[test]
+    fn abandoned_contract_replays_facts_when_restarted() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        record_contract_chain_event(
+            &mut game,
+            contract_chain::ContractChainEvent::new(
+                "scan:before_restart",
+                contract_chain::ContractChainEventKind::Scanned,
+            )
+            .target("core:pale_relay_derelict"),
+        );
+        let mut abandoned = contract_chain::ActiveContractChain::start(&definition).unwrap();
+        abandoned.status = contract_chain::ContractChainRuntimeStatus::Abandoned;
+        game.active_contract_chains.push(abandoned);
+        game.ship.position = vec2(120.0, 0.0);
+        game.stations = vec![test_station_destination(
+            "core:frontier_exchange",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].contract_chains = vec!["core:derelict_recovery".to_string()];
+        let mut wreck = test_npc_ship(NpcBehaviorMode::Patrol, vec2(500.0, 0.0));
+        wreck.id = "core:pale_relay_derelict".to_string();
+        wreck.cargo_defaults.push(ItemStack {
+            item: required_item(&game.content_registry, "core:pale_relay_archive"),
+            count: 1,
+        });
+        game.npc_ships.push(wreck);
+
+        assert!(accept_or_advance_contract_chain(&mut game, 0, 0, 0));
+
+        assert_eq!(game.active_contract_chains[0].stage_id, "recover");
+    }
+
+    #[test]
+    fn issuer_recovers_missing_unique_contract_cargo_without_respawning_wreck() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let archive = required_item(&registry, "core:pale_relay_archive");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        let mut active = contract_chain::ActiveContractChain::start(&definition).unwrap();
+        active.stage_id = "return".to_string();
+        game.active_contract_chains.push(active);
+        let mut wreck = test_npc_ship(NpcBehaviorMode::Patrol, vec2(500.0, 0.0));
+        wreck.id = "core:pale_relay_derelict".to_string();
+        wreck.hull.current = 0.0;
+        wreck.salvaged = true;
+        game.npc_ships.push(wreck);
+        game.ship.position = vec2(120.0, 0.0);
+        game.stations = vec![test_station_destination(
+            "core:frontier_exchange",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].contract_chains = vec!["core:derelict_recovery".to_string()];
+        game.selected_station = Some(0);
+        game.selected_station_service = Some(0);
+        refresh_contract_chain_blockers(&mut game);
+        assert_eq!(
+            game.active_contract_chains[0].status,
+            contract_chain::ContractChainRuntimeStatus::Blocked
+        );
+        assert_eq!(
+            station_pane_view(&game).contract_chains[0].status,
+            "Recover cargo"
+        );
+
+        assert!(accept_or_advance_contract_chain(&mut game, 0, 0, 0));
+        assert_eq!(game.inventory.count(&archive), 1);
+        assert!(game.npc_ships[0].salvaged);
+        assert_eq!(
+            game.active_contract_chains[0].status,
+            contract_chain::ContractChainRuntimeStatus::Active
+        );
+
+        let credits = game.credits;
+        assert!(accept_or_advance_contract_chain(&mut game, 0, 0, 0));
+        assert_eq!(game.inventory.count(&archive), 0);
+        assert_eq!(game.credits, credits + 650);
+        assert!(game.active_contract_chains.is_empty());
+    }
+
+    #[test]
+    fn contract_fact_ledger_deduplicates_and_discards_oldest_entries_at_its_bound() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        for index in 0..=MAX_CONTRACT_FACTS {
+            push_contract_fact(
+                &mut game,
+                contract_chain::ContractChainEvent::new(
+                    format!("scan:{index}"),
+                    contract_chain::ContractChainEventKind::Scanned,
+                )
+                .target("core:test_target"),
+            );
+        }
+        push_contract_fact(
+            &mut game,
+            contract_chain::ContractChainEvent::new(
+                "scan:2048",
+                contract_chain::ContractChainEventKind::Scanned,
+            )
+            .target("core:test_target"),
+        );
+
+        assert_eq!(game.contract_facts.len(), MAX_CONTRACT_FACTS);
+        assert_eq!(game.contract_facts[0].id, "scan:1");
+        assert_eq!(game.contract_facts.last().unwrap().id, "scan:2048");
     }
 
     #[test]
@@ -36467,6 +37169,7 @@ mod tests {
             active_contract_chains: Vec::new(),
             completed_contract_chains: Vec::new(),
             contract_chain_event_sequence: 0,
+            contract_facts: Vec::new(),
             faction_reputation: HashMap::new(),
             selected_research: None,
             destination_planet: None,
