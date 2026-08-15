@@ -1545,11 +1545,32 @@ struct RawPack {
 }
 
 pub fn load_content_packs(root: &Path) -> Result<ContentRegistry, Vec<String>> {
+    load_content_packs_with_selection(root, None)
+}
+
+pub fn load_content_packs_enabled(
+    root: &Path,
+    enabled_pack_ids: &HashSet<String>,
+) -> Result<ContentRegistry, Vec<String>> {
+    load_content_packs_with_selection(root, Some(enabled_pack_ids))
+}
+
+fn load_content_packs_with_selection(
+    root: &Path,
+    enabled_pack_ids: Option<&HashSet<String>>,
+) -> Result<ContentRegistry, Vec<String>> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    let raw_packs = discover_packs(root, &mut errors);
+    let mut raw_packs = discover_packs(root, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
+    }
+
+    if let Some(enabled_pack_ids) = enabled_pack_ids {
+        raw_packs = select_enabled_packs(raw_packs, enabled_pack_ids, &mut warnings, &mut errors);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
     }
 
     let raw_packs = select_loadable_packs(raw_packs, &mut warnings);
@@ -1571,6 +1592,64 @@ pub fn load_content_packs(root: &Path) -> Result<ContentRegistry, Vec<String>> {
     } else {
         Err(errors)
     }
+}
+
+fn select_enabled_packs(
+    raw_packs: Vec<RawPack>,
+    enabled_pack_ids: &HashSet<String>,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) -> Vec<RawPack> {
+    let by_id = raw_packs
+        .iter()
+        .map(|pack| (pack.manifest.id.clone(), pack))
+        .collect::<HashMap<_, _>>();
+    if !by_id.contains_key("core") {
+        errors.push("Required content pack `core` is not installed".to_string());
+        return Vec::new();
+    }
+
+    let mut selected = enabled_pack_ids.clone();
+    selected.insert("core".to_string());
+    for missing in selected
+        .iter()
+        .filter(|id| !by_id.contains_key(*id))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        warnings.push(format!(
+            "Requested content pack `{missing}` is not installed and will not be loaded"
+        ));
+        selected.remove(&missing);
+    }
+
+    loop {
+        let mut changed = false;
+        for id in selected.clone() {
+            let Some(pack) = by_id.get(&id) else {
+                continue;
+            };
+            for dependency in pack
+                .manifest
+                .depends_on
+                .iter()
+                .chain(pack.manifest.optional_depends_on.iter())
+            {
+                let dependency_id = dependency.id();
+                if by_id.contains_key(dependency_id) && selected.insert(dependency_id.to_string()) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    raw_packs
+        .into_iter()
+        .filter(|pack| selected.contains(&pack.manifest.id))
+        .collect()
 }
 
 fn discover_packs(root: &Path, errors: &mut Vec<String>) -> Vec<RawPack> {
@@ -5621,6 +5700,52 @@ optional_depends_on = [
         assert!(registry.recipes.contains_key("compat-pack:hybrid_item"));
         assert!(registry.warnings.is_empty());
 
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn selected_pack_loading_keeps_core_and_excludes_disabled_addons() {
+        let root = make_temp_content_root("selected-core-only");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.1.0", "addon_item");
+
+        let registry = load_content_packs_enabled(&root, &HashSet::new())
+            .expect("core-only selection should load");
+
+        assert_eq!(registry.packs.len(), 1);
+        assert_eq!(registry.packs[0].id, "core");
+        assert!(registry.items.contains_key("core:core_item"));
+        assert!(!registry.items.contains_key("addon-pack:addon_item"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn selected_pack_loading_enables_declared_dependencies() {
+        let root = make_temp_content_root("selected-dependencies");
+        write_minimal_core_pack(&root);
+        write_addon_pack(&root, "0.1.0", "addon_item");
+        write_compat_pack(
+            &root,
+            r#"
+depends_on = ["core"]
+optional_depends_on = ["addon-pack"]
+"#,
+            "addon-pack:addon_item",
+        );
+        let selected = ["compat-pack".to_string()].into_iter().collect();
+
+        let registry = load_content_packs_enabled(&root, &selected)
+            .expect("selected pack dependencies should load");
+
+        assert_eq!(
+            registry
+                .packs
+                .iter()
+                .map(|pack| pack.id.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["core", "addon-pack", "compat-pack"])
+        );
+        assert!(registry.items.contains_key("compat-pack:hybrid_item"));
         fs::remove_dir_all(root).ok();
     }
 

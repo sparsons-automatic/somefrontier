@@ -798,11 +798,14 @@ and pressure effects when an NPC is tagged for pressure.
 ## Content Packs
 
 Content packs live under `content/packs/`. The built-in `core` pack provides
-the default playable content. Optional first-party packs can add systems,
-planets, recipes, resources, and related data when enabled.
+the default playable content and is always enabled. Optional first-party packs
+can add systems, planets, recipes, resources, and related data when enabled.
 
 Open the title screen Content Packs view to inspect available packs and options
-before starting a new game. In gameplay, press `C` to open the content browser.
+before starting a new game. Select a pack and use its Enable/Disable control;
+required dependencies turn on automatically, and disabling a dependency also
+disables packs that need it. The New Game ship picker and the new world use only
+the enabled profile. In gameplay, press `C` to open the content browser.
 The movable stock egui Content Browser uses a three-pane layout. Select a loaded
 pack from the vertical list on the left, choose any authored object by category
 in the middle, and inspect its fields in the right pane. References such as a
@@ -810,8 +813,16 @@ weapon's install item or ammunition are clickable, and `Back` returns through
 the inspection history. Select `All packs` for the aggregate registry summary.
 Pin the browser to keep it visible and interactive after pressing `C` again.
 
-Removing a content pack can leave old saves pointing at missing content. For
-stable saves, keep the same pack set enabled.
+Every new or updated save records the IDs and versions of the packs used to load
+it. Loading with the same profile starts immediately. If the title-screen
+selection differs, the game asks whether to restore the save profile or try the
+current selection. Restoring enables every recorded pack available locally,
+disables extras, and clearly lists missing packs or version differences before
+continuing. Trying the current selection can remove unavailable items, ships,
+systems, or authored progression through existing missing-content fallbacks, so
+make a backup when deliberately changing a long-lived save's profile. Older
+saves without a recorded profile use the current title-screen selection and
+record it on their next save.
 
 ## Saving And Configuration
 

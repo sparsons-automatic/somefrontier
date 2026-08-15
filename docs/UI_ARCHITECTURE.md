@@ -262,6 +262,16 @@ Ship preview pixels are cropped to their alpha bounds, rotated once on load, and
 registered as egui textures so the New Game grid retains content-pack art
 without stretching it.
 
+The title Content Packs workspace projects an enabled profile over installed
+pack metadata. Core is locked on; dependency closure and dependent disabling are
+gameplay-side state transformations. The resulting profile rebuilds the New Game
+ship projection and is passed into registry loading before world construction.
+Saves persist pack IDs and versions. Load selection compares that profile with
+the current installed/enabled state and opens a foreground decision window when
+packs are disabled, missing, extra, or version-changed. Its typed actions either
+restore the locally available save profile or explicitly continue with the
+current profile; neither UI path mutates an already-constructed world.
+
 Gameplay object windows keep stock egui chrome and render authored artwork
 inside their content area. Ship, upgrade, fleet, planet, station, contact,
 destination, and Content Browser detail views receive resolved content texture

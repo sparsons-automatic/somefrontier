@@ -109,7 +109,7 @@ const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const SAVE_VERSION: u32 = 10;
+const SAVE_VERSION: u32 = 11;
 const MAX_CONTRACT_FACTS: usize = 2_048;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
@@ -652,6 +652,7 @@ struct TitleMenu {
     delete_save_error: Option<String>,
     content_packs: Vec<TitleContentPack>,
     selected_pack_index: usize,
+    pending_pack_load_decision: Option<TitlePackLoadDecision>,
     settings: AppSettings,
     selected_settings_category: SettingsCategory,
 }
@@ -683,6 +684,7 @@ struct TitleSaveSlot {
     world_elapsed_days: f32,
     modified_unix_seconds: u64,
     is_legacy: bool,
+    content_packs: Vec<SaveContentPack>,
 }
 
 struct TitleContentPack {
@@ -690,7 +692,18 @@ struct TitleContentPack {
     name: String,
     version: String,
     description: Option<String>,
+    depends_on: Vec<String>,
+    optional_depends_on: Vec<String>,
+    enabled: bool,
     options: Vec<TitlePackOption>,
+}
+
+struct TitlePackLoadDecision {
+    save_index: usize,
+    save_only_available: Vec<SaveContentPack>,
+    missing: Vec<SaveContentPack>,
+    version_mismatches: Vec<(SaveContentPack, String)>,
+    current_only: Vec<SaveContentPack>,
 }
 
 #[derive(Clone)]
@@ -717,10 +730,12 @@ enum GameStartMode {
     NewGame {
         seed: u64,
         ship_id: String,
+        enabled_pack_ids: Vec<String>,
         pack_options: Vec<PackOptionSelection>,
     },
     LoadGame {
         path: PathBuf,
+        enabled_pack_ids: Vec<String>,
     },
 }
 
@@ -831,10 +846,12 @@ enum TitleAction {
     NewGame {
         seed: u64,
         ship_id: String,
+        enabled_pack_ids: Vec<String>,
         pack_options: Vec<PackOptionSelection>,
     },
     LoadGame {
         path: PathBuf,
+        enabled_pack_ids: Vec<String>,
     },
     QuitDesktop,
 }
@@ -1653,6 +1670,8 @@ struct SaveData {
     #[serde(default)]
     content_pack_options: Vec<PackOptionSelection>,
     #[serde(default)]
+    content_packs: Vec<SaveContentPack>,
+    #[serde(default)]
     completed_research: Vec<String>,
     #[serde(default)]
     active_research: Vec<SaveActiveResearch>,
@@ -1714,6 +1733,12 @@ struct PackOptionSelection {
     pack_id: String,
     option_id: String,
     value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SaveContentPack {
+    id: String,
+    version: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1948,11 +1973,20 @@ impl GameState {
             GameStartMode::NewGame { pack_options, .. } => pack_options.clone(),
             GameStartMode::LoadGame { .. } => Vec::new(),
         };
+        let enabled_pack_ids = match &start_mode {
+            GameStartMode::NewGame {
+                enabled_pack_ids, ..
+            }
+            | GameStartMode::LoadGame {
+                enabled_pack_ids, ..
+            } => enabled_pack_ids.clone(),
+        };
         let requested_new_game_ship = match &start_mode {
             GameStartMode::NewGame { ship_id, .. } => Some(ship_id.as_str()),
             GameStartMode::LoadGame { .. } => None,
         };
-        let content_registry = load_game_content_registry_with_options(&start_pack_options);
+        let content_registry =
+            load_game_content_registry_with_options(&enabled_pack_ids, &start_pack_options);
         begin_startup_progress(startup_work_total(
             &content_registry,
             matches!(start_mode, GameStartMode::LoadGame { .. }),
@@ -1971,11 +2005,11 @@ impl GameState {
         next_frame().await;
         let save_path = match &start_mode {
             GameStartMode::NewGame { seed, .. } => new_save_slot_path(*seed),
-            GameStartMode::LoadGame { path } => path.clone(),
+            GameStartMode::LoadGame { path, .. } => path.clone(),
         };
         let save_data = match &start_mode {
             GameStartMode::NewGame { .. } => None,
-            GameStartMode::LoadGame { path } => read_save_data_at(path),
+            GameStartMode::LoadGame { path, .. } => read_save_data_at(path),
         };
         let world_seed = match (&start_mode, save_data.as_ref()) {
             (GameStartMode::NewGame { seed, .. }, _) => *seed,
@@ -2682,6 +2716,15 @@ impl GameState {
             navigation_route_active: self.navigation_route_active,
             navigation_route_mining_enabled: self.navigation_route_mining_enabled,
             content_pack_options: self.content_pack_options.clone(),
+            content_packs: self
+                .content_registry
+                .packs
+                .iter()
+                .map(|pack| SaveContentPack {
+                    id: pack.id.clone(),
+                    version: pack.version.clone(),
+                })
+                .collect(),
             completed_research: self.completed_research.clone(),
             active_research: self
                 .active_research
@@ -9191,10 +9234,14 @@ async fn main() {
     let background = make_background();
     let mut app = if fast_start_enabled() {
         let start_mode = latest_save_path()
-            .map(|path| GameStartMode::LoadGame { path })
+            .map(|path| GameStartMode::LoadGame {
+                enabled_pack_ids: enabled_pack_ids_for_save(&path),
+                path,
+            })
             .unwrap_or_else(|| GameStartMode::NewGame {
                 seed: new_world_seed(),
                 ship_id: default_new_game_ship_id(),
+                enabled_pack_ids: default_enabled_content_pack_ids(),
                 pack_options: default_content_pack_option_selections(),
             });
         AppState::Playing(Box::new(GameState::new(start_mode, runtime_flags).await))
@@ -9211,12 +9258,14 @@ async fn main() {
                         TitleAction::NewGame {
                             seed,
                             ship_id,
+                            enabled_pack_ids,
                             pack_options,
                         } => {
                             let mut game = GameState::new(
                                 GameStartMode::NewGame {
                                     seed,
                                     ship_id,
+                                    enabled_pack_ids,
                                     pack_options,
                                 },
                                 runtime_flags,
@@ -9225,10 +9274,19 @@ async fn main() {
                             save_game_now(&mut game, SaveFeedback::Manual);
                             app = AppState::Playing(Box::new(game));
                         }
-                        TitleAction::LoadGame { path } => {
+                        TitleAction::LoadGame {
+                            path,
+                            enabled_pack_ids,
+                        } => {
                             app = AppState::Playing(Box::new(
-                                GameState::new(GameStartMode::LoadGame { path }, runtime_flags)
-                                    .await,
+                                GameState::new(
+                                    GameStartMode::LoadGame {
+                                        path,
+                                        enabled_pack_ids,
+                                    },
+                                    runtime_flags,
+                                )
+                                .await,
                             ));
                         }
                         TitleAction::QuitDesktop => {
@@ -9713,6 +9771,7 @@ impl Default for TitleMenu {
             delete_save_error: None,
             content_packs: title_content_packs(&registry),
             selected_pack_index: 0,
+            pending_pack_load_decision: None,
             settings: read_app_settings(),
             selected_settings_category: SettingsCategory::Display,
         }
@@ -9928,6 +9987,26 @@ fn latest_save_path() -> Option<PathBuf> {
     title_save_slots().into_iter().next().map(|slot| slot.path)
 }
 
+fn enabled_pack_ids_for_save(path: &Path) -> Vec<String> {
+    let registry = load_game_content_registry();
+    let installed = registry
+        .packs
+        .iter()
+        .map(|pack| pack.id.as_str())
+        .collect::<HashSet<_>>();
+    let saved = read_save_data_at(path)
+        .map(|save| save.content_packs)
+        .unwrap_or_default();
+    if saved.is_empty() {
+        return registry.packs.into_iter().map(|pack| pack.id).collect();
+    }
+    saved
+        .into_iter()
+        .filter(|pack| installed.contains(pack.id.as_str()))
+        .map(|pack| pack.id)
+        .collect()
+}
+
 fn title_save_slots() -> Vec<TitleSaveSlot> {
     let mut slots = Vec::new();
     let legacy_path = save_state_path();
@@ -9951,6 +10030,90 @@ fn title_save_slots() -> Vec<TitleSaveSlot> {
 
     slots.sort_by_key(|slot| std::cmp::Reverse(slot.modified_unix_seconds));
     slots
+}
+
+fn current_title_pack_profile(menu: &TitleMenu) -> Vec<SaveContentPack> {
+    menu.content_packs
+        .iter()
+        .filter(|pack| pack.enabled || pack.id == "core")
+        .map(|pack| SaveContentPack {
+            id: pack.id.clone(),
+            version: pack.version.clone(),
+        })
+        .collect()
+}
+
+fn pack_load_decision(menu: &TitleMenu, save_index: usize) -> Option<TitlePackLoadDecision> {
+    let save = menu.save_slots.get(save_index)?;
+    if save.content_packs.is_empty() {
+        return None;
+    }
+    let installed = menu
+        .content_packs
+        .iter()
+        .map(|pack| (pack.id.as_str(), pack))
+        .collect::<HashMap<_, _>>();
+    let current = current_title_pack_profile(menu);
+    let current_ids = current
+        .iter()
+        .map(|pack| pack.id.as_str())
+        .collect::<HashSet<_>>();
+    let saved_ids = save
+        .content_packs
+        .iter()
+        .map(|pack| pack.id.as_str())
+        .collect::<HashSet<_>>();
+    let save_only_available = save
+        .content_packs
+        .iter()
+        .filter(|pack| {
+            installed.contains_key(pack.id.as_str()) && !current_ids.contains(pack.id.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing = save
+        .content_packs
+        .iter()
+        .filter(|pack| !installed.contains_key(pack.id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let version_mismatches = save
+        .content_packs
+        .iter()
+        .filter_map(|saved| {
+            let local = installed.get(saved.id.as_str())?;
+            (local.version != saved.version).then(|| (saved.clone(), local.version.clone()))
+        })
+        .collect::<Vec<_>>();
+    let current_only = current
+        .into_iter()
+        .filter(|pack| !saved_ids.contains(pack.id.as_str()))
+        .collect::<Vec<_>>();
+    (!save_only_available.is_empty()
+        || !missing.is_empty()
+        || !version_mismatches.is_empty()
+        || !current_only.is_empty())
+    .then_some(TitlePackLoadDecision {
+        save_index,
+        save_only_available,
+        missing,
+        version_mismatches,
+        current_only,
+    })
+}
+
+fn request_title_save_load(menu: &mut TitleMenu) -> Option<TitleAction> {
+    let save_index = menu.selected_save_index;
+    if let Some(decision) = pack_load_decision(menu, save_index) {
+        menu.pending_pack_load_decision = Some(decision);
+        return None;
+    }
+    menu.save_slots
+        .get(save_index)
+        .map(|save| TitleAction::LoadGame {
+            path: save.path.clone(),
+            enabled_pack_ids: selected_title_pack_ids(&menu.content_packs),
+        })
 }
 
 fn title_save_slot_from_path(path: PathBuf, is_legacy: bool) -> Option<TitleSaveSlot> {
@@ -9978,6 +10141,7 @@ fn title_save_slot_from_path(path: PathBuf, is_legacy: bool) -> Option<TitleSave
         world_elapsed_days: save.world_elapsed_days,
         modified_unix_seconds,
         is_legacy,
+        content_packs: save.content_packs,
     })
 }
 
@@ -10015,6 +10179,9 @@ fn title_content_packs(registry: &content::ContentRegistry) -> Vec<TitleContentP
             name: pack.name.clone(),
             version: pack.version.clone(),
             description: pack.description.clone(),
+            depends_on: pack.depends_on.clone(),
+            optional_depends_on: pack.optional_depends_on.clone(),
+            enabled: true,
             options: pack
                 .options
                 .iter()
@@ -10040,6 +10207,14 @@ fn default_content_pack_option_selections() -> Vec<PackOptionSelection> {
     default_pack_option_selections_from_registry(&registry)
 }
 
+fn default_enabled_content_pack_ids() -> Vec<String> {
+    load_game_content_registry()
+        .packs
+        .into_iter()
+        .map(|pack| pack.id)
+        .collect()
+}
+
 fn default_pack_option_selections_from_registry(
     registry: &content::ContentRegistry,
 ) -> Vec<PackOptionSelection> {
@@ -10059,6 +10234,7 @@ fn default_pack_option_selections_from_registry(
 fn selected_title_pack_options(packs: &[TitleContentPack]) -> Vec<PackOptionSelection> {
     packs
         .iter()
+        .filter(|pack| pack.enabled)
         .flat_map(|pack| {
             pack.options.iter().map(|option| PackOptionSelection {
                 pack_id: pack.id.clone(),
@@ -10067,6 +10243,101 @@ fn selected_title_pack_options(packs: &[TitleContentPack]) -> Vec<PackOptionSele
             })
         })
         .collect()
+}
+
+fn selected_title_pack_ids(packs: &[TitleContentPack]) -> Vec<String> {
+    packs
+        .iter()
+        .filter(|pack| pack.enabled || pack.id == "core")
+        .map(|pack| pack.id.clone())
+        .collect()
+}
+
+fn apply_title_pack_selection(menu: &mut TitleMenu, selected_ids: &HashSet<String>) {
+    for pack in &mut menu.content_packs {
+        pack.enabled = pack.id == "core" || selected_ids.contains(&pack.id);
+    }
+    loop {
+        let enabled = menu
+            .content_packs
+            .iter()
+            .filter(|pack| pack.enabled)
+            .map(|pack| pack.id.clone())
+            .collect::<HashSet<_>>();
+        let dependencies = menu
+            .content_packs
+            .iter()
+            .filter(|pack| pack.enabled)
+            .flat_map(|pack| {
+                pack.depends_on
+                    .iter()
+                    .chain(pack.optional_depends_on.iter())
+            })
+            .filter(|dependency| !enabled.contains(*dependency))
+            .cloned()
+            .collect::<HashSet<_>>();
+        if dependencies.is_empty() {
+            break;
+        }
+        let mut changed = false;
+        for pack in &mut menu.content_packs {
+            if dependencies.contains(&pack.id) && !pack.enabled {
+                pack.enabled = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    refresh_title_ships_for_pack_selection(menu);
+}
+
+fn toggle_selected_title_pack(menu: &mut TitleMenu) {
+    let Some(pack) = menu.content_packs.get(menu.selected_pack_index) else {
+        return;
+    };
+    if pack.id == "core" {
+        return;
+    }
+    let pack_id = pack.id.clone();
+    let enabling = !pack.enabled;
+    let mut selected = selected_title_pack_ids(&menu.content_packs)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    if enabling {
+        selected.insert(pack_id);
+    } else {
+        selected.remove(&pack_id);
+        loop {
+            let dependent = menu.content_packs.iter().find(|candidate| {
+                selected.contains(&candidate.id)
+                    && candidate
+                        .depends_on
+                        .iter()
+                        .chain(candidate.optional_depends_on.iter())
+                        .any(|dependency| !selected.contains(dependency))
+            });
+            let Some(dependent) = dependent else {
+                break;
+            };
+            selected.remove(&dependent.id);
+        }
+    }
+    apply_title_pack_selection(menu, &selected);
+}
+
+fn refresh_title_ships_for_pack_selection(menu: &mut TitleMenu) {
+    let selected_ship_id = selected_title_ship(menu).map(|ship| ship.id.clone());
+    let enabled_pack_ids = selected_title_pack_ids(&menu.content_packs);
+    let registry = load_game_content_registry_with_options(&enabled_pack_ids, &[]);
+    menu.ships = title_ships(&registry);
+    let fallback = resolved_new_game_ship_id(&registry, selected_ship_id.as_deref());
+    menu.selected_ship_index = menu
+        .ships
+        .iter()
+        .position(|ship| ship.id == fallback)
+        .unwrap_or(0);
 }
 
 fn validated_pack_option_selections(
@@ -10111,9 +10382,14 @@ fn pack_option_value_is_valid(option: &content::PackOptionDef, value: &str) -> b
 }
 
 fn load_game_content_registry_with_options(
+    enabled_pack_ids: &[String],
     _pack_options: &[PackOptionSelection],
 ) -> content::ContentRegistry {
-    load_game_content_registry()
+    let enabled_pack_ids = enabled_pack_ids.iter().cloned().collect::<HashSet<_>>();
+    match content::load_content_packs_enabled(Path::new("content/packs"), &enabled_pack_ids) {
+        Ok(registry) => registry,
+        Err(errors) => panic!("Failed to load content packs:\n{}", errors.join("\n")),
+    }
 }
 
 fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
@@ -10121,6 +10397,9 @@ fn update_title_menu(menu: &mut TitleMenu) -> Option<TitleAction> {
         return menu.pending_action.take();
     }
     if is_key_pressed(KeyCode::Escape) {
+        if menu.pending_pack_load_decision.take().is_some() {
+            return None;
+        }
         if menu.view == TitleView::Main {
             return Some(TitleAction::QuitDesktop);
         }
@@ -10230,12 +10509,7 @@ fn update_title_load_game(menu: &mut TitleMenu) -> Option<TitleAction> {
         menu.delete_save_error = None;
     }
     if is_key_pressed(KeyCode::Enter) {
-        return menu
-            .save_slots
-            .get(menu.selected_save_index)
-            .map(|slot| TitleAction::LoadGame {
-                path: slot.path.clone(),
-            });
+        return request_title_save_load(menu);
     }
 
     None
@@ -10371,6 +10645,7 @@ fn update_title_new_game(menu: &mut TitleMenu) -> Option<TitleAction> {
             return Some(TitleAction::NewGame {
                 seed,
                 ship_id: ship.id.clone(),
+                enabled_pack_ids: selected_title_pack_ids(&menu.content_packs),
                 pack_options: selected_title_pack_options(&menu.content_packs),
             });
         }
@@ -10492,13 +10767,95 @@ fn draw_title_main_egui(menu: &mut TitleMenu) {
 
 fn draw_title_submenu_egui(menu: &mut TitleMenu) {
     let mut actions = Vec::new();
+    let mut pack_decision_actions = Vec::new();
+    let decision_was_open = menu.pending_pack_load_decision.is_some();
     egui_ui(|ctx| {
         ensure_title_ship_egui_textures(menu, ctx);
         let view = title_submenu_view(menu);
         actions = egui_title::draw(ctx, [screen_width(), screen_height()], &view);
+        if let Some(view) = title_pack_load_decision_view(menu) {
+            pack_decision_actions =
+                egui_title::draw_pack_load_decision(ctx, [screen_width(), screen_height()], &view);
+        }
     });
-    apply_title_submenu_actions(menu, actions);
+    if !decision_was_open {
+        apply_title_submenu_actions(menu, actions);
+    }
+    apply_title_pack_load_decision_actions(menu, pack_decision_actions);
     egui_macroquad::draw();
+}
+
+fn title_pack_load_decision_view(menu: &TitleMenu) -> Option<egui_title::PackLoadDecisionView> {
+    let decision = menu.pending_pack_load_decision.as_ref()?;
+    let save = menu.save_slots.get(decision.save_index)?;
+    Some(egui_title::PackLoadDecisionView {
+        save_label: save.label.clone(),
+        save_only_available: decision
+            .save_only_available
+            .iter()
+            .map(|pack| format!("{} v{}", pack.id, pack.version))
+            .collect(),
+        missing: decision
+            .missing
+            .iter()
+            .map(|pack| format!("{} v{}", pack.id, pack.version))
+            .collect(),
+        version_mismatches: decision
+            .version_mismatches
+            .iter()
+            .map(|(saved, local)| format!("{}: save v{}, local v{local}", saved.id, saved.version))
+            .collect(),
+        current_only: decision
+            .current_only
+            .iter()
+            .map(|pack| format!("{} v{}", pack.id, pack.version))
+            .collect(),
+    })
+}
+
+fn apply_title_pack_load_decision_actions(
+    menu: &mut TitleMenu,
+    actions: Vec<egui_title::PackLoadDecisionAction>,
+) {
+    for action in actions {
+        let Some(decision) = menu.pending_pack_load_decision.take() else {
+            return;
+        };
+        match action {
+            egui_title::PackLoadDecisionAction::RestoreSaveProfile => {
+                let Some(save) = menu.save_slots.get(decision.save_index) else {
+                    continue;
+                };
+                let path = save.path.clone();
+                let installed = menu
+                    .content_packs
+                    .iter()
+                    .map(|pack| pack.id.clone())
+                    .collect::<HashSet<_>>();
+                let selected = save
+                    .content_packs
+                    .iter()
+                    .filter(|pack| installed.contains(&pack.id))
+                    .map(|pack| pack.id.clone())
+                    .collect::<HashSet<_>>();
+                apply_title_pack_selection(menu, &selected);
+                menu.pending_action = Some(TitleAction::LoadGame {
+                    path,
+                    enabled_pack_ids: selected_title_pack_ids(&menu.content_packs),
+                });
+            }
+            egui_title::PackLoadDecisionAction::UseCurrentProfile => {
+                let Some(save) = menu.save_slots.get(decision.save_index) else {
+                    continue;
+                };
+                menu.pending_action = Some(TitleAction::LoadGame {
+                    path: save.path.clone(),
+                    enabled_pack_ids: selected_title_pack_ids(&menu.content_packs),
+                });
+            }
+            egui_title::PackLoadDecisionAction::Cancel => {}
+        }
+    }
 }
 
 fn ensure_title_ship_egui_textures(menu: &mut TitleMenu, ctx: &egui::Context) {
@@ -10564,6 +10921,14 @@ fn title_submenu_view(menu: &TitleMenu) -> egui_title::TitleSubmenuView {
                 .description
                 .clone()
                 .unwrap_or_else(|| "No description provided.".to_string()),
+            enabled: pack.enabled,
+            locked: pack.id == "core",
+            dependencies: pack
+                .depends_on
+                .iter()
+                .chain(pack.optional_depends_on.iter())
+                .cloned()
+                .collect(),
             options: pack
                 .options
                 .iter()
@@ -10639,6 +11004,7 @@ fn apply_title_submenu_actions(menu: &mut TitleMenu, actions: Vec<egui_title::Ti
                     menu.pending_action = Some(TitleAction::NewGame {
                         seed,
                         ship_id: ship.id.clone(),
+                        enabled_pack_ids: selected_title_pack_ids(&menu.content_packs),
                         pack_options: selected_title_pack_options(&menu.content_packs),
                     });
                 }
@@ -10649,16 +11015,15 @@ fn apply_title_submenu_actions(menu: &mut TitleMenu, actions: Vec<egui_title::Ti
                 menu.delete_save_error = None;
             }
             egui_title::TitleSubmenuAction::LoadSave => {
-                if let Some(save) = menu.save_slots.get(menu.selected_save_index) {
-                    menu.pending_action = Some(TitleAction::LoadGame {
-                        path: save.path.clone(),
-                    });
+                if let Some(action) = request_title_save_load(menu) {
+                    menu.pending_action = Some(action);
                 }
             }
             egui_title::TitleSubmenuAction::DeleteSave => handle_title_delete_save_click(menu),
             egui_title::TitleSubmenuAction::SelectPack(index) => {
                 menu.selected_pack_index = index.min(menu.content_packs.len().saturating_sub(1));
             }
+            egui_title::TitleSubmenuAction::TogglePack => toggle_selected_title_pack(menu),
             egui_title::TitleSubmenuAction::CyclePackOption(index) => {
                 if let Some(pack) = menu.content_packs.get_mut(menu.selected_pack_index) {
                     cycle_title_pack_option(pack, index);
@@ -27652,6 +28017,205 @@ mod tests {
         assert_eq!(default_ship, "turrets-galore:twinspire_gunship");
     }
 
+    fn test_title_menu_for_pack_profiles() -> TitleMenu {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let ships = title_ships(&registry);
+        let default_ship = resolved_new_game_ship_id(&registry, None);
+        let selected_ship_index = ships
+            .iter()
+            .position(|ship| ship.id == default_ship)
+            .unwrap_or(0);
+        TitleMenu {
+            view: TitleView::ContentPacks,
+            pending_action: None,
+            branding_egui_image: None,
+            branding_egui_texture: None,
+            new_game_seed_text: "1".to_string(),
+            ships,
+            selected_ship_index,
+            ship_textures: HashMap::new(),
+            save_slots: Vec::new(),
+            selected_save_index: 0,
+            pending_delete_save_index: None,
+            delete_save_error: None,
+            content_packs: title_content_packs(&registry),
+            selected_pack_index: 0,
+            pending_pack_load_decision: None,
+            settings: AppSettings::default(),
+            selected_settings_category: SettingsCategory::Display,
+        }
+    }
+
+    #[test]
+    fn title_pack_selection_locks_core_and_removes_disabled_pack_ships() {
+        let mut menu = test_title_menu_for_pack_profiles();
+        let core_index = menu
+            .content_packs
+            .iter()
+            .position(|pack| pack.id == "core")
+            .unwrap();
+        menu.selected_pack_index = core_index;
+        toggle_selected_title_pack(&mut menu);
+        assert!(menu.content_packs[core_index].enabled);
+
+        let addon_index = menu
+            .content_packs
+            .iter()
+            .position(|pack| pack.id == "turrets-galore")
+            .unwrap();
+        menu.selected_pack_index = addon_index;
+        toggle_selected_title_pack(&mut menu);
+
+        assert!(!menu.content_packs[addon_index].enabled);
+        assert!(menu.content_packs[core_index].enabled);
+        assert!(!menu
+            .ships
+            .iter()
+            .any(|ship| ship.id.starts_with("turrets-galore:")));
+        assert!(selected_title_pack_ids(&menu.content_packs)
+            .iter()
+            .any(|pack| pack == "core"));
+    }
+
+    #[test]
+    fn save_pack_profile_mismatch_reports_available_missing_versions_and_extras() {
+        let mut menu = test_title_menu_for_pack_profiles();
+        let core_version = menu
+            .content_packs
+            .iter()
+            .find(|pack| pack.id == "core")
+            .unwrap()
+            .version
+            .clone();
+        menu.save_slots = vec![TitleSaveSlot {
+            path: PathBuf::from("test-save.toml"),
+            label: "Test Save".to_string(),
+            world_seed: 1,
+            current_system_id: STARTER_SYSTEM_ID.to_string(),
+            world_elapsed_days: 0.0,
+            modified_unix_seconds: 0,
+            is_legacy: false,
+            content_packs: vec![
+                SaveContentPack {
+                    id: "core".to_string(),
+                    version: core_version,
+                },
+                SaveContentPack {
+                    id: "remote-duskfall".to_string(),
+                    version: "9.9.9".to_string(),
+                },
+                SaveContentPack {
+                    id: "missing-addon".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+            ],
+        }];
+        let remote_index = menu
+            .content_packs
+            .iter()
+            .position(|pack| pack.id == "remote-duskfall")
+            .unwrap();
+        menu.content_packs[remote_index].enabled = false;
+
+        let decision = pack_load_decision(&menu, 0).expect("profiles should differ");
+
+        assert_eq!(decision.save_only_available[0].id, "remote-duskfall");
+        assert_eq!(decision.missing[0].id, "missing-addon");
+        assert_eq!(decision.version_mismatches[0].0.id, "remote-duskfall");
+        assert!(decision
+            .current_only
+            .iter()
+            .any(|pack| pack.id == "turrets-galore"));
+    }
+
+    #[test]
+    fn legacy_save_without_pack_profile_uses_the_current_title_selection() {
+        let mut menu = test_title_menu_for_pack_profiles();
+        menu.save_slots = vec![TitleSaveSlot {
+            path: PathBuf::from("legacy-save.toml"),
+            label: "Legacy Save".to_string(),
+            world_seed: 1,
+            current_system_id: STARTER_SYSTEM_ID.to_string(),
+            world_elapsed_days: 0.0,
+            modified_unix_seconds: 0,
+            is_legacy: true,
+            content_packs: Vec::new(),
+        }];
+
+        assert!(pack_load_decision(&menu, 0).is_none());
+        let action = request_title_save_load(&mut menu).expect("legacy save should load directly");
+        let TitleAction::LoadGame {
+            enabled_pack_ids, ..
+        } = action
+        else {
+            panic!("legacy save should queue a load action");
+        };
+        assert_eq!(
+            enabled_pack_ids.into_iter().collect::<HashSet<_>>(),
+            selected_title_pack_ids(&menu.content_packs)
+                .into_iter()
+                .collect::<HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn restoring_save_pack_profile_enables_available_packs_and_disables_extras() {
+        let mut menu = test_title_menu_for_pack_profiles();
+        let saved_profile = menu
+            .content_packs
+            .iter()
+            .filter(|pack| matches!(pack.id.as_str(), "core" | "remote-duskfall"))
+            .map(|pack| SaveContentPack {
+                id: pack.id.clone(),
+                version: pack.version.clone(),
+            })
+            .collect::<Vec<_>>();
+        menu.save_slots = vec![TitleSaveSlot {
+            path: PathBuf::from("profile-save.toml"),
+            label: "Profile Save".to_string(),
+            world_seed: 1,
+            current_system_id: STARTER_SYSTEM_ID.to_string(),
+            world_elapsed_days: 0.0,
+            modified_unix_seconds: 0,
+            is_legacy: false,
+            content_packs: saved_profile,
+        }];
+        let remote = menu
+            .content_packs
+            .iter_mut()
+            .find(|pack| pack.id == "remote-duskfall")
+            .unwrap();
+        remote.enabled = false;
+        menu.pending_pack_load_decision = pack_load_decision(&menu, 0);
+
+        apply_title_pack_load_decision_actions(
+            &mut menu,
+            vec![egui_title::PackLoadDecisionAction::RestoreSaveProfile],
+        );
+
+        assert!(menu
+            .content_packs
+            .iter()
+            .find(|pack| pack.id == "remote-duskfall")
+            .is_some_and(|pack| pack.enabled));
+        assert!(menu
+            .content_packs
+            .iter()
+            .find(|pack| pack.id == "turrets-galore")
+            .is_some_and(|pack| !pack.enabled));
+        let Some(TitleAction::LoadGame {
+            enabled_pack_ids, ..
+        }) = menu.pending_action.as_ref()
+        else {
+            panic!("restoring the save profile should queue the load");
+        };
+        assert_eq!(
+            enabled_pack_ids.iter().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["core".to_string(), "remote-duskfall".to_string()])
+        );
+    }
+
     #[test]
     fn explicit_new_game_ship_selection_overrides_the_pack_default() {
         let registry = content::load_content_packs(Path::new("content/packs"))
@@ -28065,6 +28629,18 @@ mod tests {
 
         assert!(!serialized.contains("purchased_recipe_unlocks"));
         assert_eq!(restored.content_pack_options, game.content_pack_options);
+        assert_eq!(
+            restored
+                .content_packs
+                .iter()
+                .map(|pack| pack.id.as_str())
+                .collect::<HashSet<_>>(),
+            game.content_registry
+                .packs
+                .iter()
+                .map(|pack| pack.id.as_str())
+                .collect::<HashSet<_>>()
+        );
         assert_eq!(restored.ship_id, game.ship_id);
         assert_eq!(restored.completed_research, game.completed_research);
         assert_eq!(restored.active_research.len(), 1);
@@ -36052,6 +36628,7 @@ mod tests {
             delete_save_error: None,
             content_packs: Vec::new(),
             selected_pack_index: 0,
+            pending_pack_load_decision: None,
             settings: AppSettings::default(),
             selected_settings_category: SettingsCategory::Display,
         };
