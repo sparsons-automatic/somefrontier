@@ -83,3 +83,29 @@ energy_capacity = 40.0
 energy_recharge = 6.0
 weapon_slots = ["point_defense_turret"]
 summary = "Light hostile probe that opens starter-zone PvE with automatic turret fire."
+
+[[npc_ships]]
+id = "pale_relay_derelict"
+name = "Pale Relay Derelict"
+texture = "./assets/ships/frontier-freehauler.png"
+system = "frontier"
+position = [-1840.0, -1680.0]
+radius = 30.0
+archetype = "archive-courier"
+role = "derelict"
+faction = "frontier_cartographers"
+behavior_tags = ["non-hostile", "derelict"]
+spawn_weight = 0.01
+spawn_count = 1
+scan_difficulty = 0.8
+mass = 48000.0
+cargo_capacity = 8000.0
+cargo_defaults = [{ item = "pale_relay_archive", count = 1 }]
+starts_wrecked = true
+credit_reward_min = 0
+credit_reward_max = 0
+hull_capacity = 160.0
+shield_capacity = 90.0
+energy_capacity = 40.0
+energy_recharge = 4.0
+summary = "A silent Frontier Cartographers relay courier carrying an intact survey archive."

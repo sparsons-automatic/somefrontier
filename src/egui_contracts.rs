@@ -21,6 +21,26 @@ pub struct ContractDetail {
     pub requirement: String,
     pub focus_enabled: bool,
     pub focus_status: String,
+    pub fly_origin_enabled: bool,
+    pub fly_origin_status: String,
+    pub fly_destination_enabled: bool,
+    pub fly_destination_status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractChainRow {
+    pub id: String,
+    pub name: String,
+    pub stage: String,
+    pub progress: String,
+    pub status: String,
+    pub blocker: Option<String>,
+    pub origin: String,
+    pub destination: Option<String>,
+    pub fly_origin_enabled: bool,
+    pub fly_origin_status: String,
+    pub fly_destination_enabled: bool,
+    pub fly_destination_status: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,14 +49,20 @@ pub struct ContractsView {
     pub rows: Vec<ContractRow>,
     pub selected: Option<usize>,
     pub detail: Option<ContractDetail>,
+    pub contract_chains: Vec<ContractChainRow>,
     pub latest_operation: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractsUiAction {
     TogglePin,
     Select(usize),
     FocusOrigin(usize),
+    FlyToOrigin(usize),
+    FlyToDestination(usize),
+    FlyToContractChainOrigin(String),
+    FlyToContractChainDestination(String),
+    AbandonContractChain(String),
 }
 
 pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &ContractsView) -> Vec<ContractsUiAction> {
@@ -63,9 +89,68 @@ fn draw_contents(ui: &mut egui::Ui, view: &ContractsView, actions: &mut Vec<Cont
     ui.horizontal(|ui| {
         ui.heading("Active contracts");
         ui.separator();
-        ui.label(format!("{}/3 active", view.rows.len()));
+        ui.label(format!(
+            "{} tracked",
+            view.rows.len() + view.contract_chains.len()
+        ));
     });
     ui.small("Select a contract to inspect it. Double-click to focus its origin station.");
+    if !view.contract_chains.is_empty() {
+        ui.separator();
+        ui.heading("Active contract chains");
+        for contract_chain in &view.contract_chains {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(&contract_chain.name);
+                    ui.label(format!(
+                        "{} · {}",
+                        contract_chain.status, contract_chain.stage
+                    ));
+                    if ui.button("Abandon").clicked() {
+                        actions.push(ContractsUiAction::AbandonContractChain(
+                            contract_chain.id.clone(),
+                        ));
+                    }
+                });
+                ui.label(&contract_chain.progress);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Source · {}", contract_chain.origin));
+                    if ui
+                        .add_enabled(
+                            contract_chain.fly_origin_enabled,
+                            egui::Button::new("Fly now"),
+                        )
+                        .on_disabled_hover_text(&contract_chain.fly_origin_status)
+                        .clicked()
+                    {
+                        actions.push(ContractsUiAction::FlyToContractChainOrigin(
+                            contract_chain.id.clone(),
+                        ));
+                    }
+                });
+                if let Some(destination) = &contract_chain.destination {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("Destination · {destination}"));
+                        if ui
+                            .add_enabled(
+                                contract_chain.fly_destination_enabled,
+                                egui::Button::new("Fly now"),
+                            )
+                            .on_disabled_hover_text(&contract_chain.fly_destination_status)
+                            .clicked()
+                        {
+                            actions.push(ContractsUiAction::FlyToContractChainDestination(
+                                contract_chain.id.clone(),
+                            ));
+                        }
+                    });
+                }
+                if let Some(blocker) = &contract_chain.blocker {
+                    ui.small(format!("Blocked · {blocker}"));
+                }
+            });
+        }
+    }
     ui.separator();
 
     let pane_height = ui.available_height().max(220.0);
@@ -89,7 +174,7 @@ fn contract_list(
             .max_height(height)
             .show(ui, |ui| {
                 if view.rows.is_empty() {
-                    ui.label("No active contracts");
+                    ui.label("No active short-form contracts");
                     ui.small("Accept work from a station contract desk.");
                     return;
                 }
@@ -150,6 +235,37 @@ fn contract_detail(
                         fact_row(ui, "Requirement", &detail.requirement);
                     });
                 ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(
+                            detail.fly_origin_enabled,
+                            egui::Button::new("Fly to source now"),
+                        )
+                        .on_disabled_hover_text(&detail.fly_origin_status)
+                        .clicked()
+                    {
+                        if let Some(index) = view.selected {
+                            actions.push(ContractsUiAction::FlyToOrigin(index));
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            detail.fly_destination_enabled,
+                            egui::Button::new("Fly to destination now"),
+                        )
+                        .on_disabled_hover_text(&detail.fly_destination_status)
+                        .clicked()
+                    {
+                        if let Some(index) = view.selected {
+                            actions.push(ContractsUiAction::FlyToDestination(index));
+                        }
+                    }
+                });
+                ui.small(format!(
+                    "Source: {} · Destination: {}",
+                    detail.fly_origin_status, detail.fly_destination_status
+                ));
+                ui.add_space(4.0);
                 if ui
                     .add_enabled(
                         detail.focus_enabled,
@@ -186,6 +302,10 @@ mod tests {
         assert_ne!(
             ContractsUiAction::Select(1),
             ContractsUiAction::FocusOrigin(1)
+        );
+        assert_ne!(
+            ContractsUiAction::FlyToOrigin(1),
+            ContractsUiAction::FlyToDestination(1)
         );
     }
 }

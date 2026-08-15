@@ -620,6 +620,76 @@ reward = 340
 duration_days = 15.0
 ```
 
+### Authored contract chains
+
+Reusable multi-stage contracts live in an optional `contract_chains.toml`. A
+station service advertises a contract chain with
+`contract_chains = ["contract_id"]`; both that reference and the contract's
+`origin_station` / `origin_service` are namespaced and validated. Repeatable
+hauling and survey contracts use the existing inline service records.
+
+Each `[[contract_chains]]` record has a stable `id`, `name`, `summary`, origin,
+stages, and rewards. A `[[contract_chains.stages]]` record has its own stable
+`id`, player-facing text, objectives, and optional `next_stage`. Omitting
+`next_stage` makes it terminal. Explicit links provide a branching-ready format;
+the current runtime follows one sequential completion link.
+
+Objectives use `[[contract_chains.stages.objectives]]` with a stage-local `id`,
+`kind`, optional `target` / `item`, `amount` (default 1), `duration_seconds` for
+survival, and `optional`. Supported kinds are `reach_location`, `scan_identify`,
+`acquire_item`, `loot_item`, `manufacture_item`, `deliver_item`, `mine_quota`,
+`destroy_target`, `protect_target`, `complete_research`, `survive_duration`, and
+`return_origin`. They consume generic gameplay events; packs cannot embed code
+or scripts. Content references, stage links, empty stages, duplicate IDs,
+objective kinds, and rewards are validated before startup.
+
+A `deliver_item` objective whose target is a station completes automatically
+when the active fleet enters that station's interaction range with the required
+cargo in its nearby shared inventory. The cargo is consumed before the delivery
+event advances the contract. Add a later `return_origin` stage only when the
+author intends a separate debrief or turn-in journey.
+
+Rewards support positive `credits`, signed `reputation` with a faction target,
+`research` with a research target, and `route_knowledge` with a system target.
+Completion history and processed event IDs make rewards and progress idempotent.
+Active stage progress, blockers, abandonment, and missing-content state persist.
+
+```toml
+[[contract_chains]]
+id = "archive_recovery"
+name = "Archive Recovery"
+summary = "Recover a physical archive from a wreck."
+origin_station = "frontier_exchange"
+origin_service = "saloon"
+
+[[contract_chains.stages]]
+id = "recover"
+name = "Recover"
+description = "Loot the archive from the wreck."
+next_stage = "return"
+
+[[contract_chains.stages.objectives]]
+id = "loot_archive"
+kind = "loot_item"
+target = "archive_derelict"
+item = "archive"
+
+[[contract_chains.stages]]
+id = "return"
+name = "Return"
+description = "Deliver the archive at the origin."
+
+[[contract_chains.stages.objectives]]
+id = "deliver_archive"
+kind = "deliver_item"
+target = "frontier_exchange"
+item = "archive"
+
+[[contract_chains.rewards]]
+kind = "credits"
+amount = 500
+```
+
 ## `vendors.toml`
 
 Vendors provide named, data-driven catalogs for station services. A vendor is
@@ -1065,6 +1135,10 @@ Rules:
 - `credit_reward_min` and `credit_reward_max` default to 0. Hostile NPC ships
   award a random credit payout in this inclusive range when destroyed; ships
   with `credit_reward_max = 0` do not award credits.
+- `starts_wrecked = true` creates a persistent, nonmoving wreck with zero current
+  hull and shields while retaining authored cargo. It is intended for recovery
+  contracts and authored salvage scenes; ordinary destruction rewards are not paid
+  for a wreck that starts disabled.
 - `shield_slots` and `weapon_slots` default to empty lists and must reference
   loaded shields and weapons when present. NPC `weapon_slots` create live turret
   systems from the same weapon definitions used by player ships.
@@ -1449,17 +1523,18 @@ validation as ordinary pack content.
 12. Load NPC ship definitions.
 13. Load recipe definitions.
 14. Load research definitions.
-15. Load faction definitions.
-16. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
+15. Load contract-chain definitions.
+16. Load faction definitions.
+17. Load universe, galaxy-group, galaxy-cluster, galaxy, region, system, and
     star metadata.
-17. Load planet definitions.
-18. Load station definitions and station services.
-19. Load upgrade cost definitions.
-20. Load starter ship and inventory definitions.
-21. Validate cross-references.
-22. Record duplicate recipe-output warnings.
-23. Build runtime registries.
-24. Start the game only if validation succeeds.
+18. Load planet definitions.
+19. Load station definitions and station services.
+20. Load upgrade cost definitions.
+21. Load starter ship and inventory definitions.
+22. Validate cross-references.
+23. Record duplicate recipe-output warnings.
+24. Build runtime registries.
+25. Start the game only if validation succeeds.
 
 ## Validation Rules
 
@@ -1500,6 +1575,9 @@ Reject startup when:
   acceleration, energy, drag, hull, or shield values.
 - A ship declares a zero `purchase_price`.
 - Starter configuration references a missing ship.
+- A contract chain has duplicate or empty stage/objective IDs, an empty or impossible
+  stage, unsupported objective kind, invalid stage link, missing content or
+  origin reference, or an invalid reward kind, target, or amount.
 - A faction has an empty name or kind, or an unsupported default disposition.
 - An NPC ship references a missing system, faction, cargo item, shield, or
   weapon.

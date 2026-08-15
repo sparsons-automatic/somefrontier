@@ -1,0 +1,140 @@
+[[contract_chains]]
+id = "derelict_recovery"
+name = "The Silent Relay"
+summary = "Follow an Exchange rumor to a lost archive courier and recover its survey record."
+origin_station = "frontier_exchange"
+origin_service = "saloon"
+
+[[contract_chains.stages]]
+id = "locate"
+name = "Follow the rumor"
+description = "Travel beyond the northwest traffic lanes and approach the Pale Relay Derelict."
+next_stage = "identify"
+
+[[contract_chains.stages.objectives]]
+id = "reach_derelict"
+kind = "reach_location"
+target = "pale_relay_derelict"
+
+[[contract_chains.stages]]
+id = "identify"
+name = "Read the relay signature"
+description = "Select the wreck at scanner range and complete its identity scan."
+next_stage = "recover"
+
+[[contract_chains.stages.objectives]]
+id = "scan_derelict"
+kind = "scan_identify"
+target = "pale_relay_derelict"
+
+[[contract_chains.stages]]
+id = "recover"
+name = "Recover the archive"
+description = "Approach cargo range and loot the Pale Relay Archive from the physical wreck hold."
+next_stage = "return"
+
+[[contract_chains.stages.objectives]]
+id = "loot_archive"
+kind = "loot_item"
+target = "pale_relay_derelict"
+item = "pale_relay_archive"
+
+[[contract_chains.stages]]
+id = "return"
+name = "Return the archive"
+description = "Carry the archive back to Exchange Rumors at Frontier Exchange."
+
+[[contract_chains.stages.objectives]]
+id = "deliver_archive"
+kind = "deliver_item"
+target = "frontier_exchange"
+item = "pale_relay_archive"
+
+[[contract_chains.rewards]]
+kind = "credits"
+amount = 650
+
+[[contract_chains.rewards]]
+kind = "reputation"
+target = "cinder_cooperative"
+amount = 8
+
+[[contract_chains]]
+id = "ore_to_frontier_iron_run"
+name = "Iron Run to Frontier Exchange"
+summary = "Assemble a small iron ore consignment and deliver it to Frontier Exchange."
+origin_station = "ore_lattice_depot"
+origin_service = "ore_lattice_freight_lock"
+
+[[contract_chains.stages]]
+id = "load_iron"
+name = "Load the iron consignment"
+description = "Acquire 6 units of iron ore through mining, trade, or nearby shared fleet cargo."
+next_stage = "deliver_iron"
+
+[[contract_chains.stages.objectives]]
+id = "acquire_iron"
+kind = "acquire_item"
+item = "iron_ore"
+amount = 6
+
+[[contract_chains.stages]]
+id = "deliver_iron"
+name = "Deliver to Frontier Exchange"
+description = "Carry the iron consignment into station range at Frontier Exchange."
+
+[[contract_chains.stages.objectives]]
+id = "deliver_iron"
+kind = "deliver_item"
+target = "frontier_exchange"
+item = "iron_ore"
+amount = 6
+
+[[contract_chains.rewards]]
+kind = "credits"
+amount = 180
+
+[[contract_chains.rewards]]
+kind = "reputation"
+target = "cinder_cooperative"
+amount = 5
+
+[[contract_chains]]
+id = "ore_to_cinder_copper_run"
+name = "Copper Run to Cinder Yard"
+summary = "Load a copper ore shipment for the repair yard's next parts run."
+origin_station = "ore_lattice_depot"
+origin_service = "ore_lattice_freight_lock"
+
+[[contract_chains.stages]]
+id = "load_copper"
+name = "Load the copper shipment"
+description = "Acquire 4 units of copper ore through mining, trade, or nearby shared fleet cargo."
+next_stage = "deliver_copper"
+
+[[contract_chains.stages.objectives]]
+id = "acquire_copper"
+kind = "acquire_item"
+item = "copper_ore"
+amount = 4
+
+[[contract_chains.stages]]
+id = "deliver_copper"
+name = "Deliver to Cinder Yard"
+description = "Carry the copper shipment into station range at Cinder Repair Yard."
+
+[[contract_chains.stages.objectives]]
+id = "deliver_copper"
+kind = "deliver_item"
+target = "cinder_repair_yard"
+item = "copper_ore"
+amount = 4
+
+[[contract_chains.rewards]]
+kind = "credits"
+amount = 220
+
+[[contract_chains.rewards]]
+kind = "reputation"
+target = "cinder_cooperative"
+amount = 6
