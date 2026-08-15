@@ -4365,6 +4365,9 @@ mod tests {
                 npc_ship.system == "remote-duskfall:duskfall_reach"
                     && npc_ship.role == "hostile"
                     && npc_ship.behavior_tags.iter().any(|tag| tag == "pressure")
+                    && npc_ship.texture.as_deref().is_some_and(|texture| {
+                        texture.ends_with("remote-duskfall/./assets/ships/redwake-remote-probe.png")
+                    })
             }));
         assert!(registry
             .ships
@@ -4409,9 +4412,46 @@ mod tests {
                     && ship.weapon_slots
                         == ["core:point_defense_turret", "core:point_defense_turret"]
                     && ship.texture.as_deref().is_some_and(|texture| {
-                        texture.ends_with("core/./assets/ships/frontier-freehauler.png")
+                        texture.ends_with("core/./assets/ships/frontier-longhauler.png")
                     })
             }));
+        let distinct_ship_texture_paths = [
+            registry
+                .ships
+                .get("core:frontier_longhauler")
+                .and_then(|ship| ship.texture.as_deref()),
+            registry
+                .npc_ships
+                .get("core:frontier_freehauler")
+                .and_then(|ship| ship.texture.as_deref()),
+            registry
+                .npc_ships
+                .get("remote-duskfall:redwake_remote_probe")
+                .and_then(|ship| ship.texture.as_deref()),
+            registry
+                .npc_ships
+                .get("turrets-galore:galore_proving_drone")
+                .and_then(|ship| ship.texture.as_deref()),
+        ]
+        .map(|texture| texture.expect("ship should have unique artwork"));
+        assert_eq!(
+            distinct_ship_texture_paths
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len(),
+            distinct_ship_texture_paths.len()
+        );
+        for texture in distinct_ship_texture_paths {
+            let bytes = std::fs::read(texture).expect("ship artwork should be readable");
+            let image = macroquad::prelude::Image::from_file_with_format(
+                &bytes,
+                Some(macroquad::prelude::ImageFormat::Png),
+            )
+            .expect("ship artwork should decode through Macroquad");
+            assert!(image.width() > 0 && image.height() > 0);
+            assert!(image.get_image_data().iter().any(|pixel| pixel[3] == 0));
+        }
         assert!(registry
             .weapons
             .get("core:point_defense_turret")
@@ -4651,6 +4691,39 @@ mod tests {
             .planets
             .get("remote-duskfall:redwake_reactor_moon")
             .is_some_and(|planet| planet.system == "remote-duskfall:duskfall_reach"));
+        let duskfall_texture_paths = [
+            "remote-duskfall:duskfall_vanadium_shard",
+            "remote-duskfall:redwake_reactor_moon",
+            "remote-duskfall:ashen_vanadium_reef",
+            "remote-duskfall:gloam_pressure_belt",
+        ]
+        .map(|id| {
+            registry
+                .planets
+                .get(id)
+                .and_then(|planet| planet.texture.as_deref())
+                .expect("Duskfall object should have unique artwork")
+        });
+        assert_eq!(
+            duskfall_texture_paths
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len(),
+            duskfall_texture_paths.len()
+        );
+        for texture in duskfall_texture_paths {
+            assert!(texture.contains("remote-duskfall/./assets/planets/"));
+            assert!(!texture.contains("frontier-planet-"));
+            let bytes = std::fs::read(texture).expect("Duskfall artwork should be readable");
+            let image = macroquad::prelude::Image::from_file_with_format(
+                &bytes,
+                Some(macroquad::prelude::ImageFormat::Png),
+            )
+            .expect("Duskfall artwork should decode through Macroquad");
+            assert_eq!((image.width(), image.height()), (1254, 1254));
+            assert!(image.get_image_data().iter().any(|pixel| pixel[3] == 0));
+        }
         assert!(registry
             .planets
             .values()
@@ -4809,7 +4882,7 @@ mod tests {
             .flat_map(|station| station.services.iter())
             .filter_map(|service| service.artwork.as_deref())
             .collect::<Vec<_>>();
-        assert_eq!(service_art.len(), 7);
+        assert_eq!(service_art.len(), 16);
         for path in service_art {
             assert!(path.ends_with(".png"), "unexpected service artwork: {path}");
             let bytes = std::fs::read(path).expect("service artwork should be readable");
@@ -4818,7 +4891,11 @@ mod tests {
                 Some(macroquad::prelude::ImageFormat::Png),
             )
             .expect("service artwork should decode through Macroquad");
-            assert!(image.width() > 0 && image.height() > 0);
+            assert_eq!(
+                (image.width(), image.height()),
+                (320, 192),
+                "unexpected service artwork dimensions: {path}"
+            );
         }
         assert!(registry
             .stations
@@ -5012,7 +5089,12 @@ mod tests {
         assert!(registry
             .npc_ships
             .get("turrets-galore:galore_proving_drone")
-            .is_some_and(|ship| ship.weapon_slots == ["turrets-galore:sentinel_flak_turret"]));
+            .is_some_and(|ship| {
+                ship.weapon_slots == ["turrets-galore:sentinel_flak_turret"]
+                    && ship.texture.as_deref().is_some_and(|texture| {
+                        texture.ends_with("turrets-galore/./assets/ships/galore-proving-drone.png")
+                    })
+            }));
         assert!(registry.starter_inventory.iter().any(|stack| {
             stack.item == "turrets-galore:ember_lance_turret" && stack.count == 1
         }));

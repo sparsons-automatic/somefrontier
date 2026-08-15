@@ -1,7 +1,7 @@
 [[npc_ships]]
 id = "galore_proving_drone"
 name = "Galore Proving Drone"
-texture = "content/packs/core/assets/ships/npc-scout-01.png"
+texture = "./assets/ships/galore-proving-drone.png"
 system = "core:frontier"
 position = [-560.0, -760.0]
 radius = 22.0

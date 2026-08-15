@@ -1,0 +1,6 @@
+[advisories]
+# `webbrowser` is pinned through egui-macroquad -> egui-miniquad -> quad-url.
+# The game does not invoke URL-opening APIs, and no compatible upstream release
+# is currently available. Remove this exception when that dependency chain moves
+# to webbrowser >= 1.2.2.
+ignore = ["RUSTSEC-2026-0257"]

@@ -45,8 +45,11 @@ pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &UpgradesView) -> Vec<U
         .min_width(680.0)
         .resizable(true)
         .collapsible(true)
-        .vscroll(true)
-        .show(ctx, |ui| draw_contents(ui, view, &mut actions));
+        .show(ctx, |ui| {
+            crate::egui_pane::vertical_scroll(ui, "upgrades-content-scroll", |ui| {
+                draw_contents(ui, view, &mut actions);
+            });
+        });
 
     actions
 }

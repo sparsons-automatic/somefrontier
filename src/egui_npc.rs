@@ -71,8 +71,11 @@ pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &NpcPaneView) -> Vec<Np
         .min_width(340.0)
         .resizable(true)
         .collapsible(true)
-        .vscroll(true)
-        .show(ctx, |ui| draw_contents(ui, view, &mut actions));
+        .show(ctx, |ui| {
+            crate::egui_pane::vertical_scroll(ui, "contact-content-scroll", |ui| {
+                draw_contents(ui, view, &mut actions);
+            });
+        });
 
     actions
 }
@@ -92,7 +95,7 @@ fn draw_contents(ui: &mut egui::Ui, view: &NpcPaneView, actions: &mut Vec<NpcUiA
     });
     ui.horizontal(|ui| {
         ui.strong(format!("Intel: {}", view.intel_level));
-        ui.label(format!("Next: {}", view.scan_stage));
+        ui.label(&view.scan_stage);
     });
     if let Some(progress) = view.scan_progress {
         ui.add(

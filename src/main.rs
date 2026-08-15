@@ -13,6 +13,7 @@ mod egui_inventory;
 mod egui_loading;
 mod egui_npc;
 mod egui_operations;
+mod egui_pane;
 mod egui_pin;
 mod egui_planet;
 mod egui_research;
@@ -25,7 +26,7 @@ use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -214,9 +215,7 @@ struct SavedEguiPins {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EguiPane {
-    Ship,
     Production,
-    Inventory,
     Planet,
     Station,
     Contact,
@@ -232,9 +231,7 @@ enum EguiPane {
 impl EguiPane {
     fn id(self) -> &'static str {
         match self {
-            Self::Ship => "ship",
             Self::Production => "production",
-            Self::Inventory => "inventory",
             Self::Planet => "planet",
             Self::Station => "station",
             Self::Contact => "contact",
@@ -251,9 +248,7 @@ impl EguiPane {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct EguiPinSnapshot {
-    ship: bool,
     production: bool,
-    inventory: bool,
     planet: bool,
     station: bool,
     contact: bool,
@@ -266,10 +261,8 @@ struct EguiPinSnapshot {
     operations: bool,
 }
 
-const PERSISTED_EGUI_WINDOW_IDS: [&str; 15] = [
-    "inventory-ship-window",
+const PERSISTED_EGUI_WINDOW_IDS: [&str; 13] = [
     "inventory-production-window",
-    "inventory-cargo-window",
     "planet-workspace-window",
     "station-workspace-window",
     "npc-contact-window",
@@ -372,6 +365,7 @@ struct GameState {
     defense_threats: Vec<DefenseThreat>,
     weapon_fire_events: Vec<WeaponFireEvent>,
     weapon_area_effect_events: Vec<WeaponAreaEffectEvent>,
+    weapon_impact_visual_events: Vec<WeaponImpactVisualEvent>,
     weapon_projectile_textures: HashMap<String, Texture2D>,
     ship_textures: HashMap<String, Texture2D>,
     system_light_haze_texture: Option<Texture2D>,
@@ -417,6 +411,7 @@ struct GameState {
     production_mode: ProductionMode,
     ship_upgrades: [ShipUpgrade; SHIP_UPGRADE_COUNT],
     inventory_open: bool,
+    production_open: bool,
     map_open: bool,
     research_open: bool,
     upgrades_open: bool,
@@ -425,7 +420,8 @@ struct GameState {
     fleet_open: bool,
     operations_open: bool,
     selected_owned_ship_index: usize,
-    fleet_transfer_quantity: u32,
+    fleet_page: egui_fleet::FleetPage,
+    fleet_selected_upgrade: usize,
     fleet_mining_planet: Option<String>,
     fleet_mining_resource: Option<String>,
     fleet_mining_quota: u32,
@@ -454,7 +450,7 @@ struct GameState {
     save_status_timer: f32,
     save_status_manual: bool,
     operation_feedback: Vec<OperationFeedback>,
-    operation_hidden_categories: BTreeSet<egui_operations::OperationCategory>,
+    operation_selected_tab: egui_operations::OperationsTab,
     operation_hidden_severities: BTreeSet<egui_operations::OperationSeverity>,
     debug_console: DebugConsole,
     context_action_menu: Option<ContextActionMenu>,
@@ -515,6 +511,7 @@ enum ContextAction {
     StopFollowing,
     Hail,
     Trade,
+    Loot,
     Salvage,
 }
 
@@ -1039,6 +1036,22 @@ struct WeaponAreaEffectEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WeaponImpactVisualKind {
+    Shield,
+    Hull,
+}
+
+struct WeaponImpactVisualEvent {
+    position: Vec2,
+    outward: Vec2,
+    timer: f32,
+    duration: f32,
+    kind: WeaponImpactVisualKind,
+    color: [u8; 4],
+    magnitude: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WeaponFireOrigin {
     Player,
     Npc,
@@ -1128,6 +1141,10 @@ struct NpcShip {
     cargo_capacity: f32,
     cargo_defaults: Vec<ItemStack>,
     trade_open: bool,
+    destruction_processed: bool,
+    salvage_active: bool,
+    salvage_progress: f32,
+    salvaged: bool,
     credit_reward_min: u32,
     credit_reward_max: u32,
     hull: ShipResource,
@@ -1722,6 +1739,14 @@ struct SaveMarketOffer {
 struct SaveNpcCargo {
     npc: String,
     cargo: Vec<SaveStack>,
+    #[serde(default)]
+    wrecked: bool,
+    #[serde(default)]
+    position: Option<[f32; 2]>,
+    #[serde(default)]
+    salvage_progress: f32,
+    #[serde(default)]
+    salvaged: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2087,6 +2112,7 @@ impl GameState {
             defense_threats,
             weapon_fire_events: Vec::new(),
             weapon_area_effect_events: Vec::new(),
+            weapon_impact_visual_events: Vec::new(),
             weapon_projectile_textures,
             ship_textures,
             system_light_haze_texture,
@@ -2132,6 +2158,7 @@ impl GameState {
             production_mode: ProductionMode::Smelting,
             ship_upgrades: make_ship_upgrades(),
             inventory_open: false,
+            production_open: false,
             map_open: false,
             research_open: false,
             upgrades_open: false,
@@ -2140,7 +2167,8 @@ impl GameState {
             fleet_open: false,
             operations_open: false,
             selected_owned_ship_index: 0,
-            fleet_transfer_quantity: 1,
+            fleet_page: egui_fleet::FleetPage::Stats,
+            fleet_selected_upgrade: 0,
             fleet_mining_planet: None,
             fleet_mining_resource: None,
             fleet_mining_quota: 10,
@@ -2169,7 +2197,7 @@ impl GameState {
             save_status_timer: 0.0,
             save_status_manual: false,
             operation_feedback: Vec::new(),
-            operation_hidden_categories: BTreeSet::new(),
+            operation_selected_tab: egui_operations::OperationsTab::default(),
             operation_hidden_severities: BTreeSet::new(),
             debug_console: DebugConsole::default(),
             context_action_menu: None,
@@ -3573,6 +3601,12 @@ fn save_npc_cargo(npc_ships: &[NpcShip]) -> Vec<SaveNpcCargo> {
                     count: stack.count,
                 })
                 .collect(),
+            wrecked: npc.hull.current <= 0.0,
+            position: (npc.hull.current <= 0.0 || npc.salvaged)
+                .then_some([npc.position.x, npc.position.y]),
+            salvage_progress: finite_nonnegative_or(npc.salvage_progress, 0.0)
+                .min(OWNED_SHIP_SALVAGE_SECONDS),
+            salvaged: npc.salvaged,
         })
         .collect()
 }
@@ -3604,6 +3638,21 @@ fn apply_npc_cargo_save(
         if mass <= npc.cargo_capacity {
             npc.cargo_defaults = cargo;
         }
+        if saved_npc.wrecked || saved_npc.salvaged {
+            npc.hull.current = 0.0;
+            npc.shields.current = 0.0;
+            npc.velocity = Vec2::ZERO;
+            npc.destruction_processed = true;
+        }
+        if let Some([x, y]) = saved_npc
+            .position
+            .filter(|position| position[0].is_finite() && position[1].is_finite())
+        {
+            npc.position = vec2(x, y);
+        }
+        npc.salvage_progress =
+            finite_nonnegative_or(saved_npc.salvage_progress, 0.0).min(OWNED_SHIP_SALVAGE_SECONDS);
+        npc.salvaged = saved_npc.salvaged;
     }
 }
 
@@ -3744,6 +3793,10 @@ async fn make_npc_ships(
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
             trade_open: false,
+            destruction_processed: false,
+            salvage_active: false,
+            salvage_progress: 0.0,
+            salvaged: false,
             credit_reward_min: npc_ship_def.credit_reward_min,
             credit_reward_max: npc_ship_def.credit_reward_max,
             hull: ShipResource::full(npc_ship_def.hull_capacity),
@@ -6956,6 +7009,44 @@ fn buy_ship_upgrade(game: &mut GameState, upgrade_index: usize) -> bool {
     true
 }
 
+fn buy_selected_fleet_upgrade(game: &mut GameState, upgrade_index: usize) -> bool {
+    let selected_index = game.selected_owned_ship_index;
+    let Some(owned) = game.owned_ships.get(selected_index) else {
+        return false;
+    };
+    if owned.instance_id == game.active_owned_ship_id {
+        return buy_ship_upgrade(game, upgrade_index);
+    }
+    let Some(upgrade) = owned.upgrades.get(upgrade_index).copied() else {
+        return false;
+    };
+    if !ship_upgrade_is_available(&game.content_registry, &owned.ship_id, upgrade.kind) {
+        return false;
+    }
+    let cost = upgrade.next_cost(&game.content_registry);
+    let producer = FleetProducer::Owned(selected_index);
+    if !fleet_can_afford(game, producer, &cost) {
+        return false;
+    }
+
+    fleet_pay_cost(game, producer, &cost);
+    let owned = &mut game.owned_ships[selected_index];
+    apply_ship_upgrade(&mut owned.ship, upgrade.kind);
+    owned.upgrades[upgrade_index].level += 1;
+    let callsign = owned.callsign.clone();
+    let level = owned.upgrades[upgrade_index].level;
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Upgrade",
+        format!(
+            "{callsign}: {} upgraded to level {level}",
+            upgrade.kind.name()
+        ),
+    );
+    true
+}
+
 fn apply_ship_upgrade(ship: &mut Ship, kind: ShipUpgradeKind) {
     match kind {
         ShipUpgradeKind::Engine => {
@@ -7337,14 +7428,21 @@ fn open_owned_ship_inventory(game: &mut GameState, index: usize) {
     if index >= game.owned_ships.len() {
         return;
     }
-    game.sync_active_owned_ship();
     game.selected_owned_ship_index = index;
+    open_fleet_control_panel(game, egui_fleet::FleetPage::Stats);
+}
+
+fn open_fleet_control_panel(game: &mut GameState, page: egui_fleet::FleetPage) {
+    game.sync_active_owned_ship();
+    if game.owned_ships.is_empty() {
+        game.selected_owned_ship_index = 0;
+    } else {
+        game.selected_owned_ship_index = game
+            .selected_owned_ship_index
+            .min(game.owned_ships.len() - 1);
+    }
+    game.fleet_page = page;
     game.fleet_open = true;
-    game.inventory_open = false;
-    game.selected_planet = None;
-    game.selected_station = None;
-    game.selected_npc_ship = None;
-    game.selected_station_service = None;
 }
 
 fn resolve_pending_owned_ship_click(game: &mut GameState, now: f64) {
@@ -8325,9 +8423,7 @@ fn egui_pane_pinned(pane: EguiPane) -> bool {
 
 fn egui_pin_snapshot() -> EguiPinSnapshot {
     EguiPinSnapshot {
-        ship: egui_pane_pinned(EguiPane::Ship),
         production: egui_pane_pinned(EguiPane::Production),
-        inventory: egui_pane_pinned(EguiPane::Inventory),
         planet: egui_pane_pinned(EguiPane::Planet),
         station: egui_pane_pinned(EguiPane::Station),
         contact: egui_pane_pinned(EguiPane::Contact),
@@ -8522,7 +8618,12 @@ fn flush_egui_layout() {
 fn flush_egui_layout() {}
 
 fn reset_egui_menu_layout() {
-    egui_macroquad::cfg(|ctx| ctx.memory_mut(|memory| memory.reset_areas()));
+    egui_macroquad::cfg(|ctx| {
+        ctx.memory_mut(|memory| memory.reset_areas());
+        for id in PERSISTED_EGUI_WINDOW_IDS {
+            egui_pane::forget_position(ctx, egui::Id::new(id));
+        }
+    });
     let path = egui_layout_path();
     if let Err(error) = fs::remove_file(&path) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -9742,6 +9843,7 @@ fn title_ships(registry: &content::ContentRegistry) -> Vec<TitleShip> {
         .ship_order
         .iter()
         .filter_map(|ship_id| registry.ships.get(ship_id))
+        .filter(|ship| new_game_ship_eligible(ship))
         .map(|ship| TitleShip {
             id: ship.id.clone(),
             name: ship.name.clone(),
@@ -9755,6 +9857,10 @@ fn title_ships(registry: &content::ContentRegistry) -> Vec<TitleShip> {
             turn_acceleration: ship.turn_acceleration,
         })
         .collect()
+}
+
+fn new_game_ship_eligible(ship: &content::ShipDef) -> bool {
+    ship.mining_drone.is_none()
 }
 
 fn title_content_packs(registry: &content::ContentRegistry) -> Vec<TitleContentPack> {
@@ -10628,6 +10734,7 @@ fn update_game(game: &mut GameState, dt: f32) {
                 game.starmap_selected_planet = game.destination_planet;
             }
             game.inventory_open = false;
+            game.production_open = false;
             game.research_open = false;
             game.upgrades_open = false;
             game.content_open = false;
@@ -10646,17 +10753,12 @@ fn update_game(game: &mut GameState, dt: f32) {
     if !game.map_open && is_key_pressed(KeyCode::F) {
         game.fleet_open = !game.fleet_open;
         if game.fleet_open {
-            game.sync_active_owned_ship();
-            game.inventory_open = false;
-            game.research_open = false;
-            game.upgrades_open = false;
-            game.content_open = false;
-            game.contracts_open = false;
             game.selected_owned_ship_index = game
                 .owned_ships
                 .iter()
                 .position(|ship| ship.instance_id == game.active_owned_ship_id)
                 .unwrap_or(0);
+            open_fleet_control_panel(game, egui_fleet::FleetPage::Stats);
         }
         game.audio.play(if game.fleet_open {
             audio::AudioCue::Select
@@ -10672,8 +10774,8 @@ fn update_game(game: &mut GameState, dt: f32) {
                 (game.starmap_resource_filter_index + 1) % resource_count;
         }
     }
-    if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::E) {
-        handle_inventory_shortcut(game);
+    if is_key_pressed(KeyCode::P) {
+        handle_production_shortcut(game);
     }
     if is_key_pressed(KeyCode::K) {
         game.research_open = !game.research_open;
@@ -10685,6 +10787,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         if game.research_open {
             game.map_open = false;
             game.inventory_open = false;
+            game.production_open = false;
             game.upgrades_open = false;
             game.content_open = false;
             game.contracts_open = false;
@@ -10705,6 +10808,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         if game.content_open {
             game.map_open = false;
             game.inventory_open = false;
+            game.production_open = false;
             game.research_open = false;
             game.upgrades_open = false;
             game.contracts_open = false;
@@ -10722,6 +10826,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         if game.contracts_open {
             game.map_open = false;
             game.inventory_open = false;
+            game.production_open = false;
             game.research_open = false;
             game.upgrades_open = false;
             game.content_open = false;
@@ -10781,7 +10886,8 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_hostile_npc_pressure(game, dt);
     update_hostile_scanner_contacts(game);
     update_weapon_systems(game, dt);
-    remove_destroyed_npc_ships(game);
+    process_destroyed_npc_ships(game);
+    update_npc_ship_salvage(game, dt);
     update_combat_scan(game, dt);
 
     let mut egui_pointer_captured = false;
@@ -10790,16 +10896,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     if game.map_open {
         update_starmap_view_input(game, dt, wheel);
     }
-    if wheel != 0.0
-        && !game.inventory_open
-        && !game.map_open
-        && !game.research_open
-        && !game.upgrades_open
-        && !game.content_open
-        && !game.contracts_open
-        && !game.fleet_open
-        && !egui_pointer_captured
-    {
+    if wheel != 0.0 && flight_camera_wheel_enabled(game, egui_pointer_captured) {
         adjust_camera_zoom(game, wheel.signum() as i32);
     }
 
@@ -10981,26 +11078,38 @@ fn update_game(game: &mut GameState, dt: f32) {
     }
 }
 
-fn handle_inventory_shortcut(game: &mut GameState) {
+fn handle_production_shortcut(game: &mut GameState) {
     if game.context_action_menu.take().is_some() {
         game.audio.play(audio::AudioCue::Back);
         return;
     }
 
-    let pins = egui_pin_snapshot();
-    game.map_open = false;
-    game.research_open = false;
-    game.upgrades_open = false;
-    game.content_open = false;
-    game.contracts_open = false;
-    game.fleet_open = false;
-    game.inventory_open = !game.inventory_open;
-    clear_unpinned_inspection_selection(game, pins);
-    game.audio.play(if game.inventory_open {
+    let closing = game.fleet_open && game.fleet_page == egui_fleet::FleetPage::Production;
+    if closing {
+        game.fleet_open = false;
+    } else {
+        game.selected_owned_ship_index = game
+            .owned_ships
+            .iter()
+            .position(|ship| ship.instance_id == game.active_owned_ship_id)
+            .unwrap_or(0);
+        open_fleet_control_panel(game, egui_fleet::FleetPage::Production);
+    }
+    game.audio.play(if game.fleet_open {
         audio::AudioCue::Select
     } else {
         audio::AudioCue::Back
     });
+}
+
+fn flight_camera_wheel_enabled(game: &GameState, egui_pointer_captured: bool) -> bool {
+    !game.map_open
+        && !game.research_open
+        && !game.upgrades_open
+        && !game.content_open
+        && !game.contracts_open
+        && (!game.fleet_open || game.fleet_page == egui_fleet::FleetPage::Production)
+        && !egui_pointer_captured
 }
 
 fn clear_unpinned_inspection_selection(game: &mut GameState, pins: EguiPinSnapshot) {
@@ -11188,8 +11297,52 @@ fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<Contex
             let Some(npc_ship) = game.npc_ships.get(index) else {
                 return Vec::new();
             };
+            if npc_ship.salvaged {
+                return Vec::new();
+            }
             let following = game.follow_target == Some(FollowTarget::NpcShip(index));
             let in_range = npc_ship_in_interaction_range(&game.ship, npc_ship);
+            if npc_ship.hull.current <= 0.0 {
+                let cargo_empty = npc_ship.cargo_defaults.iter().all(|stack| stack.count == 0);
+                return vec![
+                    ContextMenuEntry {
+                        action: ContextAction::Approach,
+                        label: "Approach wreck",
+                        enabled: true,
+                        detail: "Approach cargo recovery range",
+                    },
+                    ContextMenuEntry {
+                        action: ContextAction::Loot,
+                        label: "Loot wreck",
+                        enabled: in_range && !cargo_empty,
+                        detail: if !in_range {
+                            "Move within cargo recovery range"
+                        } else if cargo_empty {
+                            "The wreck's cargo hold is empty"
+                        } else {
+                            "Transfer all cargo that fits"
+                        },
+                    },
+                    ContextMenuEntry {
+                        action: ContextAction::Salvage,
+                        label: if npc_ship.salvage_progress > 0.0 {
+                            "Resume salvage"
+                        } else {
+                            "Salvage wreck"
+                        },
+                        enabled: in_range && cargo_empty,
+                        detail: if !in_range {
+                            "Move within cargo recovery range"
+                        } else if !cargo_empty {
+                            "Empty the wreck's cargo first"
+                        } else if npc_ship.salvage_progress > 0.0 {
+                            "Continue saved dismantling progress"
+                        } else {
+                            "Dismantle wreck over 150 seconds"
+                        },
+                    },
+                ];
+            }
             let can_trade = npc_ship.identified
                 && in_range
                 && !npc_ship_is_hostile(&game.content_registry, npc_ship)
@@ -11510,7 +11663,7 @@ fn context_target_candidates(game: &GameState, mouse: Vec2) -> Vec<ContextTarget
         }
     }
     for (index, npc_ship) in game.npc_ships.iter().enumerate() {
-        if !npc_ship_is_in_system(npc_ship, &game.current_system_id) {
+        if npc_ship.salvaged || npc_ship.system != game.current_system_id {
             continue;
         }
         let screen_position =
@@ -11696,6 +11849,43 @@ fn execute_context_action(game: &mut GameState, target: ContextTarget, action: C
             select_npc_ship_for_context(game, index);
             begin_approach(game, ApproachTarget::NpcShip(index));
             push_operation_feedback(game, "Contact", "Autopilot approaching contact".to_string());
+        }
+        (ContextTarget::NpcShip(index), ContextAction::Loot) => {
+            let transferred = take_all_npc_wreck_cargo(game, index);
+            if let Some(npc_ship) = game.npc_ships.get(index) {
+                let remaining = npc_ship
+                    .cargo_defaults
+                    .iter()
+                    .map(|stack| stack.count)
+                    .sum::<u32>();
+                let name = npc_ship.name.clone();
+                let message = if transferred == 0 {
+                    "No cargo fit in the active hold".to_string()
+                } else if remaining == 0 {
+                    format!("Recovered {transferred} cargo; wreck hold emptied")
+                } else {
+                    format!("Recovered {transferred} cargo; {remaining} remains")
+                };
+                push_operation_feedback(game, "Loot", format!("{name}: {message}"));
+            }
+        }
+        (ContextTarget::NpcShip(index), ContextAction::Salvage) => {
+            let eligible = game.npc_ships.get(index).is_some_and(|npc| {
+                !npc.salvaged
+                    && npc.hull.current <= 0.0
+                    && npc.cargo_defaults.iter().all(|stack| stack.count == 0)
+                    && npc_ship_in_interaction_range(&game.ship, npc)
+            });
+            if eligible {
+                let name = game.npc_ships[index].name.clone();
+                game.npc_ships[index].salvage_active = true;
+                game.save_dirty = true;
+                push_operation_feedback(
+                    game,
+                    "Loot",
+                    format!("Salvage operation started on {name}"),
+                );
+            }
         }
         (ContextTarget::OwnedShip(index), ContextAction::Salvage) => {
             let eligible = game.owned_ships.get(index).is_some_and(|owned| {
@@ -11990,7 +12180,7 @@ fn update_ship_approach(game: &mut GameState, dt: f32) {
             ))
         }),
         ApproachTarget::NpcShip(index) => game.npc_ships.get(index).and_then(|npc_ship| {
-            (npc_ship.system == game.current_system_id && npc_ship.hull.current > 0.0).then_some((
+            (npc_ship.system == game.current_system_id && !npc_ship.salvaged).then_some((
                 npc_ship.position,
                 npc_ship_interaction_radius(&game.ship, npc_ship),
             ))
@@ -12257,6 +12447,9 @@ fn close_topmost_gameplay_overlay(game: &mut GameState) -> bool {
         true
     } else if game.map_open {
         game.map_open = false;
+        true
+    } else if game.production_open {
+        game.production_open = false;
         true
     } else if game.inventory_open {
         game.inventory_open = false;
@@ -13184,7 +13377,7 @@ fn combat_scan_depth(game: &GameState) -> CombatIntelLevel {
     .floor()
     .max(0.0) as u32;
     CombatIntelLevel::from_u8(
-        2_u32
+        3_u32
             .saturating_add(upgrade_depth)
             .saturating_add(research_depth)
             .min(CombatIntelLevel::MAX.as_u8() as u32) as u8,
@@ -13223,6 +13416,7 @@ fn update_hostile_scanner_contacts(game: &mut GameState) -> bool {
         .enumerate()
         .filter(|(_, npc)| {
             npc.behavior == NpcBehaviorMode::HostileIntercept
+                && npc.hull.current > 0.0
                 && npc_ship_is_hostile(&game.content_registry, npc)
                 && npc_ship_is_in_system(npc, &game.current_system_id)
                 && npc_ship_in_combat_scan_range(&game.ship, npc)
@@ -15481,7 +15675,7 @@ fn update_npc_ships(game: &mut GameState, dt: f32) {
         .npc_ships
         .iter()
         .enumerate()
-        .filter(|(_, npc_ship)| npc_ship.system == current_system_id)
+        .filter(|(_, npc_ship)| npc_ship.system == current_system_id && !npc_ship.salvaged)
         .map(|(index, npc_ship)| {
             (
                 index,
@@ -15494,7 +15688,10 @@ fn update_npc_ships(game: &mut GameState, dt: f32) {
         .collect::<Vec<_>>();
 
     for index in 0..game.npc_ships.len() {
-        if game.npc_ships[index].system != current_system_id {
+        if game.npc_ships[index].system != current_system_id
+            || game.npc_ships[index].hull.current <= 0.0
+            || game.npc_ships[index].salvaged
+        {
             continue;
         }
         update_npc_shield_recharge(&mut game.npc_ships[index], dt);
@@ -15735,6 +15932,10 @@ fn update_weapon_systems(game: &mut GameState, dt: f32) {
         event.timer -= dt;
         event.timer > 0.0
     });
+    game.weapon_impact_visual_events.retain_mut(|event| {
+        event.timer -= dt;
+        event.timer > 0.0
+    });
 
     for (event, impact) in completed_impacts {
         resolve_weapon_impact(game, &event, impact);
@@ -15906,7 +16107,13 @@ fn resolve_weapon_impact(
                 candidate.target == impact.primary_target
                     && impact_candidate_is_eligible(candidate, &impact)
             }) {
-                apply_weapon_damage_to_target(game, &impact.primary_target, impact.damage);
+                apply_weapon_damage_to_target(
+                    game,
+                    &impact.primary_target,
+                    impact.damage,
+                    source_event.from,
+                    weapon_fire_render_palette(source_event).2,
+                );
             }
         }
         content::WeaponImpact::Chain => {
@@ -15993,7 +16200,13 @@ fn apply_weapon_chain(
                 Some(&mut damaged),
             );
         } else {
-            apply_weapon_damage_to_target(game, &target.target, damage);
+            apply_weapon_damage_to_target(
+                game,
+                &target.target,
+                damage,
+                previous_position,
+                weapon_fire_render_palette(source_event).2,
+            );
         }
         if index > 0 {
             push_chain_visual(game, source_event, previous_position, target.position);
@@ -16041,7 +16254,13 @@ fn apply_weapon_splash(
             normalized,
             impact.splash_min_multiplier,
         );
-        apply_weapon_damage_to_target(game, &candidate.target, base_damage * multiplier);
+        apply_weapon_damage_to_target(
+            game,
+            &candidate.target,
+            base_damage * multiplier,
+            center,
+            weapon_fire_render_palette(source_event).2,
+        );
         if let Some(targets) = damaged.as_deref_mut() {
             targets.insert(candidate.target.clone());
         }
@@ -16073,8 +16292,11 @@ fn apply_weapon_damage_to_target(
     game: &mut GameState,
     target: &WeaponTargetRef,
     damage: f32,
+    impact_origin: Vec2,
+    color: [u8; 4],
 ) -> bool {
-    match target {
+    let before = weapon_target_damage_visual_state(game, target);
+    let changed = match target {
         WeaponTargetRef::Player => apply_ship_weapon_damage(game, damage),
         WeaponTargetRef::OwnedShip(instance_id) => game
             .owned_ships
@@ -16101,81 +16323,245 @@ fn apply_weapon_damage_to_target(
                 threat.hull.spend(damage.max(0.0));
                 threat.hull.current < before
             }),
+    };
+    if changed {
+        if let (Some(before), Some(after)) =
+            (before, weapon_target_damage_visual_state(game, target))
+        {
+            push_weapon_impact_visuals(game, before, after, impact_origin, color);
+        }
+    }
+    changed
+}
+
+#[derive(Clone, Copy)]
+struct WeaponTargetDamageVisualState {
+    position: Vec2,
+    radius: f32,
+    shields: f32,
+    hull: f32,
+}
+
+fn weapon_target_damage_visual_state(
+    game: &GameState,
+    target: &WeaponTargetRef,
+) -> Option<WeaponTargetDamageVisualState> {
+    match target {
+        WeaponTargetRef::Player => Some(WeaponTargetDamageVisualState {
+            position: game.ship.position,
+            radius: game.ship.radius(),
+            shields: game.ship.systems.shields.current,
+            hull: game.ship.systems.hull.current,
+        }),
+        WeaponTargetRef::OwnedShip(instance_id) => game
+            .owned_ships
+            .iter()
+            .find(|owned| owned.instance_id == *instance_id)
+            .map(|owned| WeaponTargetDamageVisualState {
+                position: owned.ship.position,
+                radius: owned.ship.radius(),
+                shields: owned.ship.systems.shields.current,
+                hull: owned.ship.systems.hull.current,
+            }),
+        WeaponTargetRef::Npc(id) => game.npc_ships.iter().find(|npc| npc.id == *id).map(|npc| {
+            WeaponTargetDamageVisualState {
+                position: npc.position,
+                radius: npc.radius,
+                shields: npc.shields.current,
+                hull: npc.hull.current,
+            }
+        }),
+        WeaponTargetRef::Threat(_) => None,
     }
 }
 
-fn remove_destroyed_npc_ships(game: &mut GameState) {
-    if game
+fn push_weapon_impact_visuals(
+    game: &mut GameState,
+    before: WeaponTargetDamageVisualState,
+    after: WeaponTargetDamageVisualState,
+    impact_origin: Vec2,
+    color: [u8; 4],
+) {
+    let shield_damage = (before.shields - after.shields).max(0.0);
+    let hull_damage = (before.hull - after.hull).max(0.0);
+    let outward = safe_direction(impact_origin - before.position, vec2(1.0, 0.0));
+    if shield_damage > 0.0 {
+        game.weapon_impact_visual_events
+            .push(WeaponImpactVisualEvent {
+                position: before.position + outward * before.radius * 1.08,
+                outward,
+                timer: 0.72,
+                duration: 0.72,
+                kind: WeaponImpactVisualKind::Shield,
+                color,
+                magnitude: shield_damage.sqrt().clamp(1.0, 4.0),
+            });
+    }
+    if hull_damage > 0.0 {
+        game.weapon_impact_visual_events
+            .push(WeaponImpactVisualEvent {
+                position: before.position + outward * before.radius * 0.78,
+                outward,
+                timer: 1.05,
+                duration: 1.05,
+                kind: WeaponImpactVisualKind::Hull,
+                color,
+                magnitude: hull_damage.sqrt().clamp(1.0, 4.0),
+            });
+    }
+}
+
+fn process_destroyed_npc_ships(game: &mut GameState) {
+    let destroyed = game
         .npc_ships
         .iter()
-        .all(|npc_ship| npc_ship.hull.current > 0.0)
-    {
-        return;
-    }
+        .enumerate()
+        .filter(|(_, npc)| npc.hull.current <= 0.0 && !npc.destruction_processed && !npc.salvaged)
+        .map(|(index, npc)| {
+            (
+                index,
+                npc.name.clone(),
+                destroyed_npc_credit_reward(&game.content_registry, npc),
+            )
+        })
+        .collect::<Vec<_>>();
 
-    let previous_selection = game.selected_npc_ship;
-    let previous_follow = game.follow_target;
-    let mut surviving_npc_ships = Vec::with_capacity(game.npc_ships.len());
-    let mut next_selected_npc_ship = None;
-    let mut next_follow_target = None;
-    let npc_ships = std::mem::take(&mut game.npc_ships);
-
-    for (old_index, npc_ship) in npc_ships.into_iter().enumerate() {
-        if npc_ship.hull.current > 0.0 {
-            let new_index = surviving_npc_ships.len();
-            if previous_selection == Some(old_index) {
-                next_selected_npc_ship = Some(new_index);
-            }
-            if previous_follow == Some(FollowTarget::NpcShip(old_index)) {
-                next_follow_target = Some(FollowTarget::NpcShip(new_index));
-            }
-            surviving_npc_ships.push(npc_ship);
-        } else {
-            game.audio.play(audio::AudioCue::Explosion);
-            let cargo_items = transfer_destroyed_npc_loot(
-                &mut game.inventory,
-                &game.ship,
-                &game.ship_upgrades,
-                &npc_ship.cargo_defaults,
-            );
-            let credit_reward = destroyed_npc_credit_reward(&game.content_registry, &npc_ship);
-            if credit_reward > 0 {
-                game.credits = game.credits.saturating_add(credit_reward);
-            }
-            push_destroyed_npc_loot_feedback(game, &npc_ship.name, cargo_items, credit_reward);
+    for (index, name, credit_reward) in destroyed {
+        let npc = &mut game.npc_ships[index];
+        npc.destruction_processed = true;
+        npc.velocity = Vec2::ZERO;
+        npc.shields.current = 0.0;
+        npc.trade_open = false;
+        game.audio.play(audio::AudioCue::Explosion);
+        game.credits = game.credits.saturating_add(credit_reward);
+        if game.follow_target == Some(FollowTarget::NpcShip(index)) {
+            game.follow_target = None;
+            push_operation_feedback(game, "Follow", "Target disabled".to_string());
         }
+        let bounty = if credit_reward > 0 {
+            format!("; bounty {credit_reward} cr")
+        } else {
+            String::new()
+        };
+        push_operation_feedback(
+            game,
+            "Loot",
+            format!("{name} disabled; wreck available for cargo recovery{bounty}"),
+        );
+        game.save_dirty = true;
     }
-
-    game.npc_ships = surviving_npc_ships;
-    game.selected_npc_ship = next_selected_npc_ship;
-    game.context_action_menu = None;
-    game.follow_target = next_follow_target;
-    if previous_follow.is_some() && next_follow_target.is_none() {
-        push_operation_feedback(game, "Follow", "Target destroyed".to_string());
-    }
-    game.save_dirty = true;
 }
 
-fn transfer_destroyed_npc_loot(
-    inventory: &mut Inventory,
-    ship: &Ship,
-    ship_upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT],
-    cargo_defaults: &[ItemStack],
-) -> u32 {
-    let cargo_capacity = cargo_rating_kg(ship, ship_upgrades);
-    let mut cargo_mass = inventory.total_mass();
+fn take_all_npc_wreck_cargo(game: &mut GameState, index: usize) -> u32 {
+    let Some(npc) = game.npc_ships.get(index) else {
+        return 0;
+    };
+    if npc.salvaged || npc.hull.current > 0.0 || !npc_ship_in_interaction_range(&game.ship, npc) {
+        return 0;
+    }
+
+    let cargo = npc.cargo_defaults.clone();
     let mut transferred = 0;
-    for stack in cargo_defaults {
-        let stack_mass = stack.item.unit_mass * stack.count as f32;
-        if cargo_mass + stack_mass > cargo_capacity {
+    for stack in cargo {
+        let count = inventory_receivable_count(
+            &game.inventory,
+            &game.ship,
+            &game.ship_upgrades,
+            &stack.item,
+            stack.count,
+        );
+        if count == 0 {
             continue;
         }
-
-        inventory.add_item(stack.item.clone(), stack.count);
-        cargo_mass += stack_mass;
-        transferred += stack.count;
+        game.inventory.add_item(stack.item.clone(), count);
+        if let Some(source) = game.npc_ships[index]
+            .cargo_defaults
+            .iter_mut()
+            .find(|source| source.item.id == stack.item.id)
+        {
+            source.count = source.count.saturating_sub(count);
+        }
+        transferred += count;
+    }
+    game.npc_ships[index]
+        .cargo_defaults
+        .retain(|stack| stack.count > 0);
+    if transferred > 0 {
+        game.save_dirty = true;
     }
     transferred
+}
+
+fn npc_ship_salvage_yield(game: &GameState, index: usize) -> Vec<ItemStack> {
+    let Some(npc) = game.npc_ships.get(index) else {
+        return Vec::new();
+    };
+    let iron_count = (npc.mass / 14_000.0).round().max(1.0) as u32;
+    let copper_count = (npc.mass / 32_000.0).round().max(1.0) as u32;
+    [
+        ("core:iron_plate", iron_count),
+        ("core:copper_plate", copper_count),
+    ]
+    .into_iter()
+    .filter_map(|(item_id, count)| {
+        registry_item(&game.content_registry, item_id).map(|item| ItemStack { item, count })
+    })
+    .collect()
+}
+
+fn update_npc_ship_salvage(game: &mut GameState, dt: f32) {
+    let dt = finite_nonnegative_or(dt, 0.0);
+    let mut completed = None;
+    for index in 0..game.npc_ships.len() {
+        if !game.npc_ships[index].salvage_active {
+            continue;
+        }
+        let eligible = !game.npc_ships[index].salvaged
+            && game.npc_ships[index].hull.current <= 0.0
+            && game.npc_ships[index]
+                .cargo_defaults
+                .iter()
+                .all(|stack| stack.count == 0)
+            && npc_ship_in_interaction_range(&game.ship, &game.npc_ships[index]);
+        if !eligible {
+            game.npc_ships[index].salvage_active = false;
+            game.save_dirty = true;
+            continue;
+        }
+        game.npc_ships[index].salvage_progress =
+            (game.npc_ships[index].salvage_progress + dt).min(OWNED_SHIP_SALVAGE_SECONDS);
+        game.save_dirty = true;
+        if game.npc_ships[index].salvage_progress >= OWNED_SHIP_SALVAGE_SECONDS {
+            let salvage = npc_ship_salvage_yield(game, index);
+            if let Some(inventory) = active_inventory_with_salvage_yield(game, &salvage) {
+                completed = Some((index, inventory, salvage));
+                break;
+            }
+        }
+    }
+
+    let Some((index, inventory, salvage)) = completed else {
+        return;
+    };
+    let name = game.npc_ships[index].name.clone();
+    game.inventory = inventory;
+    game.npc_ships[index].salvaged = true;
+    game.npc_ships[index].salvage_active = false;
+    if game.selected_npc_ship == Some(index) {
+        game.selected_npc_ship = None;
+    }
+    game.context_action_menu = None;
+    game.save_dirty = true;
+    let recovered = salvage
+        .iter()
+        .map(|stack| format!("{} x{}", stack.item.name, stack.count))
+        .collect::<Vec<_>>()
+        .join(", ");
+    push_operation_feedback(
+        game,
+        "Loot",
+        format!("Salvaged {name}; recovered {recovered}"),
+    );
 }
 
 fn destroyed_npc_credit_reward(
@@ -16191,30 +16577,6 @@ fn destroyed_npc_credit_reward(
         return min;
     }
     rand::gen_range(min as f32, max.saturating_add(1) as f32).floor() as u32
-}
-
-fn push_destroyed_npc_loot_feedback(
-    game: &mut GameState,
-    npc_name: &str,
-    cargo_items: u32,
-    credit_reward: u32,
-) {
-    if cargo_items == 0 && credit_reward == 0 {
-        return;
-    }
-
-    let cargo_label = match cargo_items {
-        0 => None,
-        1 => Some("1 cargo".to_string()),
-        count => Some(format!("{count} cargo")),
-    };
-    let credit_label = (credit_reward > 0).then(|| format!("{credit_reward} cr"));
-    let parts = [cargo_label, credit_label]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(", ");
-    push_operation_feedback(game, "Loot", format!("{npc_name}: {parts}"));
 }
 
 fn weapon_fire_event(
@@ -17206,22 +17568,41 @@ fn resolved_new_game_ship_id(
     requested_ship_id: Option<&str>,
 ) -> String {
     requested_ship_id
-        .filter(|ship_id| registry.ships.contains_key(*ship_id))
+        .filter(|ship_id| {
+            registry
+                .ships
+                .get(*ship_id)
+                .is_some_and(new_game_ship_eligible)
+        })
         .map(str::to_owned)
         .or_else(|| {
             registry
                 .starter_ship
                 .as_ref()
-                .filter(|ship_id| registry.ships.contains_key(*ship_id))
+                .filter(|ship_id| {
+                    registry
+                        .ships
+                        .get(*ship_id)
+                        .is_some_and(new_game_ship_eligible)
+                })
                 .cloned()
         })
         .or_else(|| {
             registry
                 .ships
-                .contains_key(STARTER_SHIP_ID)
+                .get(STARTER_SHIP_ID)
+                .is_some_and(new_game_ship_eligible)
                 .then(default_starter_ship_id)
         })
-        .or_else(|| registry.ship_order.first().cloned())
+        .or_else(|| {
+            registry.ship_order.iter().find_map(|ship_id| {
+                registry
+                    .ships
+                    .get(ship_id)
+                    .filter(|ship| new_game_ship_eligible(ship))
+                    .map(|_| ship_id.clone())
+            })
+        })
         .unwrap_or_else(default_starter_ship_id)
 }
 
@@ -17416,6 +17797,9 @@ fn draw_scene(game: &GameState, background: &UniverseBackground, panel_corner: O
     }
     for event in &game.weapon_area_effect_events {
         draw_weapon_area_effect_event(center, ship, event, zoom);
+    }
+    for event in &game.weapon_impact_visual_events {
+        draw_weapon_impact_visual_event(center, ship, event, zoom);
     }
     for event in &game.collision_impact_events {
         draw_collision_impact_event(center, ship, event, zoom);
@@ -17878,7 +18262,7 @@ fn clicked_npc_ship_index(
     npc_ships
         .iter()
         .enumerate()
-        .filter(|(_, npc_ship)| npc_ship_is_in_system(npc_ship, current_system_id))
+        .filter(|(_, npc_ship)| !npc_ship.salvaged && npc_ship.system == current_system_id)
         .filter_map(|(index, npc_ship)| {
             let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
             let hit_radius = npc_ship_click_radius(npc_ship, zoom);
@@ -18423,6 +18807,9 @@ fn draw_npc_ship(
     intel_level: CombatIntelLevel,
     zoom: f32,
 ) {
+    if npc_ship.salvaged {
+        return;
+    }
     let screen_pos = world_to_screen(npc_ship.position, center, ship, zoom);
     let size = (npc_ship.radius * 2.0 * zoom).clamp(22.0, 72.0);
     let cull_padding = size + 100.0;
@@ -18435,8 +18822,11 @@ fn draw_npc_ship(
         return;
     }
 
-    let identified = intel_level >= CombatIntelLevel::Identity;
-    let color = if identified {
+    let wrecked = npc_ship.hull.current <= 0.0;
+    let identified = wrecked || intel_level >= CombatIntelLevel::Identity;
+    let color = if wrecked {
+        Color::from_rgba(205, 112, 92, 220)
+    } else if identified {
         npc_ship
             .faction
             .as_deref()
@@ -18461,7 +18851,11 @@ fn draw_npc_ship(
                 size,
                 size,
             ),
-            Color { a: 0.92, ..WHITE },
+            if wrecked {
+                Color::from_rgba(160, 112, 105, 205)
+            } else {
+                Color { a: 0.92, ..WHITE }
+            },
             npc_ship.angle + std::f32::consts::FRAC_PI_2,
         );
     } else {
@@ -18473,7 +18867,9 @@ fn draw_npc_ship(
         );
     }
 
-    let status = if identified {
+    let status = if wrecked {
+        format!("{}  WRECK", npc_ship.name)
+    } else if identified {
         format!(
             "{}  {}  {}",
             npc_ship.name,
@@ -18494,41 +18890,50 @@ fn draw_npc_ship(
         14.0,
         color,
     );
-    let metadata = match intel_level {
-        CombatIntelLevel::Unknown => "Select to begin passive scan".to_string(),
-        CombatIntelLevel::Identity => "Hull telemetry pending".to_string(),
-        CombatIntelLevel::Hull => format!(
-            "Hull {:.0}/{:.0} · shield telemetry pending",
-            npc_ship.hull.current, npc_ship.hull.max
-        ),
-        CombatIntelLevel::Shields => format!(
-            "Hull {:.0}/{:.0} · shields {:.0}/{:.0}",
-            npc_ship.hull.current,
-            npc_ship.hull.max,
-            npc_ship.shields.current,
-            npc_ship.shields.max
-        ),
-        CombatIntelLevel::Weapons => format!(
-            "Hull {:.0}/{:.0} · shields {:.0}/{:.0} · weapons {}",
-            npc_ship.hull.current,
-            npc_ship.hull.max,
-            npc_ship.shields.current,
-            npc_ship.shields.max,
-            npc_ship
-                .equipped_weapons
-                .len()
-                .max(npc_ship.weapon_slots.len())
-        ),
-        CombatIntelLevel::Tactical => format!(
-            "H {:.0}/{:.0} · S {:.0}/{:.0} · E {:.0}/{:.0} · cargo {}",
-            npc_ship.hull.current,
-            npc_ship.hull.max,
-            npc_ship.shields.current,
-            npc_ship.shields.max,
-            npc_ship.energy.current,
-            npc_ship.energy.max,
-            format_mass(npc_ship.cargo_capacity)
-        ),
+    let metadata = if wrecked {
+        let cargo = npc_ship
+            .cargo_defaults
+            .iter()
+            .map(|stack| stack.count)
+            .sum::<u32>();
+        format!("Cargo {cargo} · approach to recover")
+    } else {
+        match intel_level {
+            CombatIntelLevel::Unknown => "Select to begin passive scan".to_string(),
+            CombatIntelLevel::Identity => "Hull telemetry pending".to_string(),
+            CombatIntelLevel::Hull => format!(
+                "Hull {:.0}/{:.0} · shield telemetry pending",
+                npc_ship.hull.current, npc_ship.hull.max
+            ),
+            CombatIntelLevel::Shields => format!(
+                "Hull {:.0}/{:.0} · shields {:.0}/{:.0}",
+                npc_ship.hull.current,
+                npc_ship.hull.max,
+                npc_ship.shields.current,
+                npc_ship.shields.max
+            ),
+            CombatIntelLevel::Weapons => format!(
+                "Hull {:.0}/{:.0} · shields {:.0}/{:.0} · weapons {}",
+                npc_ship.hull.current,
+                npc_ship.hull.max,
+                npc_ship.shields.current,
+                npc_ship.shields.max,
+                npc_ship
+                    .equipped_weapons
+                    .len()
+                    .max(npc_ship.weapon_slots.len())
+            ),
+            CombatIntelLevel::Tactical => format!(
+                "H {:.0}/{:.0} · S {:.0}/{:.0} · E {:.0}/{:.0} · cargo {}",
+                npc_ship.hull.current,
+                npc_ship.hull.max,
+                npc_ship.shields.current,
+                npc_ship.shields.max,
+                npc_ship.energy.current,
+                npc_ship.energy.max,
+                format_mass(npc_ship.cargo_capacity)
+            ),
+        }
     };
     draw_text(
         &fit_debug_text(&metadata, 230.0, 12),
@@ -18552,6 +18957,25 @@ fn draw_npc_ship(
             size,
             npc_ship,
             npc_health_plate_visibility(content_registry, npc_ship, intel_level),
+        );
+    }
+    if wrecked && npc_ship.salvage_progress > 0.0 {
+        let progress = (npc_ship.salvage_progress / OWNED_SHIP_SALVAGE_SECONDS).clamp(0.0, 1.0);
+        let bar_width = size.max(54.0);
+        let bar_y = screen_pos.y - size * 0.68 - 9.0;
+        draw_rectangle(
+            screen_pos.x - bar_width * 0.5,
+            bar_y,
+            bar_width,
+            5.0,
+            Color::from_rgba(30, 25, 20, 220),
+        );
+        draw_rectangle(
+            screen_pos.x - bar_width * 0.5,
+            bar_y,
+            bar_width * progress,
+            5.0,
+            Color::from_rgba(226, 190, 92, 230),
         );
     }
 }
@@ -18904,6 +19328,113 @@ fn draw_weapon_area_effect_event(
             ..color
         },
     );
+}
+
+fn draw_weapon_impact_visual_event(
+    center: Vec2,
+    ship: &Ship,
+    event: &WeaponImpactVisualEvent,
+    zoom: f32,
+) {
+    let position = world_to_screen(event.position, center, ship, zoom);
+    let life = (event.timer / event.duration.max(f32::EPSILON)).clamp(0.0, 1.0);
+    let progress = 1.0 - life;
+    let scale = zoom.clamp(0.5, 2.0);
+    let outward = event.outward.normalize_or_zero();
+    let tangent = vec2(-outward.y, outward.x);
+
+    match event.kind {
+        WeaponImpactVisualKind::Shield => {
+            let cyan = Color::new(0.28, 0.88, 1.0, life * 0.9);
+            let core = Color::new(0.82, 0.98, 1.0, life);
+            let glow_radius = (9.0 + event.magnitude * 2.5 + progress * 14.0) * scale;
+            draw_circle(
+                position.x,
+                position.y,
+                glow_radius,
+                Color {
+                    a: life * 0.16,
+                    ..cyan
+                },
+            );
+            draw_circle_lines(position.x, position.y, glow_radius, 2.2 * scale, cyan);
+            draw_circle(
+                position.x,
+                position.y,
+                (3.0 + event.magnitude) * scale,
+                core,
+            );
+
+            let arc_span = (14.0 + event.magnitude * 2.0) * scale;
+            let arc_depth = 7.0 * scale;
+            let mut previous = position - tangent * arc_span - outward * arc_depth;
+            for segment in 1..=8 {
+                let t = segment as f32 / 8.0;
+                let lateral = (t * 2.0 - 1.0) * arc_span;
+                let depth = lateral.abs() / arc_span * arc_depth;
+                let point = position + tangent * lateral - outward * depth;
+                draw_line(previous.x, previous.y, point.x, point.y, 2.4 * scale, cyan);
+                previous = point;
+            }
+
+            for index in 0..8 {
+                let phase = index as f32 * 2.399_963;
+                let lateral = phase.sin() * (12.0 + index as f32 * 2.2);
+                let speed = 24.0 + (phase.cos() * 0.5 + 0.5) * 32.0;
+                let direction = safe_direction(outward + tangent * phase.sin() * 0.75, outward);
+                let particle = position
+                    + direction * speed * progress * scale
+                    + tangent * lateral * progress * scale;
+                let trail = particle - direction * (7.0 + event.magnitude) * life * scale;
+                draw_line(trail.x, trail.y, particle.x, particle.y, 1.5 * scale, cyan);
+                draw_circle(
+                    particle.x,
+                    particle.y,
+                    (1.4 + event.magnitude * 0.25) * scale,
+                    core,
+                );
+            }
+        }
+        WeaponImpactVisualKind::Hull => {
+            let impact = weapon_effect_color(event.color, life);
+            let hot = Color::new(1.0, 0.72, 0.24, life);
+            draw_circle(
+                position.x,
+                position.y,
+                (5.0 + event.magnitude * 2.0) * scale,
+                Color {
+                    a: life * 0.42,
+                    ..impact
+                },
+            );
+            for index in 0..11 {
+                let phase = index as f32 * 1.713 + event.position.x * 0.013;
+                let spread = phase.sin() * 0.95;
+                let direction = safe_direction(outward + tangent * spread, outward);
+                let speed = 18.0 + (phase.cos() * 0.5 + 0.5) * 54.0;
+                let particle = position + direction * speed * progress * scale;
+                if index % 3 == 0 {
+                    let trail =
+                        particle - direction * (10.0 + event.magnitude * 2.0) * life * scale;
+                    draw_line(trail.x, trail.y, particle.x, particle.y, 1.8 * scale, hot);
+                } else {
+                    let debris_color = if index % 2 == 0 {
+                        Color::new(0.62, 0.68, 0.70, life)
+                    } else {
+                        Color::new(0.30, 0.34, 0.36, life)
+                    };
+                    draw_poly(
+                        particle.x,
+                        particle.y,
+                        if index % 2 == 0 { 3 } else { 4 },
+                        (2.0 + event.magnitude * 0.45) * scale,
+                        phase.to_degrees() + progress * 180.0,
+                        debris_color,
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn weapon_effect_path_point(
@@ -19450,10 +19981,8 @@ fn draw_inventory_hint(game: &GameState) {
         "Esc close upgrades"
     } else if game.research_open {
         "K close research"
-    } else if game.inventory_open {
-        "E/Tab close inventory   F fleet   M map   K research   C content   J contracts   Esc close"
     } else {
-        "E/Tab inventory   F fleet   M map   K research   C content   J contracts   Esc menu"
+        "F fleet   M map   K research   C content   J contracts   Esc menu"
     }
     .to_string();
     if game.save_status_timer > 0.0 {
@@ -20387,15 +20916,8 @@ fn inventory_panel_height_for(screen_height: f32) -> f32 {
     (screen_height * 0.8).clamp(260.0, maximum)
 }
 
-fn egui_inventory_active(game: &GameState) -> bool {
-    game.inventory_open
-        && game.selected_planet.is_none()
-        && game.selected_station.is_none()
-        && game.selected_npc_ship.is_none()
-}
-
 fn egui_inventory_windows_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
-    game.inventory_open || pins.ship || pins.production || pins.inventory
+    game.production_open || pins.production
 }
 
 fn egui_planet_visible(game: &GameState, pins: EguiPinSnapshot) -> bool {
@@ -20443,7 +20965,7 @@ fn operations_view(game: &GameState) -> egui_operations::OperationsView {
         .operation_feedback
         .iter()
         .rev()
-        .filter(|entry| !game.operation_hidden_categories.contains(&entry.group))
+        .filter(|entry| game.operation_selected_tab.includes(entry.group))
         .filter(|entry| !game.operation_hidden_severities.contains(&entry.severity))
         .map(|entry| egui_operations::OperationRow {
             timestamp: format_operation_timestamp(entry.elapsed_minutes),
@@ -20457,7 +20979,7 @@ fn operations_view(game: &GameState) -> egui_operations::OperationsView {
     egui_operations::OperationsView {
         pinned: egui_pane_pinned(EguiPane::Operations),
         rows,
-        hidden_categories: game.operation_hidden_categories.iter().copied().collect(),
+        selected_tab: game.operation_selected_tab,
         hidden_severities: game.operation_hidden_severities.iter().copied().collect(),
         history_count: game.operation_feedback.len(),
         history_limit: OPERATION_HISTORY_LIMIT,
@@ -20486,6 +21008,7 @@ fn inventory_overlay_view(
             let unlocked = recipe_is_unlocked(game, &recipe.id);
             egui_inventory::ProductionRow {
                 item: recipe_row_label(recipes, index),
+                output: format!("{} x{}", recipe.output.item.name, recipe.output.count),
                 keep: setting.keep,
                 status: if unlocked {
                     work_row_status(
@@ -20517,36 +21040,216 @@ fn inventory_overlay_view(
                         )
                     })
                     .collect(),
+                sub_requirements: recipe_sub_requirements(game, recipe),
+                equipment_links: item_equipment_links(game, &recipe.output.item.id),
+                could_make: unlocked_recipe_products_using(game, &recipe.output.item.id),
             }
         })
         .collect();
 
-    let inventory = game
-        .inventory
-        .slots
-        .iter()
-        .filter_map(|slot| slot.as_ref())
-        .map(|stack| egui_inventory::InventoryRow {
-            item: stack.item.name.clone(),
-            quantity: stack.count,
-            mass: format_mass(stack.item.unit_mass * stack.count as f32),
-        })
-        .collect();
-
     egui_inventory::InventoryOverlayView {
-        credits: game.credits,
         keep_click_step,
         production_tab: production_tab_for_mode(game.production_mode),
         production,
-        inventory,
-        ship: ship_pane_view(game),
-        show_ship: egui_inventory_active(game) || pins.ship,
-        show_production: game.inventory_open || pins.production,
-        show_inventory: game.inventory_open || pins.inventory,
-        ship_pinned: pins.ship,
+        show_production: (game.production_open || pins.production)
+            && !(game.fleet_open && game.fleet_page == egui_fleet::FleetPage::Production),
         production_pinned: pins.production,
-        inventory_pinned: pins.inventory,
     }
+}
+
+fn unlocked_recipe_products_using(game: &GameState, item_id: &str) -> Vec<String> {
+    recipe_info_lines(game, |recipe| {
+        recipe
+            .ingredients
+            .iter()
+            .any(|ingredient| ingredient.item.id == item_id)
+    })
+}
+
+fn unlocked_recipe_sources_for(game: &GameState, item_id: &str) -> Vec<String> {
+    recipe_info_lines(game, |recipe| recipe.output.item.id == item_id)
+}
+
+fn recipe_info_lines(game: &GameState, matches: impl Fn(&Recipe) -> bool) -> Vec<String> {
+    let mut lines = [
+        ("Smelt", game.smelt_recipes.as_slice()),
+        ("Craft", game.craft_recipes.as_slice()),
+        ("Process", game.processing_recipes.as_slice()),
+    ]
+    .into_iter()
+    .flat_map(|(category, recipes)| {
+        recipes
+            .iter()
+            .filter(|recipe| matches(recipe) && recipe_is_unlocked(game, &recipe.id))
+            .map(move |recipe| {
+                format!(
+                    "{} x{} · {category}",
+                    recipe.output.item.name, recipe.output.count
+                )
+            })
+    })
+    .collect::<Vec<_>>();
+    lines.sort();
+    lines.dedup();
+    lines
+}
+
+const RECIPE_INFO_MAX_DEPTH: usize = 3;
+const RECIPE_INFO_MAX_LINES: usize = 28;
+
+fn recipe_sub_requirements(game: &GameState, recipe: &Recipe) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut path = HashSet::from([recipe.output.item.id.clone()]);
+    let mut truncated = false;
+    for ingredient in &recipe.ingredients {
+        append_item_sub_requirements(
+            game,
+            &ingredient.item,
+            ingredient.count,
+            0,
+            &mut path,
+            &mut lines,
+            &mut truncated,
+        );
+    }
+    if truncated {
+        lines.push("… additional dependencies omitted".to_string());
+    }
+    lines
+}
+
+fn append_item_sub_requirements(
+    game: &GameState,
+    item: &ItemRef,
+    needed: u32,
+    depth: usize,
+    path: &mut HashSet<String>,
+    lines: &mut Vec<String>,
+    truncated: &mut bool,
+) {
+    if depth >= RECIPE_INFO_MAX_DEPTH || lines.len() >= RECIPE_INFO_MAX_LINES {
+        *truncated |= depth < RECIPE_INFO_MAX_DEPTH;
+        return;
+    }
+    if !path.insert(item.id.clone()) {
+        return;
+    }
+
+    let sources = unlocked_recipes_producing(game, &item.id);
+    for (source_index, source) in sources.iter().enumerate() {
+        if lines.len() >= RECIPE_INFO_MAX_LINES {
+            *truncated = true;
+            break;
+        }
+        let indent = "  ".repeat(depth);
+        let alternative = if sources.len() > 1 {
+            format!(" via {}", recipe_name_from_id(&source.id))
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "{indent}{} x{needed}{alternative} needs:",
+            item.name
+        ));
+
+        let batches = needed.div_ceil(source.output.count.max(1));
+        for ingredient in &source.ingredients {
+            if lines.len() >= RECIPE_INFO_MAX_LINES {
+                *truncated = true;
+                break;
+            }
+            let count = ingredient.count.saturating_mul(batches);
+            lines.push(format!("{indent}  ↳ {} x{count}", ingredient.item.name));
+            append_item_sub_requirements(
+                game,
+                &ingredient.item,
+                count,
+                depth + 1,
+                path,
+                lines,
+                truncated,
+            );
+        }
+        if source_index + 1 < sources.len() {
+            path.remove(&item.id);
+            path.insert(item.id.clone());
+        }
+    }
+    path.remove(&item.id);
+}
+
+fn unlocked_recipes_producing<'a>(game: &'a GameState, item_id: &str) -> Vec<&'a Recipe> {
+    let mut recipes = game
+        .smelt_recipes
+        .iter()
+        .chain(&game.craft_recipes)
+        .chain(&game.processing_recipes)
+        .filter(|recipe| recipe.output.item.id == item_id && recipe_is_unlocked(game, &recipe.id))
+        .collect::<Vec<_>>();
+    recipes.sort_by(|left, right| left.id.cmp(&right.id));
+    recipes
+}
+
+fn recipe_name_from_id(id: &str) -> String {
+    let local = id.rsplit_once(':').map_or(id, |(_, local)| local);
+    let mut words = local.replace(['_', '-'], " ");
+    if let Some(first) = words.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    words
+}
+
+fn item_equipment_links(game: &GameState, item_id: &str) -> Vec<String> {
+    let mut links = game
+        .content_registry
+        .weapons
+        .values()
+        .filter_map(|weapon| {
+            if weapon.install_item == item_id {
+                return Some(match weapon.ammo_item.as_deref() {
+                    Some(ammo_id) => format!(
+                        "Uses {} x{} per shot",
+                        item_display_name(&game.content_registry, ammo_id),
+                        weapon.ammo_per_shot
+                    ),
+                    None => "Energy weapon · no ammunition required".to_string(),
+                });
+            }
+            (weapon.ammo_item.as_deref() == Some(item_id)
+                && recipe_output_is_discovered(game, &weapon.install_item))
+            .then(|| {
+                format!(
+                    "Ammo for {} · x{} per shot",
+                    weapon.name, weapon.ammo_per_shot
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    links.sort();
+    links.dedup();
+    links
+}
+
+fn recipe_output_is_discovered(game: &GameState, item_id: &str) -> bool {
+    let recipes = game
+        .smelt_recipes
+        .iter()
+        .chain(&game.craft_recipes)
+        .chain(&game.processing_recipes)
+        .filter(|recipe| recipe.output.item.id == item_id)
+        .collect::<Vec<_>>();
+    recipes.is_empty()
+        || recipes
+            .iter()
+            .any(|recipe| recipe_is_unlocked(game, &recipe.id))
+}
+
+fn item_display_name(registry: &content::ContentRegistry, item_id: &str) -> String {
+    registry
+        .items
+        .get(item_id)
+        .map(|item| item.name.clone())
+        .unwrap_or_else(|| recipe_name_from_id(item_id))
 }
 
 fn planet_pane_view(game: &GameState, keep_click_step: i32) -> egui_planet::PlanetPaneView {
@@ -20717,8 +21420,6 @@ fn planet_pane_view(game: &GameState, keep_click_step: i32) -> egui_planet::Plan
         scan_enabled: in_range && has_drone && planet.scan_level < MAX_SCAN_LEVEL,
         scan_label: if planet.scan_level >= MAX_SCAN_LEVEL {
             "Survey complete".to_string()
-        } else if !in_range {
-            "Approach to scan".to_string()
         } else if !has_drone {
             "No survey drones".to_string()
         } else {
@@ -21100,17 +21801,147 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
     }
 }
 
-fn fleet_cargo_rows(inventory: &Inventory) -> Vec<egui_fleet::CargoRow> {
-    inventory
-        .slots
-        .iter()
-        .flatten()
-        .map(|stack| egui_fleet::CargoRow {
-            item_id: stack.item.id.clone(),
-            name: stack.item.name.clone(),
-            count: stack.count,
+fn shared_fleet_inventory_view(
+    game: &GameState,
+    selected_index: usize,
+) -> egui_fleet::SharedInventoryView {
+    let Some(selected) = game.owned_ships.get(selected_index) else {
+        return egui_fleet::SharedInventoryView {
+            rows: Vec::new(),
+            linked_hulls: 0,
+            total_hulls: 0,
+            total_mass: format_mass(0.0),
+            total_capacity: format_mass(0.0),
+            unavailable: Vec::new(),
+            consolidate_enabled: false,
+        };
+    };
+    let selected_active = selected.instance_id == game.active_owned_ship_id;
+    let selected_position = if selected_active {
+        game.ship.position
+    } else {
+        selected.ship.position
+    };
+    let selected_system = if selected_active {
+        &game.current_system_id
+    } else {
+        &selected.system_id
+    };
+    let selected_shares = if selected_active {
+        game.share_inventory
+    } else {
+        selected.share_inventory
+    };
+    let mut members = Vec::new();
+    let mut unavailable = Vec::new();
+    for (index, owned) in game.owned_ships.iter().enumerate() {
+        let active = owned.instance_id == game.active_owned_ship_id;
+        let position = if active {
+            game.ship.position
+        } else {
+            owned.ship.position
+        };
+        let system = if active {
+            &game.current_system_id
+        } else {
+            &owned.system_id
+        };
+        let shares = if active {
+            game.share_inventory
+        } else {
+            owned.share_inventory
+        };
+        let distance = position.distance(selected_position);
+        let included = index == selected_index
+            || (selected_shares
+                && shares
+                && system == selected_system
+                && distance <= OWNED_SHIP_TRANSFER_RANGE);
+        if included {
+            members.push(index);
+        } else {
+            let reason = if !selected_shares {
+                "sharing disabled on selected hull".to_string()
+            } else if !shares {
+                "sharing disabled".to_string()
+            } else if system != selected_system {
+                format!("remote · {}", local_content_id(system))
+            } else {
+                format!("{distance:.0} units away")
+            };
+            unavailable.push(format!("{} · {reason}", owned.callsign));
+        }
+    }
+
+    let mut combined: BTreeMap<String, (ItemRef, u32, Vec<egui_fleet::CargoLocation>)> =
+        BTreeMap::new();
+    let mut total_mass = 0.0;
+    let mut total_capacity = 0.0;
+    for index in &members {
+        let owned = &game.owned_ships[*index];
+        let active = owned.instance_id == game.active_owned_ship_id;
+        let (ship, inventory, upgrades) = if active {
+            (&game.ship, &game.inventory, &game.ship_upgrades)
+        } else {
+            (&owned.ship, &owned.inventory, &owned.upgrades)
+        };
+        total_mass += inventory.total_mass();
+        total_capacity += cargo_rating_kg(ship, upgrades);
+        for stack in inventory.slots.iter().flatten() {
+            let entry = combined
+                .entry(stack.item.id.clone())
+                .or_insert_with(|| (stack.item.clone(), 0, Vec::new()));
+            entry.1 = entry.1.saturating_add(stack.count);
+            entry.2.push(egui_fleet::CargoLocation {
+                ship: owned.callsign.clone(),
+                count: stack.count,
+                mass: format_mass(stack.item.unit_mass * stack.count as f32),
+            });
+        }
+    }
+    let mut rows = combined
+        .into_values()
+        .map(|(item, count, locations)| egui_fleet::CargoRow {
+            item_id: item.id.clone(),
+            name: item.name.clone(),
+            group: game
+                .content_registry
+                .items
+                .get(&item.id)
+                .map(|definition| match definition.tier.as_str() {
+                    "raw_resource" => "Raw resources",
+                    "refined_material" | "component" => "Components",
+                    "power_module" | "shield_module" | "weapon" => "Equipment",
+                    "ammunition" | "fuel" | "utility" => "Supplies",
+                    _ => "Special cargo",
+                })
+                .unwrap_or("Unclassified")
+                .to_string(),
+            count,
+            mass: format_mass(item.unit_mass * count as f32),
+            produced_by: unlocked_recipe_sources_for(game, &item.id),
+            equipment_links: item_equipment_links(game, &item.id),
+            could_make: unlocked_recipe_products_using(game, &item.id),
+            locations,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.group
+            .cmp(&right.group)
+            .then(left.name.cmp(&right.name))
+    });
+    egui_fleet::SharedInventoryView {
+        rows,
+        linked_hulls: members.len(),
+        total_hulls: game.owned_ships.len(),
+        total_mass: format_mass(total_mass),
+        total_capacity: format_mass(total_capacity),
+        unavailable,
+        consolidate_enabled: members.len() > 1
+            && members
+                .iter()
+                .any(|index| game.owned_ships[*index].instance_id == game.active_owned_ship_id),
+    }
 }
 
 fn linked_fleet_ship_count(game: &GameState, producer: FleetProducer) -> usize {
@@ -22726,7 +23557,6 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
             &owned.equipped_weapons
         };
         let resolved = game.content_registry.ships.contains_key(&owned.ship_id);
-        let transfer_available = owned_ship_in_transfer_range(game, selected_index);
         let distance = if owned.system_id == game.current_system_id {
             format!(
                 "{:.0} units from active ship",
@@ -22792,32 +23622,73 @@ fn fleet_pane_view(game: &GameState, quantity_step: u32) -> egui_fleet::FleetPan
                     format!("Linked cargo access: {linked} nearby fleet ship(s)")
                 }
             },
-            transfer_available,
-            transfer_status: if active {
-                "Select another ship to transfer cargo.".to_string()
-            } else if transfer_available {
-                "Cargo transfer available.".to_string()
-            } else if owned.system_id != game.current_system_id {
-                "Cargo transfer requires both ships in the same system.".to_string()
-            } else {
-                format!(
-                    "Move within {:.0} units to transfer cargo.",
-                    OWNED_SHIP_TRANSFER_RANGE
-                )
-            },
-            cargo_rows: fleet_cargo_rows(inventory),
             mining_drone: mining_drone_view(game, owned, active),
+            systems: active.then(|| ship_pane_view(game)),
         }
     });
+
+    let upgrades = game
+        .owned_ships
+        .get(selected_index)
+        .map(|owned| {
+            let active = owned.instance_id == game.active_owned_ship_id;
+            let producer = if active {
+                FleetProducer::Active
+            } else {
+                FleetProducer::Owned(selected_index)
+            };
+            let installed = if active {
+                &game.ship_upgrades
+            } else {
+                &owned.upgrades
+            };
+            installed
+                .iter()
+                .enumerate()
+                .filter(|(_, upgrade)| {
+                    ship_upgrade_is_available(&game.content_registry, &owned.ship_id, upgrade.kind)
+                })
+                .map(|(upgrade_index, upgrade)| {
+                    let cost = upgrade.next_cost(&game.content_registry);
+                    egui_fleet::UpgradeNode {
+                        upgrade_index,
+                        name: upgrade.kind.name().to_string(),
+                        level: upgrade.level,
+                        effect: upgrade.kind.effect_text().to_string(),
+                        affordable: fleet_can_afford(game, producer, &cost),
+                        cost: cost
+                            .iter()
+                            .map(|stack| egui_fleet::UpgradeCostRow {
+                                item: stack.item.name.clone(),
+                                required: stack.count,
+                                available: fleet_inventory_count(game, producer, &stack.item),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected_is_active = game
+        .owned_ships
+        .get(selected_index)
+        .is_some_and(|owned| owned.instance_id == game.active_owned_ship_id);
 
     egui_fleet::FleetPaneView {
         pinned: egui_pane_pinned(EguiPane::Fleet),
         ships,
         selected: (!game.owned_ships.is_empty()).then_some(selected_index),
         selected_ship,
-        active_cargo: fleet_cargo_rows(&game.inventory),
-        transfer_quantity: game.fleet_transfer_quantity,
-        quantity_step,
+        page: game.fleet_page,
+        selected_upgrade: upgrades
+            .iter()
+            .any(|upgrade| upgrade.upgrade_index == game.fleet_selected_upgrade)
+            .then_some(game.fleet_selected_upgrade),
+        upgrades,
+        upgrade_purchase_count: quantity_step.max(1),
+        production: selected_is_active
+            .then(|| inventory_overlay_view(game, quantity_step.max(1) as i32)),
+        inventory: shared_fleet_inventory_view(game, selected_index),
         credits: game.credits,
         latest_operation: game
             .operation_feedback
@@ -22844,7 +23715,7 @@ fn npc_pane_view(game: &GameState, quantity_step: u32) -> egui_npc::NpcPaneView 
             identified: false,
             hostile: false,
             intel_level: "Unknown".to_string(),
-            scan_stage: "Unavailable".to_string(),
+            scan_stage: "Scan unavailable".to_string(),
             scan_progress: None,
             scan_status: "No contact selected".to_string(),
             identity: "Unknown".to_string(),
@@ -23100,14 +23971,14 @@ fn combat_scan_presentation(game: &GameState, npc: &NpcShip) -> (String, Option<
     let known = npc_intel_level(game, npc);
     let Some(next) = known.next() else {
         return (
-            "Complete".to_string(),
+            "All scans complete".to_string(),
             None,
             "All combat telemetry available".to_string(),
         );
     };
     if next > combat_scan_depth(game) {
         return (
-            next.label().to_string(),
+            format!("Locked: {}", next.label()),
             None,
             format!(
                 "Scanner depth limited to {}",
@@ -23133,7 +24004,7 @@ fn combat_scan_presentation(game: &GameState, npc: &NpcShip) -> (String, Option<
     } else {
         format!("Scanning {}", next.label())
     };
-    (next.label().to_string(), Some(progress), status)
+    (format!("Next: {}", next.label()), Some(progress), status)
 }
 
 fn active_production_rows(game: &GameState) -> (&[Recipe], &[CraftSetting]) {
@@ -23389,53 +24260,8 @@ fn apply_inventory_ui_actions(
                     }
                 }
             }
-            egui_inventory::InventoryUiAction::InstallShield { slot, shield_id } => {
-                let installed = install_shield_in_slot(game, slot, &shield_id).is_ok();
-                game.audio.play(if installed {
-                    audio::AudioCue::Confirm
-                } else {
-                    audio::AudioCue::Warning
-                });
-            }
-            egui_inventory::InventoryUiAction::InstallWeapon { slot, weapon_id } => {
-                let installed = install_weapon_in_slot(game, slot, &weapon_id).is_ok();
-                game.audio.play(if installed {
-                    audio::AudioCue::Confirm
-                } else {
-                    audio::AudioCue::Warning
-                });
-            }
-            egui_inventory::InventoryUiAction::ToggleAutoRepair => {
-                if auto_repair_materials(&game.content_registry, &game.completed_research)
-                    .is_empty()
-                {
-                    game.audio.play(audio::AudioCue::Warning);
-                } else {
-                    game.auto_repair_enabled = !game.auto_repair_enabled;
-                    game.auto_repair_cycle_progress = 0.0;
-                    game.save_dirty = true;
-                    let state = if game.auto_repair_enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    };
-                    push_operation_feedback(game, "Repair", format!("Auto Repair {state}"));
-                    game.audio.play(audio::AudioCue::Confirm);
-                }
-            }
-            egui_inventory::InventoryUiAction::OpenUpgrades => {
-                game.upgrades_open = true;
-                game.inventory_open = false;
-                game.audio.play(audio::AudioCue::Select);
-            }
-            egui_inventory::InventoryUiAction::ToggleShipPin => {
-                toggle_egui_pane_pin(EguiPane::Ship);
-            }
             egui_inventory::InventoryUiAction::ToggleProductionPin => {
                 toggle_egui_pane_pin(EguiPane::Production);
-            }
-            egui_inventory::InventoryUiAction::ToggleInventoryPin => {
-                toggle_egui_pane_pin(EguiPane::Inventory);
             }
         }
     }
@@ -23718,10 +24544,92 @@ fn apply_fleet_ui_actions(
             egui_fleet::FleetUiAction::SelectShip(index) => {
                 if index < game.owned_ships.len() {
                     game.selected_owned_ship_index = index;
+                    game.fleet_selected_upgrade = 0;
                     true
                 } else {
                     false
                 }
+            }
+            egui_fleet::FleetUiAction::SetPage(page) => {
+                game.fleet_page = page;
+                true
+            }
+            egui_fleet::FleetUiAction::SelectUpgrade(index) => {
+                let available = game
+                    .owned_ships
+                    .get(game.selected_owned_ship_index)
+                    .and_then(|owned| owned.upgrades.get(index).map(|upgrade| (owned, upgrade)))
+                    .is_some_and(|(owned, upgrade)| {
+                        ship_upgrade_is_available(
+                            &game.content_registry,
+                            &owned.ship_id,
+                            upgrade.kind,
+                        )
+                    });
+                if available {
+                    game.fleet_selected_upgrade = index;
+                }
+                available
+            }
+            egui_fleet::FleetUiAction::PurchaseUpgrade(index) => {
+                let mut purchased = false;
+                for _ in 0..quantity_step.max(1) {
+                    if !buy_selected_fleet_upgrade(game, index) {
+                        break;
+                    }
+                    purchased = true;
+                }
+                purchased
+            }
+            egui_fleet::FleetUiAction::SetProductionTab(tab) => {
+                let mode = production_mode_for_tab(tab);
+                let changed = game.production_mode != mode;
+                if changed {
+                    game.production_mode = mode;
+                    game.work_scroll = 0.0;
+                    game.save_dirty = true;
+                }
+                changed
+            }
+            egui_fleet::FleetUiAction::AdjustProductionKeep { row, direction } => {
+                let unlocked = active_production_rows(game)
+                    .0
+                    .get(row)
+                    .is_some_and(|recipe| recipe_is_unlocked(game, &recipe.id));
+                if unlocked {
+                    let settings = match game.production_mode {
+                        ProductionMode::Smelting => &mut game.smelt_settings,
+                        ProductionMode::Crafting => &mut game.craft_settings,
+                        ProductionMode::Processing => &mut game.processing_settings,
+                    };
+                    if let Some(setting) = settings.get_mut(row) {
+                        adjust_work_setting(
+                            &mut setting.keep,
+                            WorkColumn::Keep,
+                            direction.signum() * quantity_step.max(1) as i32,
+                        );
+                        game.save_dirty = true;
+                    }
+                }
+                unlocked
+            }
+            egui_fleet::FleetUiAction::QueueProductionRecipe(row) => {
+                let unlocked = active_production_rows(game)
+                    .0
+                    .get(row)
+                    .is_some_and(|recipe| recipe_is_unlocked(game, &recipe.id));
+                if unlocked {
+                    let settings = match game.production_mode {
+                        ProductionMode::Smelting => &mut game.smelt_settings,
+                        ProductionMode::Crafting => &mut game.craft_settings,
+                        ProductionMode::Processing => &mut game.processing_settings,
+                    };
+                    if let Some(setting) = settings.get_mut(row) {
+                        setting.queued = setting.queued.saturating_add(1).min(999);
+                        game.save_dirty = true;
+                    }
+                }
+                unlocked
             }
             egui_fleet::FleetUiAction::QueueDroneSmelt(row) => {
                 let index = game.selected_owned_ship_index;
@@ -23744,6 +24652,51 @@ fn apply_fleet_ui_actions(
                 }
                 enabled
             }
+            egui_fleet::FleetUiAction::InstallShield { slot, shield_id } => {
+                install_shield_in_slot(game, slot, &shield_id).is_ok()
+            }
+            egui_fleet::FleetUiAction::InstallWeapon { slot, weapon_id } => {
+                install_weapon_in_slot(game, slot, &weapon_id).is_ok()
+            }
+            egui_fleet::FleetUiAction::ToggleAutoRepair => {
+                if auto_repair_materials(&game.content_registry, &game.completed_research)
+                    .is_empty()
+                {
+                    false
+                } else {
+                    game.auto_repair_enabled = !game.auto_repair_enabled;
+                    game.auto_repair_cycle_progress = 0.0;
+                    game.save_dirty = true;
+                    let state = if game.auto_repair_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    push_operation_feedback(game, "Repair", format!("Auto Repair {state}"));
+                    true
+                }
+            }
+            egui_fleet::FleetUiAction::ConsolidateToActive => {
+                let targets = if game.share_inventory {
+                    game.owned_ships
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, owned)| {
+                            owned.instance_id != game.active_owned_ship_id
+                                && owned.share_inventory
+                                && owned_ship_in_transfer_range(game, *index)
+                        })
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                targets
+                    .into_iter()
+                    .map(|index| take_all_owned_ship_cargo(game, index))
+                    .sum::<u32>()
+                    > 0
+            }
             egui_fleet::FleetUiAction::SwitchControl => {
                 switch_active_owned_ship(game, game.selected_owned_ship_index)
             }
@@ -23763,42 +24716,6 @@ fn apply_fleet_ui_actions(
                 }
                 game.save_dirty = true;
                 true
-            }
-            egui_fleet::FleetUiAction::AdjustTransferQuantity(direction) => {
-                if !owned_ship_in_transfer_range(game, game.selected_owned_ship_index)
-                    || direction == 0
-                {
-                    false
-                } else {
-                    let amount = quantity_step.max(1);
-                    game.fleet_transfer_quantity = if direction < 0 {
-                        game.fleet_transfer_quantity.saturating_sub(amount).max(1)
-                    } else {
-                        game.fleet_transfer_quantity.saturating_add(amount).min(999)
-                    };
-                    true
-                }
-            }
-            egui_fleet::FleetUiAction::TransferToSelected(item_id) => {
-                transfer_owned_ship_item(
-                    game,
-                    game.selected_owned_ship_index,
-                    &item_id,
-                    true,
-                    game.fleet_transfer_quantity,
-                ) > 0
-            }
-            egui_fleet::FleetUiAction::TransferToActive(item_id) => {
-                transfer_owned_ship_item(
-                    game,
-                    game.selected_owned_ship_index,
-                    &item_id,
-                    false,
-                    game.fleet_transfer_quantity,
-                ) > 0
-            }
-            egui_fleet::FleetUiAction::TakeAllFromSelected => {
-                take_all_owned_ship_cargo(game, game.selected_owned_ship_index) > 0
             }
             egui_fleet::FleetUiAction::SelectMiningPlanet(planet_id) => {
                 let valid = game
@@ -24075,10 +24992,8 @@ fn apply_operations_ui_actions(
                 toggle_egui_pane_pin(EguiPane::Operations);
                 game.audio.play(audio::AudioCue::Confirm);
             }
-            egui_operations::OperationsUiAction::ToggleCategory(category) => {
-                if !game.operation_hidden_categories.remove(&category) {
-                    game.operation_hidden_categories.insert(category);
-                }
+            egui_operations::OperationsUiAction::SelectTab(tab) => {
+                game.operation_selected_tab = tab;
                 game.audio.play(audio::AudioCue::Select);
             }
             egui_operations::OperationsUiAction::ToggleSeverity(severity) => {
@@ -24088,7 +25003,7 @@ fn apply_operations_ui_actions(
                 game.audio.play(audio::AudioCue::Select);
             }
             egui_operations::OperationsUiAction::ResetFilters => {
-                game.operation_hidden_categories.clear();
+                game.operation_selected_tab = egui_operations::OperationsTab::All;
                 game.operation_hidden_severities.clear();
                 game.audio.play(audio::AudioCue::Confirm);
             }
@@ -25081,6 +25996,13 @@ mod tests {
         let default_ship = resolved_new_game_ship_id(&registry, None);
 
         assert!(ships.iter().any(|ship| ship.id == STARTER_SHIP_ID));
+        assert!(
+            ships.iter().all(|ship| !matches!(
+                ship.id.as_str(),
+                "core:prospector_mining_drone" | "core:industrial_mining_drone"
+            )),
+            "mining drones should remain fleet ships, not new-game starting hulls"
+        );
         assert!(ships.iter().any(|ship| {
             ship.id == "turrets-galore:twinspire_gunship"
                 && ship.weapon_banks == 2
@@ -25103,6 +26025,10 @@ mod tests {
         );
         assert_eq!(
             resolved_new_game_ship_id(&registry, Some("missing-pack:missing-ship")),
+            "turrets-galore:twinspire_gunship"
+        );
+        assert_eq!(
+            resolved_new_game_ship_id(&registry, Some("core:prospector_mining_drone")),
             "turrets-galore:twinspire_gunship"
         );
     }
@@ -25258,8 +26184,8 @@ mod tests {
     fn egui_memory_round_trips_window_geometry() {
         let ctx = egui::Context::default();
         ctx.begin_pass(egui::RawInput::default());
-        egui::Window::new("Ship")
-            .id(egui::Id::new("inventory-ship-window"))
+        egui::Window::new("Fleet")
+            .id(egui::Id::new("fleet-workspace-window"))
             .default_pos(egui::pos2(30.0, 40.0))
             .show(&ctx, |ui| {
                 ui.label("test");
@@ -25271,7 +26197,7 @@ mod tests {
             ron::from_str(&serialized).expect("egui memory should deserialize");
 
         assert!(restored
-            .area_rect(egui::Id::new("inventory-ship-window"))
+            .area_rect(egui::Id::new("fleet-workspace-window"))
             .is_some());
     }
 
@@ -25338,12 +26264,12 @@ mod tests {
 
         toggle_egui_pane_pin(EguiPane::Production);
         assert!(egui_pane_pinned(EguiPane::Production));
-        assert!(!egui_pane_pinned(EguiPane::Inventory));
+        assert!(!egui_pane_pinned(EguiPane::Fleet));
 
-        toggle_egui_pane_pin(EguiPane::Inventory);
+        toggle_egui_pane_pin(EguiPane::Fleet);
         toggle_egui_pane_pin(EguiPane::Production);
         assert!(!egui_pane_pinned(EguiPane::Production));
-        assert!(egui_pane_pinned(EguiPane::Inventory));
+        assert!(egui_pane_pinned(EguiPane::Fleet));
         reset_egui_pins();
     }
 
@@ -26342,6 +27268,37 @@ mod tests {
     }
 
     #[test]
+    fn npc_wreck_context_requires_looting_before_salvage() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let circuit = required_item(&registry, "core:circuit");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = Vec2::ZERO;
+        let mut wreck = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(20.0, 0.0));
+        wreck.hull.current = 0.0;
+        wreck.destruction_processed = true;
+        wreck.cargo_defaults = vec![ItemStack {
+            item: circuit,
+            count: 2,
+        }];
+        game.npc_ships = vec![wreck];
+
+        let entries = context_action_entries(&game, ContextTarget::NpcShip(0));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.action == ContextAction::Loot && entry.enabled));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.action == ContextAction::Salvage && !entry.enabled));
+
+        assert_eq!(take_all_npc_wreck_cargo(&mut game, 0), 2);
+        let entries = context_action_entries(&game, ContextTarget::NpcShip(0));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.action == ContextAction::Salvage && entry.enabled));
+    }
+
+    #[test]
     fn salvage_completion_removes_wreck_and_awards_materials() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -26401,7 +27358,7 @@ mod tests {
     }
 
     #[test]
-    fn fleet_egui_view_and_actions_cover_transfer_and_switching() {
+    fn fleet_egui_view_combines_nearby_shared_cargo_and_switches_control() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let iron = required_item(&registry, "core:iron_ore");
@@ -26419,32 +27376,77 @@ mod tests {
             "turrets-galore:twinspire_gunship"
         ));
         game.inventory.add_item(iron.clone(), 10);
+        game.owned_ships[1].inventory.add_item(iron.clone(), 5);
 
         let view = fleet_pane_view(&game, 10);
         assert_eq!(view.ships.len(), 2);
         assert_eq!(view.selected, Some(1));
-        assert!(view
-            .selected_ship
-            .as_ref()
-            .is_some_and(|selected| selected.transfer_available));
-        assert!(view
-            .active_cargo
+        assert_eq!(view.inventory.linked_hulls, 2);
+        let iron_row = view
+            .inventory
+            .rows
             .iter()
-            .any(|cargo| cargo.item_id == iron.id && cargo.count == 10));
+            .find(|cargo| cargo.item_id == iron.id)
+            .expect("shared manifest should aggregate iron");
+        assert_eq!(iron_row.count, 15);
+        assert_eq!(iron_row.locations.len(), 2);
+        assert_eq!(view.page, egui_fleet::FleetPage::Stats);
+        assert!(!view.upgrades.is_empty());
+        assert_eq!(game.inventory.count(&iron), 10);
+        assert_eq!(game.owned_ships[1].inventory.count(&iron), 5);
+
+        game.owned_ships[1].share_inventory = false;
+        let isolated = fleet_pane_view(&game, 1);
+        assert_eq!(isolated.inventory.linked_hulls, 1);
+        assert_eq!(isolated.inventory.rows[0].count, 5);
+        assert_eq!(isolated.inventory.unavailable.len(), 1);
+        game.owned_ships[1].share_inventory = true;
+        apply_fleet_ui_actions(
+            &mut game,
+            vec![egui_fleet::FleetUiAction::ConsolidateToActive],
+            1,
+        );
+        assert_eq!(game.inventory.count(&iron), 15);
+        assert_eq!(game.owned_ships[1].inventory.count(&iron), 0);
+
+        let engine_index = game.owned_ships[1]
+            .upgrades
+            .iter()
+            .position(|upgrade| upgrade.kind == ShipUpgradeKind::Engine)
+            .expect("purchased ship should expose engine upgrades");
+        let upgrade_cost =
+            game.owned_ships[1].upgrades[engine_index].next_cost(&game.content_registry);
+        for stack in upgrade_cost {
+            game.owned_ships[1]
+                .inventory
+                .add_item(stack.item, stack.count);
+        }
         apply_fleet_ui_actions(
             &mut game,
             vec![
-                egui_fleet::FleetUiAction::AdjustTransferQuantity(1),
-                egui_fleet::FleetUiAction::TransferToSelected(iron.id.clone()),
+                egui_fleet::FleetUiAction::SetPage(egui_fleet::FleetPage::Upgrades),
+                egui_fleet::FleetUiAction::SelectUpgrade(engine_index),
+                egui_fleet::FleetUiAction::PurchaseUpgrade(engine_index),
             ],
-            10,
+            1,
         );
-        assert_eq!(game.fleet_transfer_quantity, 11);
-        assert_eq!(game.inventory.count(&iron), 0);
-        assert_eq!(game.owned_ships[1].inventory.count(&iron), 10);
+        assert_eq!(game.fleet_page, egui_fleet::FleetPage::Upgrades);
+        assert_eq!(game.owned_ships[1].upgrades[engine_index].level, 1);
 
         apply_fleet_ui_actions(&mut game, vec![egui_fleet::FleetUiAction::SwitchControl], 1);
         assert_eq!(game.active_owned_ship_id, "ship-2");
+        let view = fleet_pane_view(&game, 1);
+        assert!(view.production.is_some());
+        apply_fleet_ui_actions(
+            &mut game,
+            vec![
+                egui_fleet::FleetUiAction::SetPage(egui_fleet::FleetPage::Production),
+                egui_fleet::FleetUiAction::SetProductionTab(egui_inventory::ProductionTab::Craft),
+            ],
+            1,
+        );
+        assert_eq!(game.fleet_page, egui_fleet::FleetPage::Production);
+        assert!(game.production_mode == ProductionMode::Crafting);
 
         assert!(game.save_dirty);
     }
@@ -27718,6 +28720,63 @@ mod tests {
     }
 
     #[test]
+    fn weapon_hits_emit_localized_shield_and_hull_visuals_from_the_incoming_side() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.position = vec2(20.0, 30.0);
+        game.ship.systems.shields.current = 5.0;
+        let origin = vec2(200.0, 30.0);
+
+        assert!(apply_weapon_damage_to_target(
+            &mut game,
+            &WeaponTargetRef::Player,
+            12.0,
+            origin,
+            [255, 80, 40, 255],
+        ));
+
+        assert_eq!(game.weapon_impact_visual_events.len(), 2);
+        let shield = game
+            .weapon_impact_visual_events
+            .iter()
+            .find(|event| event.kind == WeaponImpactVisualKind::Shield)
+            .expect("shield absorption should emit a shield hit");
+        let hull = game
+            .weapon_impact_visual_events
+            .iter()
+            .find(|event| event.kind == WeaponImpactVisualKind::Hull)
+            .expect("spillover should emit hull debris");
+        assert!(shield.position.x > game.ship.position.x);
+        assert!(hull.position.x > game.ship.position.x);
+        assert_vec2_near(shield.outward, vec2(1.0, 0.0));
+    }
+
+    #[test]
+    fn shield_only_weapon_hit_does_not_emit_hull_debris_and_visuals_expire() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship.systems.shields.current = 20.0;
+
+        assert!(apply_weapon_damage_to_target(
+            &mut game,
+            &WeaponTargetRef::Player,
+            5.0,
+            vec2(-100.0, 0.0),
+            [255, 80, 40, 255],
+        ));
+        assert_eq!(game.weapon_impact_visual_events.len(), 1);
+        assert_eq!(
+            game.weapon_impact_visual_events[0].kind,
+            WeaponImpactVisualKind::Shield
+        );
+
+        update_weapon_systems(&mut game, 2.0);
+        assert!(game.weapon_impact_visual_events.is_empty());
+    }
+
+    #[test]
     fn energy_turrets_fire_without_ammunition() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -27883,7 +28942,7 @@ mod tests {
     }
 
     #[test]
-    fn destroyed_npc_ships_are_removed_after_turret_fire() {
+    fn destroyed_npc_ships_become_persistent_wrecks_after_turret_fire() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
@@ -27903,14 +28962,16 @@ mod tests {
         update_weapon_systems(&mut game, 0.1);
         assert_eq!(game.equipped_weapons[0].status, WeaponStatus::Fired);
         finish_weapon_fire_events(&mut game);
-        remove_destroyed_npc_ships(&mut game);
+        process_destroyed_npc_ships(&mut game);
 
-        assert!(game.npc_ships.is_empty());
-        assert_eq!(game.selected_npc_ship, None);
+        assert_eq!(game.npc_ships.len(), 1);
+        assert!(game.npc_ships[0].destruction_processed);
+        assert_eq!(game.npc_ships[0].velocity, Vec2::ZERO);
+        assert_eq!(game.selected_npc_ship, Some(0));
     }
 
     #[test]
-    fn destroyed_npc_cargo_is_added_to_player_inventory_when_space_allows() {
+    fn destroyed_npc_cargo_waits_for_manual_recovery() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let circuit = required_item(&registry, "core:circuit");
@@ -27925,16 +28986,20 @@ mod tests {
         }];
         game.npc_ships = vec![destroyed];
 
-        remove_destroyed_npc_ships(&mut game);
+        process_destroyed_npc_ships(&mut game);
 
-        assert!(game.npc_ships.is_empty());
-        assert_eq!(game.inventory.count(&circuit), 2);
+        assert_eq!(game.npc_ships[0].cargo_defaults[0].count, 2);
+        assert_eq!(game.inventory.count(&circuit), 0);
         assert_eq!(game.credits, default_credits() + 45);
         assert!(operation_feedback_contains(
             &game,
             "Loot",
-            "Test NPC: 2 cargo, 45 cr"
+            "Test NPC disabled; wreck available for cargo recovery; bounty 45 cr"
         ));
+
+        assert_eq!(take_all_npc_wreck_cargo(&mut game, 0), 2);
+        assert!(game.npc_ships[0].cargo_defaults.is_empty());
+        assert_eq!(game.inventory.count(&circuit), 2);
     }
 
     #[test]
@@ -27958,16 +29023,12 @@ mod tests {
         }];
         game.npc_ships = vec![destroyed];
 
-        remove_destroyed_npc_ships(&mut game);
+        process_destroyed_npc_ships(&mut game);
 
-        assert!(game.npc_ships.is_empty());
+        assert_eq!(take_all_npc_wreck_cargo(&mut game, 0), 0);
+        assert_eq!(game.npc_ships[0].cargo_defaults[0].count, 1);
         assert_eq!(game.inventory.count(&circuit), 0);
         assert_eq!(game.credits, default_credits() + 30);
-        assert!(operation_feedback_contains(
-            &game,
-            "Loot",
-            "Test NPC: 30 cr"
-        ));
     }
 
     #[test]
@@ -27981,30 +29042,30 @@ mod tests {
         destroyed.hull.current = 0.0;
         game.npc_ships = vec![destroyed];
 
-        remove_destroyed_npc_ships(&mut game);
+        process_destroyed_npc_ships(&mut game);
 
-        assert!(game.npc_ships.is_empty());
+        assert!(game.npc_ships[0].destruction_processed);
         assert_eq!(game.credits, default_credits());
     }
 
     #[test]
-    fn removing_destroyed_npc_ships_remaps_surviving_selection() {
+    fn empty_npc_wreck_can_be_salvaged_without_reappearing_in_runtime() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let mut game = test_game_with_systems(registry, Vec::new());
         let mut destroyed = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(120.0, 0.0));
-        destroyed.id = "core:destroyed".to_string();
         destroyed.hull.current = 0.0;
-        let mut selected = test_npc_ship(NpcBehaviorMode::Patrol, vec2(220.0, 0.0));
-        selected.id = "core:selected".to_string();
-        game.npc_ships = vec![destroyed, selected];
-        game.selected_npc_ship = Some(1);
+        destroyed.destruction_processed = true;
+        destroyed.salvage_active = true;
+        game.npc_ships = vec![destroyed];
+        game.selected_npc_ship = Some(0);
 
-        remove_destroyed_npc_ships(&mut game);
+        update_npc_ship_salvage(&mut game, OWNED_SHIP_SALVAGE_SECONDS);
 
         assert_eq!(game.npc_ships.len(), 1);
-        assert_eq!(game.npc_ships[0].id, "core:selected");
-        assert_eq!(game.selected_npc_ship, Some(0));
+        assert!(game.npc_ships[0].salvaged);
+        assert_eq!(game.selected_npc_ship, None);
+        assert!(context_action_entries(&game, ContextTarget::NpcShip(0)).is_empty());
     }
 
     #[test]
@@ -29288,18 +30349,18 @@ mod tests {
         );
 
         game.combat_intel
-            .insert("core:test_npc".to_string(), CombatIntelLevel::Hull);
+            .insert("core:test_npc".to_string(), CombatIntelLevel::Shields);
         game.combat_scan = None;
         game.ship.systems.energy.current = game.ship.systems.energy.max;
         update_combat_scan(&mut game, 5.0);
         assert_eq!(
             game.combat_intel.get("core:test_npc"),
-            Some(&CombatIntelLevel::Hull)
+            Some(&CombatIntelLevel::Shields)
         );
         assert!(game
             .combat_scan
             .as_ref()
-            .is_some_and(|scan| scan.stage == CombatIntelLevel::Shields));
+            .is_some_and(|scan| scan.stage == CombatIntelLevel::Weapons));
 
         game.ship_upgrades
             .iter_mut()
@@ -29309,8 +30370,42 @@ mod tests {
         update_combat_scan(&mut game, 5.0);
         assert_eq!(
             game.combat_intel.get("core:test_npc"),
-            Some(&CombatIntelLevel::Shields)
+            Some(&CombatIntelLevel::Weapons)
         );
+    }
+
+    #[test]
+    fn fresh_ship_scanner_reveals_starter_probe_shields() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let probe_difficulty = registry
+            .npc_ships
+            .get("core:redwake_probe")
+            .expect("starter probe should exist")
+            .scan_difficulty;
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let mut probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(420.0, 0.0));
+        probe.id = "core:redwake_probe".to_string();
+        probe.role = "hostile".to_string();
+        probe.behavior_tags = vec!["hostile".to_string(), "probe".to_string()];
+        probe.scan_difficulty = probe_difficulty;
+        game.npc_ships = vec![probe];
+        game.selected_npc_ship = Some(0);
+
+        let mut elapsed = 0.0;
+        while npc_intel_level(&game, &game.npc_ships[0]) < CombatIntelLevel::Shields
+            && elapsed < 8.0
+        {
+            update_combat_scan(&mut game, 0.1);
+            elapsed += 0.1;
+        }
+
+        assert_eq!(combat_scan_depth(&game), CombatIntelLevel::Shields);
+        assert_eq!(
+            npc_intel_level(&game, &game.npc_ships[0]),
+            CombatIntelLevel::Shields
+        );
+        assert!(elapsed < 8.0, "shield scan took {elapsed:.1}s");
     }
 
     #[test]
@@ -29877,30 +30972,190 @@ mod tests {
     }
 
     #[test]
-    fn inventory_shortcut_does_not_convert_object_menu_or_pane_to_ship_pane() {
+    fn production_shortcut_toggles_without_closing_an_inspection_pane() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
-        let planet = test_planet("core:shortcut_planet", STARTER_SYSTEM_ID, Vec2::ZERO, true);
+        let planet = test_planet(
+            "core:production_shortcut",
+            STARTER_SYSTEM_ID,
+            Vec2::ZERO,
+            true,
+        );
         let mut game = test_game_with_systems(registry, vec![planet]);
-
+        game.inventory_open = true;
+        game.production_open = true;
+        game.research_open = true;
+        game.content_open = true;
+        game.contracts_open = true;
         game.selected_planet = Some(0);
-        game.context_action_menu = Some(ContextActionMenu {
-            content: ContextMenuContent::Actions(ContextTarget::Planet(0)),
-            position: Vec2::ZERO,
-        });
-        handle_inventory_shortcut(&mut game);
-        assert!(game.context_action_menu.is_none());
-        assert!(!game.inventory_open);
+
+        handle_production_shortcut(&mut game);
+
+        assert!(game.production_open);
+        assert!(game.fleet_open);
+        assert_eq!(game.fleet_page, egui_fleet::FleetPage::Production);
+        assert!(game.inventory_open);
+        assert!(game.research_open);
+        assert!(game.content_open);
+        assert!(game.contracts_open);
         assert_eq!(game.selected_planet, Some(0));
 
-        game.inventory_open = true;
-        handle_inventory_shortcut(&mut game);
-        assert!(!game.inventory_open);
-        assert_eq!(game.selected_planet, None);
+        handle_production_shortcut(&mut game);
 
-        handle_inventory_shortcut(&mut game);
+        assert!(game.production_open);
+        assert!(!game.fleet_open);
         assert!(game.inventory_open);
-        assert_eq!(game.selected_planet, None);
+        assert!(game.research_open);
+        assert!(game.content_open);
+        assert!(game.contracts_open);
+        assert_eq!(game.selected_planet, Some(0));
+    }
+
+    #[test]
+    fn opening_fleet_preserves_existing_windows_and_inspection_targets() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.map_open = true;
+        game.inventory_open = true;
+        game.production_open = true;
+        game.research_open = true;
+        game.upgrades_open = true;
+        game.content_open = true;
+        game.contracts_open = true;
+        game.operations_open = true;
+        game.selected_planet = Some(1);
+        game.selected_station = Some(2);
+        game.selected_station_service = Some(3);
+        game.selected_npc_ship = Some(4);
+
+        open_fleet_control_panel(&mut game, egui_fleet::FleetPage::Stats);
+
+        assert!(game.fleet_open);
+        assert!(game.map_open);
+        assert!(game.inventory_open);
+        assert!(game.production_open);
+        assert!(game.research_open);
+        assert!(game.upgrades_open);
+        assert!(game.content_open);
+        assert!(game.contracts_open);
+        assert!(game.operations_open);
+        assert_eq!(game.selected_planet, Some(1));
+        assert_eq!(game.selected_station, Some(2));
+        assert_eq!(game.selected_station_service, Some(3));
+        assert_eq!(game.selected_npc_ship, Some(4));
+    }
+
+    #[test]
+    fn production_info_only_lists_unlocked_follow_on_recipes() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let smelt_recipes = make_smelting_recipes(&registry);
+        let craft_recipes = make_crafting_recipes(&registry);
+        let processing_recipes = make_processing_recipes(&registry);
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = smelt_recipes;
+        game.craft_recipes = craft_recipes;
+        game.processing_recipes = processing_recipes;
+        game.recipe_vendor_locked_recipes = vec!["core:advanced_scanner_core".to_string()];
+
+        let locked = unlocked_recipe_products_using(&game, "core:electronics");
+        assert!(!locked
+            .iter()
+            .any(|line| line.contains("Advanced Scanner Core")));
+
+        game.completed_research
+            .push("core:advanced_scanner_core".to_string());
+        let researched = unlocked_recipe_products_using(&game, "core:electronics");
+        assert!(researched
+            .iter()
+            .any(|line| line == "Advanced scanner core x1 · Craft"));
+    }
+
+    #[test]
+    fn inventory_info_lists_unlocked_sources_and_uses() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let smelt_recipes = make_smelting_recipes(&registry);
+        let craft_recipes = make_crafting_recipes(&registry);
+        let processing_recipes = make_processing_recipes(&registry);
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = smelt_recipes;
+        game.craft_recipes = craft_recipes;
+        game.processing_recipes = processing_recipes;
+
+        assert_eq!(
+            unlocked_recipe_sources_for(&game, "core:iron_plate"),
+            vec!["Iron plate x1 · Smelt"]
+        );
+        assert!(unlocked_recipe_products_using(&game, "core:iron_plate")
+            .iter()
+            .any(|line| line == "Structural alloy x1 · Smelt"));
+    }
+
+    #[test]
+    fn recipe_info_expands_craftable_sub_requirements() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let smelt_recipes = make_smelting_recipes(&registry);
+        let craft_recipes = make_crafting_recipes(&registry);
+        let processing_recipes = make_processing_recipes(&registry);
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = smelt_recipes;
+        game.craft_recipes = craft_recipes;
+        game.processing_recipes = processing_recipes;
+        let turret_ammo = game
+            .craft_recipes
+            .iter()
+            .find(|recipe| recipe.id == "core:interceptor_rounds")
+            .expect("core ammunition recipe should exist");
+
+        let requirements = recipe_sub_requirements(&game, turret_ammo);
+
+        assert!(requirements
+            .iter()
+            .any(|line| line == "Iron plate x1 needs:"));
+        assert!(requirements.iter().any(|line| line == "  ↳ Iron ore x2"));
+    }
+
+    #[test]
+    fn equipment_info_links_turrets_and_ammunition_in_both_directions() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let smelt_recipes = make_smelting_recipes(&registry);
+        let craft_recipes = make_crafting_recipes(&registry);
+        let processing_recipes = make_processing_recipes(&registry);
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.smelt_recipes = smelt_recipes;
+        game.craft_recipes = craft_recipes;
+        game.processing_recipes = processing_recipes;
+
+        assert_eq!(
+            item_equipment_links(&game, "core:point_defense_turret"),
+            vec!["Uses Interceptor round x1 per shot"]
+        );
+        assert_eq!(
+            item_equipment_links(&game, "core:interceptor_round"),
+            vec!["Ammo for Point Defense Turret · x1 per shot"]
+        );
+    }
+
+    #[test]
+    fn inspection_and_production_panes_allow_world_zoom_away_from_egui() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.inventory_open = true;
+        game.production_open = true;
+
+        assert!(flight_camera_wheel_enabled(&game, false));
+        assert!(!flight_camera_wheel_enabled(&game, true));
+
+        game.fleet_open = true;
+        game.fleet_page = egui_fleet::FleetPage::Production;
+        assert!(flight_camera_wheel_enabled(&game, false));
+        game.fleet_page = egui_fleet::FleetPage::Stats;
+        assert!(!flight_camera_wheel_enabled(&game, false));
+        game.fleet_open = false;
+
+        game.map_open = true;
+        assert!(!flight_camera_wheel_enabled(&game, false));
     }
 
     #[test]
@@ -30079,6 +31334,24 @@ mod tests {
             &registry,
         );
         assert!(restored_depleted.cargo_defaults.is_empty());
+
+        let mut wreck = test_npc_ship(NpcBehaviorMode::HostileIntercept, vec2(321.0, -88.0));
+        wreck.id = "core:saved_wreck".to_string();
+        wreck.hull.current = 0.0;
+        wreck.destruction_processed = true;
+        wreck.salvage_progress = 47.5;
+        let wreck_save = save_npc_cargo(&[wreck]);
+        let mut restored_wreck = test_npc_ship(NpcBehaviorMode::HostileIntercept, Vec2::ZERO);
+        restored_wreck.id = "core:saved_wreck".to_string();
+        apply_npc_cargo_save(
+            std::slice::from_mut(&mut restored_wreck),
+            &wreck_save,
+            &registry,
+        );
+        assert_eq!(restored_wreck.hull.current, 0.0);
+        assert!(restored_wreck.destruction_processed);
+        assert_eq!(restored_wreck.position, vec2(321.0, -88.0));
+        assert_eq!(restored_wreck.salvage_progress, 47.5);
 
         let mut legacy_probe = test_npc_ship(NpcBehaviorMode::HostileIntercept, Vec2::ZERO);
         legacy_probe.id = "core:redwake_probe".to_string();
@@ -30933,9 +32206,9 @@ mod tests {
 
         assert_eq!(auto_repair_status(&game), AutoRepairStatus::Locked);
         assert!(ship_pane_view(&game).auto_repair_status.contains("Locked"));
-        apply_inventory_ui_actions(
+        apply_fleet_ui_actions(
             &mut game,
-            vec![egui_inventory::InventoryUiAction::ToggleAutoRepair],
+            vec![egui_fleet::FleetUiAction::ToggleAutoRepair],
             1,
         );
         assert!(!game.auto_repair_enabled);
@@ -30943,9 +32216,9 @@ mod tests {
         game.completed_research
             .push("core:autonomous_hull_patching".to_string());
         assert_eq!(auto_repair_status(&game), AutoRepairStatus::Disabled);
-        apply_inventory_ui_actions(
+        apply_fleet_ui_actions(
             &mut game,
-            vec![egui_inventory::InventoryUiAction::ToggleAutoRepair],
+            vec![egui_fleet::FleetUiAction::ToggleAutoRepair],
             1,
         );
         assert!(game.auto_repair_enabled);
@@ -31355,23 +32628,35 @@ mod tests {
 
         apply_operations_ui_actions(
             &mut game,
-            vec![
-                egui_operations::OperationsUiAction::ToggleCategory(
-                    egui_operations::OperationCategory::Trade,
-                ),
-                egui_operations::OperationsUiAction::ToggleSeverity(
-                    egui_operations::OperationSeverity::Warning,
-                ),
-            ],
+            vec![egui_operations::OperationsUiAction::SelectTab(
+                egui_operations::OperationsTab::Trade,
+            )],
         );
-        assert!(operations_view(&game).rows.is_empty());
+        let view = operations_view(&game);
+        assert_eq!(view.selected_tab, egui_operations::OperationsTab::Trade);
+        assert_eq!(view.rows.len(), 1);
+        assert_eq!(
+            view.rows[0].category,
+            egui_operations::OperationCategory::Trade
+        );
+
+        apply_operations_ui_actions(
+            &mut game,
+            vec![egui_operations::OperationsUiAction::ToggleSeverity(
+                egui_operations::OperationSeverity::Success,
+            )],
+        );
+        let view = operations_view(&game);
+        assert!(view.rows.is_empty());
         assert_eq!(game.operation_feedback.len(), 2);
 
         apply_operations_ui_actions(
             &mut game,
             vec![egui_operations::OperationsUiAction::ResetFilters],
         );
-        assert_eq!(operations_view(&game).rows.len(), 2);
+        let view = operations_view(&game);
+        assert_eq!(view.selected_tab, egui_operations::OperationsTab::All);
+        assert_eq!(view.rows.len(), 2);
 
         apply_operations_ui_actions(&mut game, vec![egui_operations::OperationsUiAction::Clear]);
         assert!(game.operation_feedback.is_empty());
@@ -33294,6 +34579,10 @@ mod tests {
             cargo_capacity: 100.0,
             cargo_defaults: Vec::new(),
             trade_open: false,
+            destruction_processed: false,
+            salvage_active: false,
+            salvage_progress: 0.0,
+            salvaged: false,
             credit_reward_min: 0,
             credit_reward_max: 0,
             hull: ShipResource::full(50.0),
@@ -33639,6 +34928,7 @@ mod tests {
             defense_threats: Vec::new(),
             weapon_fire_events: Vec::new(),
             weapon_area_effect_events: Vec::new(),
+            weapon_impact_visual_events: Vec::new(),
             weapon_projectile_textures: HashMap::new(),
             ship_textures: HashMap::new(),
             system_light_haze_texture: None,
@@ -33684,6 +34974,7 @@ mod tests {
             production_mode: ProductionMode::Smelting,
             ship_upgrades: make_ship_upgrades(),
             inventory_open: false,
+            production_open: false,
             map_open: false,
             research_open: false,
             upgrades_open: false,
@@ -33692,7 +34983,8 @@ mod tests {
             fleet_open: false,
             operations_open: false,
             selected_owned_ship_index: 0,
-            fleet_transfer_quantity: 1,
+            fleet_page: egui_fleet::FleetPage::Stats,
+            fleet_selected_upgrade: 0,
             fleet_mining_planet: None,
             fleet_mining_resource: None,
             fleet_mining_quota: 10,
@@ -33721,7 +35013,7 @@ mod tests {
             save_status_timer: 0.0,
             save_status_manual: false,
             operation_feedback: Vec::new(),
-            operation_hidden_categories: BTreeSet::new(),
+            operation_selected_tab: egui_operations::OperationsTab::default(),
             operation_hidden_severities: BTreeSet::new(),
             debug_console: DebugConsole::default(),
             context_action_menu: None,

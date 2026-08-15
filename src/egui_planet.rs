@@ -53,15 +53,23 @@ pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &PlanetPaneView) -> Vec
     let mut actions = Vec::new();
     let height = 600.0_f32.min((screen[1] - 96.0).max(280.0));
 
-    egui::Window::new("Planet")
-        .id(Id::new("planet-workspace-window"))
-        .default_pos(egui::pos2(16.0, 48.0))
-        .default_size(Vec2::new(380.0, height))
-        .min_width(300.0)
-        .resizable(true)
-        .collapsible(true)
-        .vscroll(true)
-        .show(ctx, |ui| draw_planet_contents(ui, view, &mut actions));
+    let window_id = Id::new("planet-workspace-window");
+    crate::egui_pane::show_window(
+        ctx,
+        window_id,
+        egui::Window::new("Planet")
+            .id(window_id)
+            .default_pos(egui::pos2(16.0, 48.0))
+            .default_size(Vec2::new(380.0, height))
+            .min_width(300.0)
+            .resizable(true)
+            .collapsible(true),
+        |ui| {
+            crate::egui_pane::vertical_scroll(ui, "planet-content-scroll", |ui| {
+                draw_planet_contents(ui, view, &mut actions);
+            });
+        },
+    );
 
     actions
 }
@@ -98,11 +106,13 @@ fn draw_planet_contents(
         {
             actions.push(PlanetUiAction::EnterOrbit);
         }
-        if ui
-            .add_enabled(view.scan_enabled, egui::Button::new(&view.scan_label))
-            .clicked()
-        {
-            actions.push(PlanetUiAction::LaunchScan);
+        if let Some(enabled) = scan_button_enabled(view.in_range, view.scan_enabled) {
+            if ui
+                .add_enabled(enabled, egui::Button::new(&view.scan_label))
+                .clicked()
+            {
+                actions.push(PlanetUiAction::LaunchScan);
+            }
         }
     });
 
@@ -167,6 +177,10 @@ fn draw_planet_contents(
         ui.separator();
         ui.label(format!("Latest: {latest}"));
     }
+}
+
+fn scan_button_enabled(in_range: bool, scan_enabled: bool) -> Option<bool> {
+    in_range.then_some(scan_enabled)
 }
 
 fn draw_mining_grid(ui: &mut egui::Ui, view: &PlanetPaneView, actions: &mut Vec<PlanetUiAction>) {
@@ -253,11 +267,21 @@ fn fact_row(ui: &mut egui::Ui, label: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::scan_button_enabled;
+
     #[test]
     fn planet_window_height_fits_small_screens() {
         let screen = [640.0, 320.0];
         let height = 600.0_f32.min((screen[1] - 96.0_f32).max(280.0_f32));
 
         assert_eq!(height, 280.0);
+    }
+
+    #[test]
+    fn scan_button_is_hidden_until_the_ship_is_in_range() {
+        assert_eq!(scan_button_enabled(false, false), None);
+        assert_eq!(scan_button_enabled(false, true), None);
+        assert_eq!(scan_button_enabled(true, false), Some(false));
+        assert_eq!(scan_button_enabled(true, true), Some(true));
     }
 }

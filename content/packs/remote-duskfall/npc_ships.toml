@@ -1,7 +1,7 @@
 [[npc_ships]]
 id = "redwake_remote_probe"
 name = "Redwake Remote Probe"
-texture = "content/packs/core/assets/ships/npc-scout-01.png"
+texture = "./assets/ships/redwake-remote-probe.png"
 system = "duskfall_reach"
 position = [-820.0, 520.0]
 radius = 22.0

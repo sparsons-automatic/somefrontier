@@ -37,64 +37,65 @@ pub fn draw_main(
         .resizable(false)
         .collapsible(false)
         .title_bar(false)
-        .vscroll(true)
         .show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                if let Some(texture) = view.logo {
-                    let width = (ui.available_width() - 44.0).min(420.0);
-                    let height = (width / view.logo_aspect_ratio.max(0.1)).min(245.0);
-                    ui.add(egui::Image::new((texture, Vec2::new(width, height))));
-                } else {
-                    ui.add_space(42.0);
-                    ui.heading("Some Frontier");
-                    ui.add_space(42.0);
-                }
-                ui.label("Local systems, rough ore, quiet engines");
-                ui.add_space(18.0);
-            });
+            crate::egui_pane::vertical_scroll(ui, "title-main-scroll", |ui| {
+                ui.vertical_centered(|ui| {
+                    if let Some(texture) = view.logo {
+                        let width = (ui.available_width() - 44.0).min(420.0);
+                        let height = (width / view.logo_aspect_ratio.max(0.1)).min(245.0);
+                        ui.add(egui::Image::new((texture, Vec2::new(width, height))));
+                    } else {
+                        ui.add_space(42.0);
+                        ui.heading("Some Frontier");
+                        ui.add_space(42.0);
+                    }
+                    ui.label("Local systems, rough ore, quiet engines");
+                    ui.add_space(18.0);
+                });
 
-            title_button(
-                ui,
-                "New Game",
-                "N",
-                true,
-                TitleMainAction::NewGame,
-                &mut actions,
-            );
-            title_button(
-                ui,
-                "Load Game",
-                "L",
-                view.load_enabled,
-                TitleMainAction::LoadGame,
-                &mut actions,
-            );
-            title_button(
-                ui,
-                "Content Packs",
-                "C",
-                true,
-                TitleMainAction::ContentPacks,
-                &mut actions,
-            );
-            title_button(
-                ui,
-                "Settings",
-                "S",
-                true,
-                TitleMainAction::Settings,
-                &mut actions,
-            );
-            ui.add_space(8.0);
-            title_button(ui, "Quit", "Q", true, TitleMainAction::Quit, &mut actions);
-
-            if view.fast_start {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "Fast start enabled by SOME_FRONTIER_FAST_START",
+                title_button(
+                    ui,
+                    "New Game",
+                    "N",
+                    true,
+                    TitleMainAction::NewGame,
+                    &mut actions,
                 );
-            }
+                title_button(
+                    ui,
+                    "Load Game",
+                    "L",
+                    view.load_enabled,
+                    TitleMainAction::LoadGame,
+                    &mut actions,
+                );
+                title_button(
+                    ui,
+                    "Content Packs",
+                    "C",
+                    true,
+                    TitleMainAction::ContentPacks,
+                    &mut actions,
+                );
+                title_button(
+                    ui,
+                    "Settings",
+                    "S",
+                    true,
+                    TitleMainAction::Settings,
+                    &mut actions,
+                );
+                ui.add_space(8.0);
+                title_button(ui, "Quit", "Q", true, TitleMainAction::Quit, &mut actions);
+
+                if view.fast_start {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Fast start enabled by SOME_FRONTIER_FAST_START",
+                    );
+                }
+            });
         });
 
     actions

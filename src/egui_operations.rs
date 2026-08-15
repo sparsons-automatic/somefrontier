@@ -13,17 +13,6 @@ pub enum OperationCategory {
 }
 
 impl OperationCategory {
-    pub const ALL: [Self; 8] = [
-        Self::Mining,
-        Self::Production,
-        Self::Travel,
-        Self::Trade,
-        Self::Combat,
-        Self::Research,
-        Self::System,
-        Self::General,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Mining => "Mining",
@@ -60,6 +49,66 @@ impl OperationCategory {
             Self::Research => Color32::from_rgb(184, 139, 232),
             Self::System => Color32::from_rgb(232, 185, 100),
             Self::General => Color32::from_rgb(174, 194, 200),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OperationsTab {
+    #[default]
+    All,
+    Mining,
+    Production,
+    Travel,
+    Trade,
+    Combat,
+    Research,
+    System,
+    General,
+}
+
+impl OperationsTab {
+    pub const ALL: [Self; 9] = [
+        Self::All,
+        Self::Mining,
+        Self::Production,
+        Self::Travel,
+        Self::Trade,
+        Self::Combat,
+        Self::Research,
+        Self::System,
+        Self::General,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Mining => "Mining",
+            Self::Production => "Production",
+            Self::Travel => "Travel",
+            Self::Trade => "Trade",
+            Self::Combat => "Combat",
+            Self::Research => "Research",
+            Self::System => "System",
+            Self::General => "General",
+        }
+    }
+
+    pub fn includes(self, category: OperationCategory) -> bool {
+        self == Self::All || self.category() == Some(category)
+    }
+
+    fn category(self) -> Option<OperationCategory> {
+        match self {
+            Self::All => None,
+            Self::Mining => Some(OperationCategory::Mining),
+            Self::Production => Some(OperationCategory::Production),
+            Self::Travel => Some(OperationCategory::Travel),
+            Self::Trade => Some(OperationCategory::Trade),
+            Self::Combat => Some(OperationCategory::Combat),
+            Self::Research => Some(OperationCategory::Research),
+            Self::System => Some(OperationCategory::System),
+            Self::General => Some(OperationCategory::General),
         }
     }
 }
@@ -116,7 +165,7 @@ pub struct OperationRow {
 pub struct OperationsView {
     pub pinned: bool,
     pub rows: Vec<OperationRow>,
-    pub hidden_categories: Vec<OperationCategory>,
+    pub selected_tab: OperationsTab,
     pub hidden_severities: Vec<OperationSeverity>,
     pub history_count: usize,
     pub history_limit: usize,
@@ -125,7 +174,7 @@ pub struct OperationsView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationsUiAction {
     TogglePin,
-    ToggleCategory(OperationCategory),
+    SelectTab(OperationsTab),
     ToggleSeverity(OperationSeverity),
     ResetFilters,
     Clear,
@@ -173,18 +222,20 @@ fn draw_contents(ui: &mut egui::Ui, view: &OperationsView, actions: &mut Vec<Ope
             }
         });
     });
-    ui.small("Session-only history. New events auto-scroll only while the view is already at the bottom.");
+    ui.small("Session-only history. Each tab keeps its own scroll position.");
     ui.separator();
 
     ui.horizontal_wrapped(|ui| {
-        ui.strong("Categories");
-        for category in OperationCategory::ALL {
-            let enabled = !view.hidden_categories.contains(&category);
-            if ui.selectable_label(enabled, category.label()).clicked() {
-                actions.push(OperationsUiAction::ToggleCategory(category));
+        for tab in OperationsTab::ALL {
+            if ui
+                .selectable_label(view.selected_tab == tab, tab.label())
+                .clicked()
+            {
+                actions.push(OperationsUiAction::SelectTab(tab));
             }
         }
     });
+    ui.separator();
     ui.horizontal_wrapped(|ui| {
         ui.strong("Severity");
         for severity in OperationSeverity::ALL {
@@ -198,7 +249,7 @@ fn draw_contents(ui: &mut egui::Ui, view: &OperationsView, actions: &mut Vec<Ope
 
     let list_height = ui.available_height().max(120.0);
     egui::ScrollArea::vertical()
-        .id_salt("operations-log-history")
+        .id_salt(("operations-log-history", view.selected_tab))
         .stick_to_bottom(true)
         .max_height(list_height)
         .show(ui, |ui| {
@@ -207,7 +258,7 @@ fn draw_contents(ui: &mut egui::Ui, view: &OperationsView, actions: &mut Vec<Ope
                 ui.weak(if view.history_count == 0 {
                     "No operations recorded in this play session."
                 } else {
-                    "No operations match the current filters."
+                    "No operations match this tab and severity filter."
                 });
                 return;
             }
@@ -249,14 +300,18 @@ mod tests {
 
     #[test]
     fn category_and_severity_filters_cover_every_visible_state() {
-        assert_eq!(OperationCategory::ALL.len(), 8);
+        assert_eq!(OperationsTab::ALL.len(), 9);
         assert_eq!(OperationSeverity::ALL.len(), 4);
-        assert!(OperationCategory::ALL
-            .iter()
-            .all(|value| !value.label().is_empty()));
         assert!(OperationSeverity::ALL
             .iter()
             .all(|value| !value.label().is_empty()));
+        assert!(OperationsTab::ALL
+            .iter()
+            .all(|value| !value.label().is_empty()));
+        assert!(OperationsTab::ALL
+            .iter()
+            .filter_map(|tab| tab.category())
+            .all(|category| OperationsTab::All.includes(category)));
     }
 
     #[test]
@@ -264,6 +319,10 @@ mod tests {
         assert_ne!(
             OperationsUiAction::Clear,
             OperationsUiAction::ToggleSeverity(OperationSeverity::Warning)
+        );
+        assert_ne!(
+            OperationsUiAction::Clear,
+            OperationsUiAction::SelectTab(OperationsTab::Combat)
         );
         assert_ne!(OperationsUiAction::Clear, OperationsUiAction::ResetFilters);
     }

@@ -29,6 +29,7 @@ summary = "Frontier's broad starter market: common ore, basic supplies, and the 
 id = "market"
 name = "Starter Market"
 kind = "shop"
+artwork = "./assets/services/starter-market.png"
 description = "Broad commerce counter for common ore, starter survey gear, and general early cargo."
 
 [[stations.services.trade]]
@@ -56,12 +57,14 @@ restock_days = 5.0
 id = "garage"
 name = "Market Services"
 kind = "support"
+artwork = "./assets/services/market-services.png"
 description = "Light refit and market-service hooks; heavy repairs belong at Cinder Repair Yard."
 
 [[stations.services]]
 id = "saloon"
 name = "Exchange Rumors"
 kind = "saloon"
+artwork = "./assets/services/exchange-rumors.png"
 description = "Dockside rumor desk for prices, station directions, and early faction introductions."
 
 [[stations]]
@@ -80,6 +83,7 @@ summary = "Bulk ore yard and freight lattice where miners move heavier raw stock
 id = "ore_lattice_bulk_market"
 name = "Bulk Ore Counter"
 kind = "shop"
+artwork = "./assets/services/bulk-ore-counter.png"
 description = "High-volume ore counter with deeper stock and better sell rates for mined industrial cargo."
 
 [[stations.services.trade]]
@@ -114,6 +118,7 @@ restock_days = 6.0
 id = "ore_lattice_freight_lock"
 name = "Freight Lock"
 kind = "cargo"
+artwork = "./assets/services/freight-lock.png"
 description = "Bulk cargo staging and freight-contract desk for moving industrial stock between stations."
 
 [[stations.services.contracts]]
@@ -245,6 +250,7 @@ summary = "Survey archive and route desk where scan data becomes recipe knowledg
 id = "pale_archive_data"
 name = "Scan Desk"
 kind = "archive"
+artwork = "./assets/services/scan-desk.png"
 description = "Survey record review and contracts for returning verified planetary readings."
 
 [[stations.services.contracts]]
@@ -273,6 +279,7 @@ reputation_reward = 8
 id = "pale_archive_recipes"
 name = "Research Archive"
 kind = "research"
+artwork = "./assets/services/research-archive.png"
 description = "Scanner, drive, and jump-system research leads for the progression tree."
 
 [[stations.services.research]]
@@ -368,10 +375,12 @@ summary = "Navigation and signal-watch station that watches remote routes, beaco
 id = "ember_watch_beacon"
 name = "Route Intel"
 kind = "navigation"
+artwork = "./assets/services/route-intel.png"
 description = "Known-route telemetry, remote-system prep, and future route-discovery hooks."
 
 [[stations.services]]
 id = "ember_watch_listening_post"
 name = "Listening Post"
 kind = "signals"
+artwork = "./assets/services/listening-post.png"
 description = "Signal logs, Redwake sightings, and future remote-contact discovery hooks."

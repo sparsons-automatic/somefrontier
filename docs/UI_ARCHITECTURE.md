@@ -28,8 +28,11 @@ User input produces typed actions. The gameplay layer validates and applies thos
 actions with the existing recipe and equipment functions. This keeps domain and
 save behavior independent of egui and leaves the presentation replaceable.
 
-Ship, Production, and Inventory are independent native egui windows. Players can
-move, resize, collapse, overlap, and scroll them while the world remains visible.
+Ship stats, cargo inventory, and Production are pages of the Fleet control
+workspace. The former standalone Ship and Inventory windows and their `Tab`/`E`
+shortcut have been retired. Players can move, resize, collapse, overlap, and
+scroll Fleet alongside inspection windows while the world remains visible.
+Opening Fleet is additive: it does not close existing parent-owned or inspection windows.
 The game serializes egui memory to the global configuration directory, so layout
 survives launches without becoming part of a world save. Restored windows are
 checked against the current display, and any unreachable geometry is discarded.
@@ -38,20 +41,24 @@ clears all persisted egui areas. Its position participates in the shared layout
 persistence, while its dimensions remain bounded and non-resizable. Each
 persistent workspace window also exposes a stock pin toggle.
 Pinned visibility is stored globally beside layout memory—not in world saves—and
-allows independently rendered windows to remain interactive when Inventory or
-Fleet closes. All visible pinned and parent-owned windows are composed in one
+allows independently rendered windows to remain interactive when their parent
+workspace closes. All visible pinned and parent-owned windows are composed in one
 egui pass so multiple pins can coexist. Reset Menus clears both geometry and pin
-state. Production and inventory use
-stock striped grids whose row heights follow their contents instead of fixed game
+state. Production and Fleet inventory use stock striped grids whose row heights follow their contents instead of fixed game
 geometry. Full clipped text is available on hover where clipping is used.
 
-Inspecting a planet replaces the Ship window with a movable Planet window while
-keeping the shared Production and Inventory windows. The planet view model owns
+Fleet Inventory projects the selected hull's directly linked cargo graph into a
+single aggregate manifest. Rows retain per-hull provenance while displaying
+combined quantity and mass. Search and unavailable-hull explanations remain
+presentation state; physical ownership, range, sharing, capacity, production
+consumption order, and consolidation stay in the gameplay layer.
+
+Inspecting a planet opens a movable Planet window independently of Fleet. The planet view model owns
 only display data; typed actions return to the gameplay layer for scan, orbit,
 mining queue, and Keep validation.
 
 Inspecting a station follows the same workspace model: a movable Station window
-appears beside the shared Production and Inventory windows. Its presentation-only
+appears independently beside any open Fleet or inspection windows. Its presentation-only
 view model includes services, market quotes and stock, maintenance state,
 contracts, recipe unlocks, and research leads. Typed actions flow back through
 the existing range, reputation, credit, cargo, contract, progression, and save
@@ -68,10 +75,18 @@ typed actions back to the established range, hostility, credit, cargo-capacity,
 inventory, and save rules. Hostile contacts remain visible while friendly-only
 actions use egui's disabled state.
 
-Fleet management is a separate movable egui workspace. Its owned-ship list,
-condition readout, and two-way cargo controls are built from a presentation-only
-snapshot. Typed actions return ship selection, control transfer, and cargo item
-IDs to the existing range, capacity, and save validation. A per-ship inventory-
+Fleet management is a wide movable egui control workspace. A horizontally
+scrollable hull selector keeps one controllable asset in focus while a persistent
+left rail switches the content area among Stats, Upgrades, Inventory, and
+Production. The
+Stats page owns condition readout and asset-specific operations, the Upgrades
+page uses a selectable module-card/detail layout derived from Research, and the
+Inventory page groups cargo by authored item tier. The Production page reuses the
+existing recipe projection and typed queue/Keep actions for the active hull, and
+projects installed autonomous smelting for inactive mining drones. All four are built from one
+presentation-only snapshot. Typed actions return ship selection, page and module
+selection, control transfer, upgrade purchases, and cargo item IDs to the
+existing range, capacity, cost, and save validation. A per-ship inventory-
 sharing checkbox also returns a typed action; the gameplay layer resolves the
 same-system 180-unit link, local-first atomic input consumption, and producer-
 local output capacity for production, upgrades, and Auto Repair. Ammunition,
@@ -85,6 +100,9 @@ single-destination jobs migrate to one-leg routes. The gameplay layer owns job
 validation, leg transitions, recipient rendezvous, capacity-limited cargo
 delivery, and the persisted state machine. The Fleet window participates in the same global
 layout persistence and `Reset Menus` recovery path as the inspection windows.
+The former standalone Ship Upgrades entry routes to the selected active hull's
+Fleet Upgrades page, and `P` routes to the active hull's Fleet Production page,
+so neither system maintains a second primary presentation path.
 
 The Content Browser uses the same presentation/action boundary. Its view model
 projects registry summary counts, loaded packs, categorized object rows, and a
@@ -101,13 +119,6 @@ the typed focus action returns to gameplay code, which validates the contract
 and current system before opening its origin station. Contract window geometry
 and pin state participate in the shared persistence and `Reset Menus` recovery
 paths.
-
-Ship Upgrades project the installed levels, authored effects, next-level costs,
-and live inventory counts into a stock egui table. Its typed purchase action
-returns only the upgrade row and modifier count; the gameplay layer remains
-responsible for recalculating each scaled level cost, consuming components, and
-applying ship-stat changes. The window shares pin and geometry persistence with
-the other egui workspaces.
 
 Research uses a data-driven graph canvas. Pure layout code normalizes authored
 column and row values into stable screen lanes, resolves duplicate positions by
@@ -142,6 +153,13 @@ The save-version migration also restores authored ammunition for armed NPCs
 whose older persistent cargo record was depleted; current-version saves retain
 normal NPC ammunition consumption without repeated refills.
 
+Resolved weapon damage emits transient impact-render events after shield and
+hull application. Each event records the actual target edge, incoming direction,
+absorbed damage type, magnitude, and weapon impact color. The renderer turns
+shield events into localized deflection flares and hull events into procedural
+debris, keeping visual feedback generic across player, fleet, NPC, and
+content-pack weapons without persisting cosmetic state in saves.
+
 Hostile-intercept contacts entering scanner range are acquired by the gameplay
 layer before this update runs: entry-edge tracking emits one proximity alarm,
 selects the nearest current threat, and starts the same scan state machine used
@@ -175,11 +193,13 @@ repeats, aggregates routine production and mining output, and discards the
 oldest entries beyond 200.
 
 The renderer receives a chronological presentation-only snapshot and emits
-typed actions for category filters, severity filters, reset, clear, and pinning.
-Filters change visibility rather than deleting events; clear is the only UI
-action that removes history. Egui's bottom-stick scroll state follows new events
-only while the player remains at the bottom, preserving position when older rows
-are being reviewed. Operations history and filter state are intentionally
+typed actions for category tabs, severity filters, reset, clear, and pinning.
+The `All` tab and eight category tabs project the shared history without
+deleting events; clear is the only UI action that removes history. Each tab has
+independent bottom-stick scroll state, following new events only while the
+player remains at that tab's bottom and preserving position when older rows are
+being reviewed. The explicit tab model also leaves room for future data sources
+such as network chat. Operations history and view state are intentionally
 runtime-only and never enter world saves. Window geometry and pin state still
 use the shared global egui persistence and `Reset Menus` recovery path.
 
@@ -268,11 +288,11 @@ production row, `Enter` queues it, production tabs remain reachable, and ship
 equipment dropdowns contain compatible cargo items.
 
 For the Operations Log, verify long messages wrap without hiding timestamps or
-text markers, category and severity toggles work at each matrix size, and a new
-event follows the bottom only when the log was already there. Scroll upward,
-generate another event, and confirm the reviewed rows remain stationary. Clear
-history, reset filters, pin the window, and use `Reset Menus` to verify each
-action retains its documented scope.
+text markers, category tabs and severity toggles work at each matrix size, and a
+new event follows the bottom only when the active tab was already there. Scroll
+upward, switch tabs, generate another event, and confirm each tab retains its
+own reviewed position. Clear history, reset filters, pin the window, and use
+`Reset Menus` to verify each action retains its documented scope.
 
 For Research, test locked, unfunded, affordable, active, and completed cards at
 each window size. Confirm every state retains its marker and border, long pack

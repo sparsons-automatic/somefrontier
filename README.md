@@ -49,7 +49,7 @@ For the full current gameplay reference, see
 - `W`: forward thrust
 - `S`: reverse thrust
 - `A` / `D` or left / right arrows: turn the ship
-- `Tab` or `E`: toggle inventory and crafting
+- `P`: open the active hull's Fleet Production page without closing inspection panes
 - `M`: toggle map view
 - `K`: toggle research
 - `C`: toggle content browser
@@ -61,7 +61,7 @@ For the full current gameplay reference, see
 - Left click a visible planet: select it and open the planet panel
 - Left click a planet in the starmap: select it in the Destinations window
 - Destinations window: fly immediately or build and activate a saved itinerary
-- Left click the ship in the inventory panel: open ship upgrades
+- Fleet → `Upgrades`: inspect and purchase ship upgrades
 
 ## Configuration
 
@@ -87,16 +87,17 @@ so the ship and world seed are selected together.
 
 Approach a station garage and open the Fleet menu with `F` to purchase another
 content-defined hull. Owned ships keep independent cargo, upgrades, equipment,
-damage, and position. The Fleet menu can switch control between ships and move
-cargo in either direction when both ships are within transfer range. Inactive
+damage, and position. The Fleet menu can switch control between ships and
+presents nearby opted-in holds as one shared, searchable inventory while
+retaining physical cargo ownership and per-hull capacity. Inactive
 local ships hold position while their shields, reactors, and automatic weapons
 continue operating from their independent energy and ammunition stores.
 
 ## Production and Mining
 
-When the inventory panel is open, the right-side work table shows production
-recipes. Use the `Smelt`, `Craft`, and `Process` tabs to switch between ore
-smelting, component fabrication, and material/fuel processing.
+Press `P` or choose `Production` in the Fleet control panel to show the active
+hull's recipe workspace. Use the `Smelt`, `Craft`, and `Process` tabs to switch
+between ore smelting, component fabrication, and material/fuel processing.
 Click an item row to queue one bill. Production completes one bill at a time,
 top to bottom. Use the `Keep` column to set auto-maintained stock targets.
 

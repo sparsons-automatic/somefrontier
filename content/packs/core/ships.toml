@@ -21,7 +21,7 @@ weapon_slots = ["point_defense_turret"]
 [[ships]]
 id = "frontier_longhauler"
 name = "Frontier Longhauler"
-texture = "./assets/ships/frontier-freehauler.png"
+texture = "./assets/ships/frontier-longhauler.png"
 radius = 36.0
 mass = 175000.0
 cargo_capacity = 90000.0

@@ -64,7 +64,7 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Forward thrust | `W` |
 | Reverse thrust | `S` |
 | Turn | `A` / `D` or left / right arrows |
-| Open/close inventory and production | `Tab` or `E` |
+| Open/close production | `P` |
 | Open map | `M` |
 | Open research | `K` |
 | Open content browser | `C` |
@@ -77,21 +77,20 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Open object actions | Right click a visible planet, station, or ship |
 | Select a starmap destination | Left click a planet in the map |
 | Fly or build an itinerary | Use the Destinations window after selecting a planet |
-| Open ship upgrades | Choose `Inspect ship upgrades` in the Ship Pane |
+| Open ship upgrades | Fleet → `Upgrades` |
 | Close menu / pause actions | `Esc` |
 | Reset movable menu positions | Pause with `Esc`, then choose `Reset Menus` or press `R` |
 
-`Tab` and `E` close an active planet, station, or contact pane without changing
-it into the Ship Pane. If a right-click Actions menu is open, they close that
-menu first. With no object pane active, they continue to toggle the general
-inventory and production pane.
+Ship stats and cargo inventory now live in Fleet rather than separate Ship and
+Inventory windows. `P` opens the active hull directly on Fleet → `Production`
+without closing an active planet, station, or contact pane. Close inspection
+windows through their native window controls or `Esc`.
 
 Every movable egui window has a `Pin` toggle. A pinned window remains visible
-and fully interactive when its parent workspace closes: for example, pin
-Production and press `Tab` to return to flight with only Production left open.
+and fully interactive when its parent workspace closes.
 Pins are remembered across launches and are independent of save slots. Pinning
-an inspection window also preserves its selected planet, station, or contact
-when `Tab` closes the surrounding inventory workspace.
+an inspection window preserves its selected planet, station, or contact when
+other parent UI state closes.
 
 Movable egui window positions, sizes, collapsed sections, and scroll state are
 remembered across launches for the player, independently of save slots. If a
@@ -209,8 +208,8 @@ recover survey drones.
 
 ## Mining
 
-Inspecting a planet opens a movable Planet window alongside Production and
-Inventory. After the planet has composition data, its Mining section shows one
+Inspecting a planet opens a movable Planet window alongside any open Fleet
+panel. After the planet has composition data, its Mining section shows one
 row per mineable resource. Click a resource to queue one mining bill. Mining
 completes one bill at a time from top to bottom.
 
@@ -265,7 +264,8 @@ which continues to improve bonus mining yield.
 
 ## Production
 
-Open inventory with `Tab` or `E`. The production table has three tabs:
+Open Production directly with `P`, or choose `Production` from the Fleet control
+panel's left rail. The active hull's production table has three tabs:
 
 - `Smelt`: turn raw ore into plates and other refined materials.
 - `Craft`: build components, survey drones, ship modules, and upgrade parts.
@@ -281,10 +281,11 @@ steps of 10, or hold `Control` while clicking for steps of 20. The up and down
 arrow keys select a production row, and `Enter` queues the selected unlocked
 recipe.
 
-Ship, Production, and Inventory open as separate windows over the game world.
-Drag their title bars to arrange them, resize from a window edge or corner, and
-use the title-bar arrow to collapse a window. Each window scrolls independently,
-and hovering clipped text reveals its full content-pack-provided name.
+Production now lives inside the movable Fleet control panel rather than opening
+a second production window. Resize or collapse Fleet normally; the production
+table scrolls inside its page. With Fleet → Production or an inspection pane
+open, the mouse wheel continues to zoom the flight view while the pointer is over
+open space; hovering the recipe table routes the wheel to that table instead.
 
 Completed research can improve mining, smelting, fabrication, and bonus output
 effects.
@@ -338,14 +339,30 @@ glance; the larger Industrial drone carries a visibly broader extraction frame.
 Click an owned drone in local space to open its Fleet inventory and details;
 double-click it to switch control directly.
 
-Select a different owned ship in Fleet management to transfer cargo. Both ships
-must be in the same system and within 180 units. Transfer amounts respect the
-receiving ship's cargo mass and inventory-slot capacity. A normal quantity click
-changes the transfer amount by 1, `Shift` changes it by 10, and `Ctrl` changes it
-by 20. `Take all from selected ship` pulls every stack that fits into the active
-ship and leaves any capacity-limited remainder aboard. Destroyed drones remain
-valid cargo sources, so surviving ships can recover their payload when they can
-get within transfer range.
+Fleet Inventory presents one shared manifest for the selected hull and every
+opted-in hull within 180 units in the same system. Each item appears once with
+its combined quantity and mass; hover its carrier count to see where the stacks
+physically reside. Search accepts item names, categories, and hull callsigns.
+`Consolidate into active hold` moves as much linked cargo as will fit onto the
+controlled ship while leaving capacity-limited overflow aboard its carrier.
+
+Press `F` to open the wider Fleet control panel. Owned ships and controllable
+drones appear as hull tabs across the top; selecting one keeps that asset in
+focus while the left rail switches among `Ship stats`, `Upgrades`, `Inventory`,
+and `Production`. Opening Fleet preserves any existing inspection,
+research, content, contract, destination, and operations windows; it can be
+moved or resized alongside them. Ship stats is the default page and includes control switching,
+fleet sharing, installed power details, Auto Repair, shield and weapon loadout
+controls, and autonomous mining controls where applicable. Upgrades uses a
+selectable module matrix with installed levels, effects, next-level material
+requirements, and affordability, following the same browser/detail pattern as
+the Research window. Purchases apply to the selected hull, including inactive
+ships and drones. Inventory combines linked holds into one searchable manifest,
+shows distributed mass and capacity, preserves per-hull provenance, and lists
+remote or sharing-disabled hulls under `Unavailable cargo`.
+Production exposes the complete Smelt/Craft/Process workspace for the active
+hull. Selecting an inactive mining drone instead exposes its installed onboard
+smelter; other inactive ships explain that direct control is required.
 
 After a destroyed drone's cargo is empty, right-click its wreck in local space
 and choose `Salvage`. Dismantling takes 150 seconds while the active ship remains
@@ -355,6 +372,16 @@ retains partial progress. Completion recovers a mass-scaled cache of iron and
 copper plates, then removes the wreck from local space and Fleet. If the active
 ship cannot hold the complete salvage yield, completion waits without deleting
 the wreck or losing materials.
+
+Disabled NPC ships now remain in local space as recoverable wrecks instead of
+automatically transferring cargo and disappearing. Any hostile bounty is paid
+once when the ship is disabled. Right-click the wreck and choose `Approach
+wreck`, then `Loot wreck` to transfer everything the active cargo hold can
+accept; capacity-limited cargo remains aboard for a later trip. Once the wreck's
+hold is empty, choose `Salvage wreck`. NPC wreck salvage uses the same 150-second,
+range-limited, resumable process and mass-scaled iron/copper recovery as owned
+drone wrecks. Wreck position, remaining cargo, partial salvage progress, and
+completed removal persist through save/load.
 
 Each ship also has a `Share inventory with nearby fleet` checkbox in its Fleet
 details, enabled by default. Two opted-in ships in the same system and within
@@ -378,18 +405,19 @@ The ship detail panel includes an `Operations` readout for recent meaningful
 changes. Press `L` to open the full, movable Operations Log. It keeps up to 200
 events from the current play session, with an elapsed-world-time marker, a
 text-marked and color-coded category, a severity marker, and the original event
-source. Category filters cover mining, production, travel, trade, combat,
-research, system, and general events; severity filters cover info, success,
-warning, and error. `Reset filters` shows every category and severity again,
-while `Clear history` removes the current session's entries.
+source. Use the `All`, mining, production, travel, trade, combat, research,
+system, and general tabs to select the kind of history you want to inspect.
+Severity filters cover info, success, warning, and error within the active tab.
+`Reset filters` returns to `All` with every severity visible. `Clear history`
+removes the current session's entries.
 
-The log follows new events automatically while you are viewing its bottom. If
-you scroll upward to review older events, new entries do not pull the view away;
-scroll back to the bottom to resume following. Repeated messages collapse into
-the newest row so routine mining or production stays readable. Planet, station,
-and contact panes continue to mirror the latest relevant operation while
-selected, so opening the log does not replace HUD warnings or contextual
-feedback.
+Each tab keeps its own scroll position and follows new events automatically
+while you are viewing its bottom. If you scroll upward to review older events,
+new entries do not pull the view away; scroll back to the bottom to resume
+following. Repeated messages collapse into the newest row so routine mining or
+production stays readable. Planet, station, and contact panes continue to mirror
+the latest relevant operation while selected, so opening the log does not
+replace HUD warnings or contextual feedback.
 
 Operations history is deliberately session-only and is not written to save
 files. Loading a save starts an empty log while leaving all gameplay state
@@ -682,9 +710,14 @@ plates appear as a masked `?` bar while hull telemetry is unknown, then reveal
 the live hull fraction after the hull stage. Their shield bar appears only after
 the shield stage. Weapons can acquire and damage hostile contacts at any scan
 stage; scanning changes available information, never permission to fire.
-Scanning spends a small amount of ship energy but
+Weapon impacts show what absorbed the hit. Shield damage produces a brief
+localized shield flare and outward-scattering deflection particles on the side
+the shot reached. If damage penetrates into the hull, small debris fragments
+and hot sparks break away from that contact point; these effects are visual and
+do not alter damage, collision, or salvage calculations. Scanning spends a
+small amount of ship energy but
 yields to automatic weapon fire; insufficient energy pauses progress. The base
-scanner can reach hull telemetry. Scanner Array upgrades add one combat scan
+scanner can reach shield telemetry. Scanner Array upgrades add one combat scan
 stage and 15% speed per level, while Research rewards can add more depth or
 speed. Completed intelligence is saved; partial stage progress is not.
 Identity and hull telemetry are the fastest stages so an early hostile normally

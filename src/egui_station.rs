@@ -102,19 +102,27 @@ pub fn draw(ctx: &egui::Context, screen: [f32; 2], view: &StationPaneView) -> Ve
     let width = 900.0_f32.min((screen[0] - 32.0).max(360.0));
     let has_selected_service = selected_service(&view.services, view.selected_service).is_some();
 
-    egui::Window::new("Station")
-        .id(Id::new("station-workspace-window"))
-        .default_pos(egui::pos2(16.0, 48.0))
-        .default_size(Vec2::new(width, height))
-        .min_width(if has_selected_service {
-            680.0_f32.min(width)
-        } else {
-            360.0
-        })
-        .resizable(true)
-        .collapsible(true)
-        .vscroll(true)
-        .show(ctx, |ui| draw_contents(ui, view, &mut actions));
+    let window_id = Id::new("station-workspace-window");
+    crate::egui_pane::show_window(
+        ctx,
+        window_id,
+        egui::Window::new("Station")
+            .id(window_id)
+            .default_pos(egui::pos2(16.0, 48.0))
+            .default_size(Vec2::new(width, height))
+            .min_width(if has_selected_service {
+                680.0_f32.min(width)
+            } else {
+                360.0
+            })
+            .resizable(true)
+            .collapsible(true),
+        |ui| {
+            crate::egui_pane::vertical_scroll(ui, "station-content-scroll", |ui| {
+                draw_contents(ui, view, &mut actions);
+            });
+        },
+    );
 
     actions
 }
