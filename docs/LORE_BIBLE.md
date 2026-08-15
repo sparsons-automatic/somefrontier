@@ -43,7 +43,7 @@ markets, but physical cargo remains the foundation of the economy.
 - Technology is capable but not magical. Ships still require fuel, ammunition,
   components, repair work, survey data, and travel time.
 - Avoid Earth-national stereotypes, foretold heroes, universal empires, and
-  lore that depends on an unimplemented dialogue, quest, diplomacy, or colony
+  lore that depends on an unimplemented dialogue, contract, diplomacy, or colony
   system.
 
 Humor can appear in worker slang, improvised equipment, or exuberant prototype

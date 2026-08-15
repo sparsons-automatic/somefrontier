@@ -1,6 +1,7 @@
 mod audio;
 mod branding_icon;
 mod content;
+mod contract_chain;
 mod egui_art;
 mod egui_content;
 mod egui_context_menu;
@@ -108,7 +109,7 @@ const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
 const WORK_ROW_HEIGHT: f32 = 30.0;
 const INVENTORY_ROW_HEIGHT: f32 = 30.0;
 const SHIP_UPGRADE_ROW_HEIGHT: f32 = 54.0;
-const SAVE_VERSION: u32 = 8;
+const SAVE_VERSION: u32 = 9;
 const AUTOSAVE_SECONDS: f32 = 60.0;
 const EGUI_LAYOUT_SAVE_DELAY: f32 = 0.75;
 #[cfg(target_os = "linux")]
@@ -380,11 +381,15 @@ struct GameState {
     selected_npc_ship: Option<usize>,
     selected_station_service: Option<usize>,
     active_contracts: Vec<ActiveContract>,
+    active_contract_chains: Vec<contract_chain::ActiveContractChain>,
+    completed_contract_chains: Vec<String>,
+    contract_chain_event_sequence: u64,
     faction_reputation: HashMap<String, i32>,
     selected_research: Option<String>,
     destination_planet: Option<usize>,
     orbiting_planet: Option<usize>,
     system_destinations: HashMap<String, String>,
+    discovered_systems: HashSet<String>,
     starmap_selected_planet: Option<usize>,
     navigation_route: Vec<NavigationStop>,
     navigation_route_current: Option<usize>,
@@ -1310,6 +1315,7 @@ struct StationService {
     research: Vec<ResearchLead>,
     recipe_unlocks: Vec<RecipeUnlockOffer>,
     contracts: Vec<ContractOffer>,
+    contract_chains: Vec<String>,
     reputation_required: Option<i32>,
 }
 
@@ -1633,6 +1639,8 @@ struct SaveData {
     #[serde(default)]
     system_destinations: Vec<SaveSystemDestination>,
     #[serde(default)]
+    discovered_systems: Vec<String>,
+    #[serde(default)]
     navigation_route: Vec<SaveNavigationStop>,
     #[serde(default)]
     navigation_route_current: Option<usize>,
@@ -1648,6 +1656,12 @@ struct SaveData {
     active_research: Vec<SaveActiveResearch>,
     #[serde(default)]
     active_contracts: Vec<SaveActiveContract>,
+    #[serde(default, alias = "active_quests")]
+    active_contract_chains: Vec<contract_chain::ActiveContractChain>,
+    #[serde(default, alias = "completed_quests")]
+    completed_contract_chains: Vec<String>,
+    #[serde(default, alias = "quest_event_sequence")]
+    contract_chain_event_sequence: u64,
     #[serde(default)]
     faction_reputation: Vec<SaveFactionReputation>,
     #[serde(default, skip_serializing)]
@@ -2127,11 +2141,15 @@ impl GameState {
             selected_npc_ship: None,
             selected_station_service: None,
             active_contracts: Vec::new(),
+            active_contract_chains: Vec::new(),
+            completed_contract_chains: Vec::new(),
+            contract_chain_event_sequence: 0,
             faction_reputation: startup_faction_reputation,
             selected_research: None,
             destination_planet: Some(1),
             orbiting_planet: None,
             system_destinations: HashMap::new(),
+            discovered_systems: HashSet::new(),
             starmap_selected_planet: None,
             navigation_route: Vec::new(),
             navigation_route_current: None,
@@ -2297,6 +2315,34 @@ impl GameState {
                 target_reached: contract.target_reached,
             })
             .collect();
+        self.active_contract_chains = save.active_contract_chains;
+        for active in &mut self.active_contract_chains {
+            match self
+                .content_registry
+                .contract_chains
+                .get(&active.contract_chain_id)
+            {
+                Some(definition)
+                    if definition
+                        .stages
+                        .iter()
+                        .any(|stage| stage.id == active.stage_id) => {}
+                Some(_) => active.mark_unavailable(
+                    "Saved contract stage is missing from the enabled content pack",
+                ),
+                None => active.mark_unavailable(
+                    "Contract content is not present in the enabled content packs",
+                ),
+            }
+        }
+        self.completed_contract_chains = save.completed_contract_chains;
+        migrate_promoted_contract_chains(
+            &self.content_registry,
+            &mut self.active_contracts,
+            &mut self.active_contract_chains,
+            &self.completed_contract_chains,
+        );
+        self.contract_chain_event_sequence = save.contract_chain_event_sequence;
         update_planet_runtime_positions(&mut self.planets, self.world_elapsed_days);
         self.current_system_id = if self
             .content_registry
@@ -2389,6 +2435,11 @@ impl GameState {
                 })
             })
             .map(|destination| (destination.system, destination.planet))
+            .collect();
+        self.discovered_systems = save
+            .discovered_systems
+            .into_iter()
+            .filter(|system| self.content_registry.systems.contains_key(system))
             .collect();
         let saved_route_current = save.navigation_route_current;
         let mut valid_stops_before_current = 0;
@@ -2608,6 +2659,7 @@ impl GameState {
             npc_cargo: save_npc_cargo(&self.npc_ships),
             combat_intel: save_combat_intel(&self.combat_intel),
             system_destinations: save_system_destinations(self),
+            discovered_systems: self.discovered_systems.iter().cloned().collect(),
             navigation_route: self
                 .navigation_route
                 .iter()
@@ -2644,6 +2696,9 @@ impl GameState {
                     target_reached: active.target_reached,
                 })
                 .collect(),
+            active_contract_chains: self.active_contract_chains.clone(),
+            completed_contract_chains: self.completed_contract_chains.clone(),
+            contract_chain_event_sequence: self.contract_chain_event_sequence,
             faction_reputation: self
                 .faction_reputation
                 .iter()
@@ -3301,6 +3356,7 @@ async fn make_station_destinations(
                                 reputation_reward: contract.reputation_reward,
                             })
                             .collect(),
+                        contract_chains: service.contract_chains.clone(),
                     }
                 })
                 .collect(),
@@ -3793,14 +3849,28 @@ async fn make_npc_ships(
             cargo_capacity: npc_ship_def.cargo_capacity,
             cargo_defaults,
             trade_open: false,
-            destruction_processed: false,
+            destruction_processed: npc_ship_def.starts_wrecked,
             salvage_active: false,
             salvage_progress: 0.0,
             salvaged: false,
             credit_reward_min: npc_ship_def.credit_reward_min,
             credit_reward_max: npc_ship_def.credit_reward_max,
-            hull: ShipResource::full(npc_ship_def.hull_capacity),
-            shields: ShipResource::full(npc_ship_def.shield_capacity),
+            hull: if npc_ship_def.starts_wrecked {
+                ShipResource {
+                    current: 0.0,
+                    max: npc_ship_def.hull_capacity,
+                }
+            } else {
+                ShipResource::full(npc_ship_def.hull_capacity)
+            },
+            shields: if npc_ship_def.starts_wrecked {
+                ShipResource {
+                    current: 0.0,
+                    max: npc_ship_def.shield_capacity,
+                }
+            } else {
+                ShipResource::full(npc_ship_def.shield_capacity)
+            },
             equipped_shields: equipped_shields_from_ids(
                 content_registry,
                 &npc_ship_def.shield_slots,
@@ -4030,11 +4100,20 @@ fn update_active_research(game: &mut GameState, dt: f32) {
         return;
     }
     let research_name = research_display_name(&game.content_registry, &research_id);
-    game.completed_research.push(research_id);
+    game.completed_research.push(research_id.clone());
     game.completed_research.sort();
     game.completed_research.dedup();
     game.save_dirty = true;
     push_operation_feedback(game, "Research", format!("Completed {research_name}"));
+    let event_id = next_contract_chain_event_id(game, "research");
+    record_contract_chain_event(
+        game,
+        contract_chain::ContractChainEvent::new(
+            event_id,
+            contract_chain::ContractChainEventKind::ResearchCompleted,
+        )
+        .target(research_id),
+    );
 }
 
 fn recipe_is_unlocked(game: &GameState, recipe_id: &str) -> bool {
@@ -6936,7 +7015,7 @@ fn operation_severity(source: &str, message: &str) -> egui_operations::Operation
 }
 
 fn route_ready_feedback(game: &GameState) -> Option<String> {
-    known_system_ids(&game.content_registry)
+    known_system_ids_for_game(game)
         .into_iter()
         .filter(|system_id| system_id != &game.current_system_id)
         .find_map(|system_id| {
@@ -8195,6 +8274,38 @@ fn update_contract_progress(game: &mut GameState) {
     }
 }
 
+fn migrate_promoted_contract_chains(
+    registry: &content::ContentRegistry,
+    active_contracts: &mut Vec<ActiveContract>,
+    active_contract_chains: &mut Vec<contract_chain::ActiveContractChain>,
+    completed_contract_chains: &[String],
+) {
+    let promoted_ids = active_contracts
+        .iter()
+        .filter(|active| registry.contract_chains.contains_key(&active.id))
+        .map(|active| active.id.clone())
+        .collect::<Vec<_>>();
+    active_contracts.retain(|active| !promoted_ids.iter().any(|id| id == &active.id));
+    for contract_chain_id in promoted_ids {
+        if completed_contract_chains
+            .iter()
+            .any(|completed| completed == &contract_chain_id)
+            || active_contract_chains
+                .iter()
+                .any(|active| active.contract_chain_id == contract_chain_id)
+        {
+            continue;
+        }
+        if let Some(active) = registry
+            .contract_chains
+            .get(&contract_chain_id)
+            .and_then(contract_chain::ActiveContractChain::start)
+        {
+            active_contract_chains.push(active);
+        }
+    }
+}
+
 fn update_station_restock(game: &mut GameState) {
     let current_day = game.world_elapsed_days;
     let mut changed = false;
@@ -9332,6 +9443,13 @@ async fn main() {
                         if egui_context_menu_was_active && context_view.is_some() {
                             apply_context_menu_outcome(game, context_outcome);
                         }
+                        egui_macroquad::draw();
+                    } else {
+                        // Egui retains `wants_pointer_input` from its last pass. A transient
+                        // context menu can therefore leave world input captured forever if we
+                        // stop advancing egui as soon as that menu closes. Run an empty pass so
+                        // pointer ownership is released on the next frame.
+                        egui_ui(|_| {});
                         egui_macroquad::draw();
                     }
                 }
@@ -10817,27 +10935,7 @@ fn update_game(game: &mut GameState, dt: f32) {
         }
     }
     if is_key_pressed(KeyCode::J) {
-        game.contracts_open = !game.contracts_open;
-        game.audio.play(if game.contracts_open {
-            audio::AudioCue::Select
-        } else {
-            audio::AudioCue::Back
-        });
-        if game.contracts_open {
-            game.map_open = false;
-            game.inventory_open = false;
-            game.production_open = false;
-            game.research_open = false;
-            game.upgrades_open = false;
-            game.content_open = false;
-            game.fleet_open = false;
-            game.selected_contract_index = None;
-            game.contract_menu_scroll = 0.0;
-            game.selected_planet = None;
-            game.selected_station = None;
-            game.selected_npc_ship = None;
-            game.selected_station_service = None;
-        }
+        handle_contracts_shortcut(game);
     }
     if is_key_pressed(KeyCode::L) {
         game.operations_open = !game.operations_open;
@@ -10889,6 +10987,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     process_destroyed_npc_ships(game);
     update_npc_ship_salvage(game, dt);
     update_combat_scan(game, dt);
+    update_contract_chain_observations(game, dt);
 
     let mut egui_pointer_captured = false;
     egui_macroquad::cfg(|ctx| egui_pointer_captured = ctx.wants_pointer_input());
@@ -11028,25 +11127,49 @@ fn update_game(game: &mut GameState, dt: f32) {
         }
     }
 
-    if game.fleet_open {
-        let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
-        game.ship.systems.energy.restore(recharge);
-        game.ship.systems.weapon_energy.restore(recharge);
-    } else if game.orbiting_planet.is_some() {
+    update_player_ship_motion(game, dt);
+    update_ship_collisions(game, dt);
+    update_auto_repair(game, dt);
+    if game_save_snapshot(game) != save_snapshot {
+        game.save_dirty = true;
+    }
+}
+
+fn handle_contracts_shortcut(game: &mut GameState) {
+    game.contracts_open = !game.contracts_open;
+    game.audio.play(if game.contracts_open {
+        audio::AudioCue::Select
+    } else {
+        audio::AudioCue::Back
+    });
+    if game.contracts_open {
+        game.selected_contract_index = None;
+        game.contract_menu_scroll = 0.0;
+    }
+}
+
+fn update_player_ship_motion(game: &mut GameState, dt: f32) {
+    update_player_ship_motion_with_control(game, dt, current_ship_control());
+}
+
+fn update_player_ship_motion_with_control(game: &mut GameState, dt: f32, control: ShipControl) {
+    let manual_input =
+        control.forward || control.reverse || control.turn_left || control.turn_right;
+    if game.orbiting_planet.is_some() {
         let recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules) * dt;
         game.ship.systems.energy.restore(recharge);
         game.ship.systems.weapon_energy.restore(recharge);
         update_ship_orbit(game);
     } else if game.follow_target.is_some() {
-        if movement_input_pressed() {
+        if manual_input {
             stop_following(game, "Manual flight input cancelled follow");
             let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
-            update_ship(&mut game.ship, dt, energy_recharge);
+            integrate_ship_control(&mut game.ship, dt, energy_recharge, control);
         } else {
             update_ship_follow(game, dt);
         }
     } else if game.approach_target.is_some() {
-        if movement_input_pressed() {
+        if manual_input {
             if game.navigation_route_active {
                 pause_navigation_route(game, Some("Manual flight input paused itinerary"));
             } else {
@@ -11054,7 +11177,7 @@ fn update_game(game: &mut GameState, dt: f32) {
                 game.approach_path = None;
             }
             let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
-            update_ship(&mut game.ship, dt, energy_recharge);
+            integrate_ship_control(&mut game.ship, dt, energy_recharge, control);
         } else {
             update_ship_approach(game, dt);
         }
@@ -11064,17 +11187,12 @@ fn update_game(game: &mut GameState, dt: f32) {
                 .navigation_route_current
                 .and_then(|current| game.navigation_route.get(current))
                 .is_some_and(|stop| stop.state == NavigationStopState::Mining)
-            && movement_input_pressed()
+            && manual_input
         {
             pause_navigation_route(game, Some("Manual flight input paused mining itinerary"));
         }
         let energy_recharge = ship_energy_recharge(&game.ship, &game.installed_power_modules);
-        update_ship(&mut game.ship, dt, energy_recharge);
-    }
-    update_ship_collisions(game, dt);
-    update_auto_repair(game, dt);
-    if game_save_snapshot(game) != save_snapshot {
-        game.save_dirty = true;
+        integrate_ship_control(&mut game.ship, dt, energy_recharge, control);
     }
 }
 
@@ -11133,17 +11251,6 @@ fn handle_escape_pressed(game: &mut GameState) {
 
     game.escape_dialog_open = true;
     game.audio.play(audio::AudioCue::Select);
-}
-
-fn movement_input_pressed() -> bool {
-    is_key_down(KeyCode::W)
-        || is_key_down(KeyCode::S)
-        || is_key_down(KeyCode::A)
-        || is_key_down(KeyCode::D)
-        || is_key_down(KeyCode::Up)
-        || is_key_down(KeyCode::Down)
-        || is_key_down(KeyCode::Left)
-        || is_key_down(KeyCode::Right)
 }
 
 fn context_action_entries(game: &GameState, target: ContextTarget) -> Vec<ContextMenuEntry> {
@@ -12603,7 +12710,7 @@ fn apply_transition_action(game: &mut GameState, action: TransitionAction) {
 }
 
 fn start_player_warp_charge(game: &mut GameState, target_system_id: String) {
-    if !system_is_known(&game.content_registry, &target_system_id) {
+    if !game_system_is_known(game, &target_system_id) {
         return;
     }
     if game
@@ -12730,11 +12837,26 @@ fn system_is_known(registry: &content::ContentRegistry, system_id: &str) -> bool
     })
 }
 
+#[cfg(test)]
 fn known_system_ids(registry: &content::ContentRegistry) -> Vec<String> {
     registry
         .system_order
         .iter()
         .filter(|system_id| system_is_known(registry, system_id))
+        .cloned()
+        .collect()
+}
+
+fn game_system_is_known(game: &GameState, system_id: &str) -> bool {
+    game.discovered_systems.contains(system_id)
+        || system_is_known(&game.content_registry, system_id)
+}
+
+fn known_system_ids_for_game(game: &GameState) -> Vec<String> {
+    game.content_registry
+        .system_order
+        .iter()
+        .filter(|system_id| game_system_is_known(game, system_id))
         .cloned()
         .collect()
 }
@@ -12919,6 +13041,29 @@ fn fly_to_selected_starmap_planet(game: &mut GameState) -> bool {
     game.map_open = false;
     game.save_dirty = true;
     push_operation_feedback(game, "Route", "Flying to selected destination".to_string());
+    true
+}
+
+fn fly_to_selected_starmap_destination(game: &mut GameState) -> bool {
+    if game.starmap_selected_planet.is_some() {
+        return fly_to_selected_starmap_planet(game);
+    }
+    let Some(station_index) = game.selected_station.filter(|index| {
+        game.stations
+            .get(*index)
+            .is_some_and(|station| station.system == game.current_system_id)
+    }) else {
+        return false;
+    };
+    pause_navigation_route(game, None);
+    game.destination_planet = None;
+    game.selected_planet = None;
+    game.selected_npc_ship = None;
+    game.selected_station_service = None;
+    begin_approach(game, ApproachTarget::Station(station_index));
+    game.map_open = false;
+    game.save_dirty = true;
+    push_operation_feedback(game, "Route", "Flying to selected station".to_string());
     true
 }
 
@@ -13968,6 +14113,562 @@ fn contract_progress_text(game: &GameState, contract: &ContractOffer) -> String 
     }
 }
 
+fn next_contract_chain_event_id(game: &mut GameState, prefix: &str) -> String {
+    game.contract_chain_event_sequence = game.contract_chain_event_sequence.saturating_add(1);
+    format!("{prefix}:{}", game.contract_chain_event_sequence)
+}
+
+fn record_contract_chain_event(game: &mut GameState, event: contract_chain::ContractChainEvent) {
+    let mut stage_messages = Vec::new();
+    let mut completed = Vec::new();
+    for active in &mut game.active_contract_chains {
+        let Some(definition) = game
+            .content_registry
+            .contract_chains
+            .get(&active.contract_chain_id)
+        else {
+            active.mark_unavailable("Contract content is not present in the enabled content packs");
+            continue;
+        };
+        let update = contract_chain::apply_event(definition, active, &event);
+        if update.changed {
+            game.save_dirty = true;
+        }
+        for stage_id in update.completed_stages {
+            let stage_name = definition
+                .stages
+                .iter()
+                .find(|stage| stage.id == stage_id)
+                .map(|stage| stage.name.as_str())
+                .unwrap_or(stage_id.as_str());
+            stage_messages.push(format!("{}: {stage_name} completed", definition.name));
+        }
+        if update.completed_contract_chain {
+            completed.push(active.contract_chain_id.clone());
+        }
+    }
+    for message in stage_messages {
+        push_operation_feedback(game, "Contract", message);
+    }
+    for contract_chain_id in completed {
+        complete_contract_chain_once(game, &contract_chain_id);
+    }
+}
+
+fn complete_contract_chain_once(game: &mut GameState, contract_chain_id: &str) {
+    if game
+        .completed_contract_chains
+        .iter()
+        .any(|completed| completed == contract_chain_id)
+    {
+        game.active_contract_chains
+            .retain(|active| active.contract_chain_id != contract_chain_id);
+        return;
+    }
+    let Some(definition) = game
+        .content_registry
+        .contract_chains
+        .get(contract_chain_id)
+        .cloned()
+    else {
+        return;
+    };
+    game.completed_contract_chains
+        .push(contract_chain_id.to_string());
+    game.active_contract_chains
+        .retain(|active| active.contract_chain_id != contract_chain_id);
+    let mut reward_labels = Vec::new();
+    for reward in &definition.rewards {
+        match reward.kind.as_str() {
+            "credits" => {
+                let amount = u32::try_from(reward.amount).unwrap_or_default();
+                game.credits = game.credits.saturating_add(amount);
+                reward_labels.push(format!("{amount} cr"));
+            }
+            "reputation" => {
+                adjust_faction_reputation(game, reward.target.as_deref(), reward.amount);
+                reward_labels.push(format!("{} reputation", reward.amount));
+            }
+            "research" => {
+                if let Some(research) = &reward.target {
+                    if !game.completed_research.iter().any(|done| done == research) {
+                        game.completed_research.push(research.clone());
+                    }
+                    reward_labels.push(format!(
+                        "research: {}",
+                        research_display_name(&game.content_registry, research)
+                    ));
+                }
+            }
+            "route_knowledge" => {
+                if let Some(system) = &reward.target {
+                    game.discovered_systems.insert(system.clone());
+                    reward_labels.push(format!(
+                        "route: {}",
+                        system_display_name(&game.content_registry, system)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    game.save_dirty = true;
+    push_operation_feedback(
+        game,
+        "Contract",
+        format!(
+            "Completed {} · {}",
+            definition.name,
+            reward_labels.join(" · ")
+        ),
+    );
+}
+
+fn update_contract_chain_observations(game: &mut GameState, dt: f32) {
+    let mut events = Vec::new();
+    let mut deliveries = Vec::new();
+    for active in &game.active_contract_chains {
+        if active.status != contract_chain::ContractChainRuntimeStatus::Active {
+            continue;
+        }
+        let Some(definition) = game
+            .content_registry
+            .contract_chains
+            .get(&active.contract_chain_id)
+        else {
+            continue;
+        };
+        let Some(stage) = definition
+            .stages
+            .iter()
+            .find(|stage| stage.id == active.stage_id)
+        else {
+            continue;
+        };
+        for objective in &stage.objectives {
+            let stable_id = format!(
+                "observe:{}:{}:{}",
+                active.contract_chain_id, stage.id, objective.id
+            );
+            match objective.kind {
+                content::ContractChainObjectiveKind::ReachLocation => {
+                    let Some(target) = objective.target.as_deref() else {
+                        continue;
+                    };
+                    let reached = target == game.current_system_id
+                        || game.stations.iter().any(|station| {
+                            station.id == target
+                                && station.system == game.current_system_id
+                                && station_in_interaction_range(&game.ship, station)
+                        })
+                        || game.planets.iter().any(|planet| {
+                            planet.id == target
+                                && planet.system == game.current_system_id
+                                && planet_in_interaction_range(&game.ship, planet)
+                        })
+                        || game.npc_ships.iter().any(|npc| {
+                            npc.id == target
+                                && npc.system == game.current_system_id
+                                && !npc.salvaged
+                                && npc_ship_in_combat_scan_range(&game.ship, npc)
+                        });
+                    if reached {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                stable_id,
+                                contract_chain::ContractChainEventKind::Reached,
+                            )
+                            .target(target),
+                        );
+                    }
+                }
+                content::ContractChainObjectiveKind::ScanIdentify => {
+                    let Some(target) = objective.target.as_deref() else {
+                        continue;
+                    };
+                    let scanned = game
+                        .combat_intel
+                        .get(target)
+                        .is_some_and(|intel| *intel >= CombatIntelLevel::Identity)
+                        || game
+                            .planets
+                            .iter()
+                            .any(|planet| planet.id == target && planet.scan_level > 0);
+                    if scanned {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                stable_id,
+                                contract_chain::ContractChainEventKind::Scanned,
+                            )
+                            .target(target),
+                        );
+                    }
+                }
+                content::ContractChainObjectiveKind::AcquireItem => {
+                    let Some(item_id) = objective.item.as_deref() else {
+                        continue;
+                    };
+                    let count = registry_item(&game.content_registry, item_id)
+                        .map(|item| fleet_inventory_count(game, FleetProducer::Active, &item))
+                        .unwrap_or_default();
+                    let recorded = active.objective_progress(&stage.id, &objective.id).amount;
+                    if count > recorded {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                format!("{stable_id}:{count}"),
+                                contract_chain::ContractChainEventKind::Acquired,
+                            )
+                            .item(item_id, count - recorded),
+                        );
+                    }
+                }
+                content::ContractChainObjectiveKind::DeliverItem => {
+                    let (Some(target), Some(item_id)) =
+                        (objective.target.as_deref(), objective.item.as_deref())
+                    else {
+                        continue;
+                    };
+                    let at_destination = game.stations.iter().any(|station| {
+                        station.id == target
+                            && station.system == game.current_system_id
+                            && station_in_interaction_range(&game.ship, station)
+                    });
+                    let has_cargo =
+                        registry_item(&game.content_registry, item_id).is_some_and(|item| {
+                            fleet_inventory_count(game, FleetProducer::Active, &item)
+                                >= objective.amount
+                        });
+                    if at_destination && has_cargo {
+                        deliveries.push((
+                            stable_id,
+                            target.to_string(),
+                            item_id.to_string(),
+                            objective.amount,
+                        ));
+                    }
+                }
+                content::ContractChainObjectiveKind::CompleteResearch => {
+                    let Some(target) = objective.target.as_deref() else {
+                        continue;
+                    };
+                    if game.completed_research.iter().any(|done| done == target) {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                stable_id,
+                                contract_chain::ContractChainEventKind::ResearchCompleted,
+                            )
+                            .target(target),
+                        );
+                    }
+                }
+                content::ContractChainObjectiveKind::DestroyTarget => {
+                    let Some(target) = objective.target.as_deref() else {
+                        continue;
+                    };
+                    if game
+                        .npc_ships
+                        .iter()
+                        .any(|npc| npc.id == target && npc.hull.current <= 0.0)
+                    {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                stable_id,
+                                contract_chain::ContractChainEventKind::Destroyed,
+                            )
+                            .target(target),
+                        );
+                    }
+                }
+                content::ContractChainObjectiveKind::ProtectTarget => {
+                    let Some(target) = objective.target.as_deref() else {
+                        continue;
+                    };
+                    if game
+                        .npc_ships
+                        .iter()
+                        .any(|npc| npc.id == target && npc.hull.current > 0.0)
+                    {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                stable_id,
+                                contract_chain::ContractChainEventKind::Protected,
+                            )
+                            .target(target),
+                        );
+                    }
+                }
+                content::ContractChainObjectiveKind::SurviveDuration if dt > 0.0 => {
+                    let mut event = contract_chain::ContractChainEvent::new(
+                        stable_id,
+                        contract_chain::ContractChainEventKind::Survived,
+                    );
+                    event.id = format!("{}:{}", event.id, game.contract_chain_event_sequence);
+                    event.elapsed_seconds = dt;
+                    events.push(event);
+                }
+                content::ContractChainObjectiveKind::ReturnOrigin => {
+                    let returned = game
+                        .selected_station
+                        .and_then(|index| game.stations.get(index));
+                    if returned.is_some_and(|station| {
+                        station.id == definition.origin_station
+                            && station_in_interaction_range(&game.ship, station)
+                    }) {
+                        events.push(
+                            contract_chain::ContractChainEvent::new(
+                                stable_id,
+                                contract_chain::ContractChainEventKind::Returned,
+                            )
+                            .target(&definition.origin_station),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if events
+        .iter()
+        .any(|event| event.kind == contract_chain::ContractChainEventKind::Survived)
+    {
+        game.contract_chain_event_sequence = game.contract_chain_event_sequence.saturating_add(1);
+    }
+    for (event_id, target, item_id, amount) in deliveries {
+        let Some(item) = registry_item(&game.content_registry, &item_id) else {
+            continue;
+        };
+        if fleet_inventory_count(game, FleetProducer::Active, &item) < amount {
+            continue;
+        }
+        fleet_consume_item(game, FleetProducer::Active, &item, amount);
+        events.push(
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Delivered,
+            )
+            .target(target)
+            .item(item_id, amount),
+        );
+    }
+    for event in events {
+        record_contract_chain_event(game, event);
+    }
+    refresh_contract_chain_blockers(game);
+}
+
+fn refresh_contract_chain_blockers(game: &mut GameState) {
+    for index in 0..game.active_contract_chains.len() {
+        if matches!(
+            game.active_contract_chains[index].status,
+            contract_chain::ContractChainRuntimeStatus::Unavailable
+                | contract_chain::ContractChainRuntimeStatus::Abandoned
+        ) {
+            continue;
+        }
+        let contract_chain_id = game.active_contract_chains[index].contract_chain_id.clone();
+        let stage_id = game.active_contract_chains[index].stage_id.clone();
+        let Some(stage) = game
+            .content_registry
+            .contract_chains
+            .get(&contract_chain_id)
+            .and_then(|definition| definition.stages.iter().find(|stage| stage.id == stage_id))
+            .cloned()
+        else {
+            game.active_contract_chains[index]
+                .mark_unavailable("Current contract stage is absent from enabled content");
+            continue;
+        };
+        let mut blocker = None;
+        let mut hard_blocked = false;
+        for objective in &stage.objectives {
+            let Some(target) = objective.target.as_deref() else {
+                continue;
+            };
+            if matches!(
+                objective.kind,
+                content::ContractChainObjectiveKind::ReachLocation
+                    | content::ContractChainObjectiveKind::ScanIdentify
+                    | content::ContractChainObjectiveKind::LootItem
+                    | content::ContractChainObjectiveKind::DestroyTarget
+                    | content::ContractChainObjectiveKind::ProtectTarget
+            ) {
+                let target_npc = game.npc_ships.iter().find(|npc| npc.id == target);
+                if game.content_registry.npc_ships.contains_key(target) && target_npc.is_none() {
+                    blocker =
+                        Some("The target is missing from the current world state".to_string());
+                    hard_blocked = true;
+                    break;
+                }
+                if let Some(npc) = target_npc {
+                    if npc.salvaged {
+                        blocker = Some("The target has been fully salvaged".to_string());
+                        hard_blocked = true;
+                        break;
+                    }
+                    if npc.system != game.current_system_id {
+                        blocker = Some(format!(
+                            "Target is in {}",
+                            system_display_name(&game.content_registry, &npc.system)
+                        ));
+                    }
+                    if objective.kind == content::ContractChainObjectiveKind::LootItem {
+                        let item_in_wreck = objective.item.as_ref().is_some_and(|item| {
+                            npc.cargo_defaults
+                                .iter()
+                                .any(|stack| stack.item.id == *item && stack.count > 0)
+                        });
+                        let item_in_fleet = objective
+                            .item
+                            .as_deref()
+                            .and_then(|item| registry_item(&game.content_registry, item))
+                            .is_some_and(|item| {
+                                fleet_inventory_count(game, FleetProducer::Active, &item) > 0
+                            });
+                        if !item_in_wreck && !item_in_fleet {
+                            blocker = Some(
+                                "Required cargo is no longer present in the wreck or nearby fleet"
+                                    .to_string(),
+                            );
+                            hard_blocked = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        game.active_contract_chains[index].status = if hard_blocked {
+            contract_chain::ContractChainRuntimeStatus::Blocked
+        } else {
+            contract_chain::ContractChainRuntimeStatus::Active
+        };
+        game.active_contract_chains[index].blocker = blocker;
+    }
+}
+
+fn accept_or_advance_contract_chain(
+    game: &mut GameState,
+    station_index: usize,
+    service_index: usize,
+    contract_chain_index: usize,
+) -> bool {
+    let Some((station, service)) = game.stations.get(station_index).and_then(|station| {
+        station
+            .services
+            .get(service_index)
+            .map(|service| (station, service))
+    }) else {
+        return false;
+    };
+    if !station_in_interaction_range(&game.ship, station) {
+        return true;
+    }
+    let Some(contract_chain_id) = service.contract_chains.get(contract_chain_index).cloned() else {
+        return false;
+    };
+    let station_id = station.id.clone();
+    let Some(definition) = game
+        .content_registry
+        .contract_chains
+        .get(&contract_chain_id)
+        .cloned()
+    else {
+        push_operation_feedback(
+            game,
+            "Contract",
+            "Contract content is unavailable".to_string(),
+        );
+        return true;
+    };
+    if game
+        .completed_contract_chains
+        .iter()
+        .any(|completed| completed == &contract_chain_id)
+    {
+        return true;
+    }
+    if let Some(active) = game.active_contract_chains.iter_mut().find(|active| {
+        active.contract_chain_id == contract_chain_id
+            && active.status == contract_chain::ContractChainRuntimeStatus::Abandoned
+    }) {
+        if let Some(restarted) = contract_chain::ActiveContractChain::start(&definition) {
+            *active = restarted;
+            game.save_dirty = true;
+            push_operation_feedback(game, "Contract", format!("Restarted {}", definition.name));
+        }
+        return true;
+    }
+    if !game
+        .active_contract_chains
+        .iter()
+        .any(|active| active.contract_chain_id == contract_chain_id)
+    {
+        if let Some(active) = contract_chain::ActiveContractChain::start(&definition) {
+            game.active_contract_chains.push(active);
+            game.save_dirty = true;
+            push_operation_feedback(game, "Contract", format!("Accepted {}", definition.name));
+        }
+        return true;
+    }
+
+    let deliver = game.active_contract_chains.iter().find_map(|active| {
+        (active.contract_chain_id == contract_chain_id)
+            .then(|| {
+                definition
+                    .stages
+                    .iter()
+                    .find(|stage| stage.id == active.stage_id)
+            })
+            .flatten()
+            .and_then(|stage| {
+                stage.objectives.iter().find(|objective| {
+                    objective.kind == content::ContractChainObjectiveKind::DeliverItem
+                        && objective
+                            .target
+                            .as_deref()
+                            .is_none_or(|target| target == station_id)
+                })
+            })
+            .cloned()
+    });
+    let Some(deliver) = deliver else {
+        push_operation_feedback(
+            game,
+            "Contract",
+            "Current objective is not ready here".to_string(),
+        );
+        return true;
+    };
+    let Some(item_id) = deliver.item.as_deref() else {
+        return true;
+    };
+    let Some(item) = registry_item(&game.content_registry, item_id) else {
+        return true;
+    };
+    if fleet_inventory_count(game, FleetProducer::Active, &item) < deliver.amount {
+        push_operation_feedback(
+            game,
+            "Contract",
+            format!(
+                "Need {} × {} in the nearby shared fleet",
+                deliver.amount, item.name
+            ),
+        );
+        return true;
+    }
+    fleet_consume_item(game, FleetProducer::Active, &item, deliver.amount);
+    let event_id = next_contract_chain_event_id(game, "deliver");
+    record_contract_chain_event(
+        game,
+        contract_chain::ContractChainEvent::new(
+            event_id,
+            contract_chain::ContractChainEventKind::Delivered,
+        )
+        .target(station_id)
+        .item(item_id, deliver.amount),
+    );
+    true
+}
+
 fn npc_interaction_rows(
     content_registry: &content::ContentRegistry,
     ship: &Ship,
@@ -14543,6 +15244,8 @@ fn update_production(game: &mut GameState, dt: f32) {
     let smelted = update_fleet_recipes(game, FleetProducer::Active, RecipeTable::Smelting, dt);
     for stack in smelted {
         let item_name = stack.item.name.clone();
+        let item_id = stack.item.id.clone();
+        let count = stack.count;
         push_aggregate_operation_feedback(
             game,
             "Production",
@@ -14550,12 +15253,23 @@ fn update_production(game: &mut GameState, dt: f32) {
             stack.count,
             |count| format!("Produced {item_name} x{count}"),
         );
+        let event_id = next_contract_chain_event_id(game, "manufacture");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Manufactured,
+            )
+            .item(item_id, count),
+        );
         push_route_ready_feedback(game);
     }
 
     let crafted = update_fleet_recipes(game, FleetProducer::Active, RecipeTable::Crafting, dt);
     for stack in crafted {
         let item_name = stack.item.name.clone();
+        let item_id = stack.item.id.clone();
+        let count = stack.count;
         push_aggregate_operation_feedback(
             game,
             "Production",
@@ -14563,18 +15277,38 @@ fn update_production(game: &mut GameState, dt: f32) {
             stack.count,
             |count| format!("Built {item_name} x{count}"),
         );
+        let event_id = next_contract_chain_event_id(game, "manufacture");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Manufactured,
+            )
+            .item(item_id, count),
+        );
         push_route_ready_feedback(game);
     }
 
     let processed = update_fleet_recipes(game, FleetProducer::Active, RecipeTable::Processing, dt);
     for stack in processed {
         let item_name = stack.item.name.clone();
+        let item_id = stack.item.id.clone();
+        let count = stack.count;
         push_aggregate_operation_feedback(
             game,
             "Production",
             format!("process:{}", stack.item.id),
             stack.count,
             |count| format!("Processed {item_name} x{count}"),
+        );
+        let event_id = next_contract_chain_event_id(game, "manufacture");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Manufactured,
+            )
+            .item(item_id, count),
         );
         push_route_ready_feedback(game);
     }
@@ -14601,12 +15335,23 @@ fn update_autonomous_drone_smelting(game: &mut GameState, dt: f32) {
         }
     }
     for (callsign, stack) in produced {
+        let item_id = stack.item.id.clone();
+        let count = stack.count;
         push_aggregate_operation_feedback(
             game,
             "Production",
             format!("drone-smelt:{}:{}", callsign, stack.item.id),
             stack.count,
             |count| format!("{callsign} smelted {} x{count}", stack.item.name),
+        );
+        let event_id = next_contract_chain_event_id(game, "manufacture");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Manufactured,
+            )
+            .item(item_id, count),
         );
     }
 }
@@ -14880,12 +15625,24 @@ fn update_mining(game: &mut GameState, dt: f32) {
             total_mined = total_mined.saturating_add(mined);
         }
         let item_name = mineable.item.name.clone();
+        let item_id = mineable.item.id.clone();
+        let planet_id = game.planets[planet_index].id.clone();
         push_aggregate_operation_feedback(
             game,
             "Mining",
             format!("mine:{}", mineable.item.id),
             total_mined,
             |count| format!("Recovered {item_name} x{count}"),
+        );
+        let event_id = next_contract_chain_event_id(game, "mine");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Mined,
+            )
+            .target(planet_id)
+            .item(item_id, total_mined),
         );
         push_route_ready_feedback(game);
     }
@@ -16420,13 +17177,14 @@ fn process_destroyed_npc_ships(game: &mut GameState) {
         .map(|(index, npc)| {
             (
                 index,
+                npc.id.clone(),
                 npc.name.clone(),
                 destroyed_npc_credit_reward(&game.content_registry, npc),
             )
         })
         .collect::<Vec<_>>();
 
-    for (index, name, credit_reward) in destroyed {
+    for (index, npc_id, name, credit_reward) in destroyed {
         let npc = &mut game.npc_ships[index];
         npc.destruction_processed = true;
         npc.velocity = Vec2::ZERO;
@@ -16448,6 +17206,15 @@ fn process_destroyed_npc_ships(game: &mut GameState) {
             "Loot",
             format!("{name} disabled; wreck available for cargo recovery{bounty}"),
         );
+        let event_id = next_contract_chain_event_id(game, "destroy");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Destroyed,
+            )
+            .target(npc_id),
+        );
         game.save_dirty = true;
     }
 }
@@ -16460,8 +17227,10 @@ fn take_all_npc_wreck_cargo(game: &mut GameState, index: usize) -> u32 {
         return 0;
     }
 
+    let source_id = npc.id.clone();
     let cargo = npc.cargo_defaults.clone();
     let mut transferred = 0;
+    let mut recovered = Vec::new();
     for stack in cargo {
         let count = inventory_receivable_count(
             &game.inventory,
@@ -16482,12 +17251,25 @@ fn take_all_npc_wreck_cargo(game: &mut GameState, index: usize) -> u32 {
             source.count = source.count.saturating_sub(count);
         }
         transferred += count;
+        recovered.push((stack.item.id.clone(), count));
     }
     game.npc_ships[index]
         .cargo_defaults
         .retain(|stack| stack.count > 0);
     if transferred > 0 {
         game.save_dirty = true;
+    }
+    for (item_id, count) in recovered {
+        let event_id = next_contract_chain_event_id(game, "loot");
+        record_contract_chain_event(
+            game,
+            contract_chain::ContractChainEvent::new(
+                event_id,
+                contract_chain::ContractChainEventKind::Looted,
+            )
+            .target(source_id.clone())
+            .item(item_id, count),
+        );
     }
     transferred
 }
@@ -17611,18 +18393,13 @@ fn default_new_game_ship_id() -> String {
     resolved_new_game_ship_id(&registry, None)
 }
 
-fn update_ship(ship: &mut Ship, dt: f32, energy_recharge: f32) {
-    integrate_ship_control(
-        ship,
-        dt,
-        energy_recharge,
-        ShipControl {
-            forward: is_key_down(KeyCode::W),
-            reverse: is_key_down(KeyCode::S),
-            turn_left: is_key_down(KeyCode::A) || is_key_down(KeyCode::Left),
-            turn_right: is_key_down(KeyCode::D) || is_key_down(KeyCode::Right),
-        },
-    );
+fn current_ship_control() -> ShipControl {
+    ShipControl {
+        forward: is_key_down(KeyCode::W),
+        reverse: is_key_down(KeyCode::S),
+        turn_left: is_key_down(KeyCode::A) || is_key_down(KeyCode::Left),
+        turn_right: is_key_down(KeyCode::D) || is_key_down(KeyCode::Right),
+    }
 }
 
 fn integrate_ship_control(ship: &mut Ship, dt: f32, energy_recharge: f32, control: ShipControl) {
@@ -18405,7 +19182,7 @@ fn clicked_known_system_id(mouse: Vec2, game: &GameState) -> Option<String> {
         return None;
     }
 
-    known_system_ids(&game.content_registry)
+    known_system_ids_for_game(game)
         .iter()
         .enumerate()
         .find_map(|(index, system_id)| {
@@ -20810,7 +21587,7 @@ fn draw_known_systems_panel(game: &GameState) {
     let max_rows = ((panel.h - 46.0) / (KNOWN_SYSTEM_ROW_HEIGHT + 8.0))
         .floor()
         .max(0.0) as usize;
-    let known_systems = known_system_ids(&game.content_registry);
+    let known_systems = known_system_ids_for_game(game);
     for (index, system_id) in known_systems.iter().take(max_rows).enumerate() {
         let Some(system) = game.content_registry.systems.get(system_id) else {
             continue;
@@ -21467,6 +22244,7 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
             repair_label: String::new(),
             repair_enabled: false,
             contracts: Vec::new(),
+            contract_chains: Vec::new(),
             recipes: Vec::new(),
             research: Vec::new(),
             shipyard: Vec::new(),
@@ -21653,6 +22431,76 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
                 .collect()
         })
         .unwrap_or_default();
+    let contract_chains = service
+        .map(|service| {
+            service
+                .contract_chains
+                .iter()
+                .filter_map(|contract_chain_id| {
+                    game.content_registry.contract_chains.get(contract_chain_id)
+                })
+                .map(|definition| {
+                    let active = game
+                        .active_contract_chains
+                        .iter()
+                        .find(|active| active.contract_chain_id == definition.id);
+                    let completed = game
+                        .completed_contract_chains
+                        .iter()
+                        .any(|contract_chain_id| contract_chain_id == &definition.id);
+                    let stage = active.and_then(|active| {
+                        definition
+                            .stages
+                            .iter()
+                            .find(|stage| stage.id == active.stage_id)
+                    });
+                    let status = if completed {
+                        "Completed"
+                    } else if active.is_some_and(|active| {
+                        active.status == contract_chain::ContractChainRuntimeStatus::Abandoned
+                    }) {
+                        "Restart"
+                    } else if active.is_some_and(|active| {
+                        active.status == contract_chain::ContractChainRuntimeStatus::Unavailable
+                    }) {
+                        "Unavailable"
+                    } else if stage.is_some_and(|stage| {
+                        stage.objectives.iter().any(|objective| {
+                            objective.kind == content::ContractChainObjectiveKind::DeliverItem
+                        })
+                    }) {
+                        "Deliver"
+                    } else if active.is_some() {
+                        "Active"
+                    } else {
+                        "Accept"
+                    };
+                    let rewards = definition
+                        .rewards
+                        .iter()
+                        .map(|reward| match reward.kind.as_str() {
+                            "credits" => format!("{} cr", reward.amount),
+                            "reputation" => format!("{} reputation", reward.amount),
+                            "research" => "research lead".to_string(),
+                            "route_knowledge" => "route knowledge".to_string(),
+                            other => other.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    egui_station::ContractChainRow {
+                        name: definition.name.clone(),
+                        description: definition.summary.clone(),
+                        objective: stage
+                            .map(|stage| format!("{} · {}", stage.name, stage.description))
+                            .unwrap_or_else(|| "Multi-stage contract".to_string()),
+                        rewards,
+                        status: status.to_string(),
+                        actionable: in_range && !completed,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let recipes = service
         .map(|service| {
@@ -21785,6 +22633,7 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
         repair_label,
         repair_enabled: garage && in_range && service_available,
         contracts,
+        contract_chains,
         recipes,
         research,
         shipyard,
@@ -22109,8 +22958,31 @@ fn destinations_view(game: &GameState) -> egui_destinations::DestinationsView {
                     "Survey data is unavailable. Approach the body to investigate it.".to_string()
                 },
                 distance: format!("{:.0}u", game.ship.position.distance(planet.position)),
-                scan_status: format!("{}/{}", planet.scan_level, MAX_SCAN_LEVEL),
+                detail_label: "Survey".to_string(),
+                detail_value: format!("{}/{}", planet.scan_level, MAX_SCAN_LEVEL),
+                can_add_stop: true,
             }
+        })
+        .or_else(|| {
+            game.selected_station
+                .and_then(|index| game.stations.get(index))
+                .filter(|station| station.system == game.current_system_id)
+                .map(|station| egui_destinations::DestinationCandidate {
+                    name: station.name.clone(),
+                    artwork: game
+                        .content_registry
+                        .stations
+                        .get(&station.id)
+                        .and_then(|definition| definition.texture.clone()),
+                    content_id: station.id.clone(),
+                    system: system_display_name(&game.content_registry, &station.system)
+                        .to_string(),
+                    summary: station.summary.clone(),
+                    distance: format!("{:.0}u", game.ship.position.distance(station.position)),
+                    detail_label: "Type".to_string(),
+                    detail_value: "Station".to_string(),
+                    can_add_stop: false,
+                })
         });
     let route = game
         .navigation_route
@@ -22256,6 +23128,14 @@ fn contracts_view(game: &GameState) -> egui_contracts::ContractsView {
             }
             Some(_) => "Origin station is in the current system".to_string(),
         };
+        let (_, fly_origin_enabled, fly_origin_status) = contract_travel_view(
+            game,
+            Some(entry.contract.origin_station.as_str()),
+            &entry.origin_name,
+        );
+        let destination_id = contract_destination_id(&entry.contract);
+        let (_, fly_destination_enabled, fly_destination_status) =
+            contract_travel_view(game, destination_id, &entry.target_name);
         egui_contracts::ContractDetail {
             name: entry.contract.name.clone(),
             description: entry
@@ -22275,6 +23155,10 @@ fn contracts_view(game: &GameState) -> egui_contracts::ContractsView {
             requirement: format!("{} reputation", entry.contract.reputation_required),
             focus_enabled,
             focus_status,
+            fly_origin_enabled,
+            fly_origin_status,
+            fly_destination_enabled,
+            fly_destination_status,
         }
     });
 
@@ -22291,12 +23175,259 @@ fn contracts_view(game: &GameState) -> egui_contracts::ContractsView {
             .collect(),
         selected,
         detail,
+        contract_chains: game
+            .active_contract_chains
+            .iter()
+            .map(|active| {
+                let definition = game
+                    .content_registry
+                    .contract_chains
+                    .get(&active.contract_chain_id);
+                let stage = definition.and_then(|definition| {
+                    definition
+                        .stages
+                        .iter()
+                        .find(|stage| stage.id == active.stage_id)
+                });
+                let origin_id = definition.map(|definition| definition.origin_station.as_str());
+                let (origin, fly_origin_enabled, fly_origin_status) =
+                    contract_travel_view(game, origin_id, "Origin station");
+                let destination_id = active_contract_chain_destination_id(game, active);
+                let (destination, fly_destination_enabled, fly_destination_status) =
+                    contract_travel_view(game, destination_id.as_deref(), "Current objective");
+                egui_contracts::ContractChainRow {
+                    id: active.contract_chain_id.clone(),
+                    name: definition
+                        .map(|definition| definition.name.clone())
+                        .unwrap_or_else(|| active.contract_chain_id.clone()),
+                    stage: stage
+                        .map(|stage| stage.name.clone())
+                        .unwrap_or_else(|| active.stage_id.clone()),
+                    progress: stage
+                        .map(|stage| contract_chain_stage_progress_text(game, active, stage))
+                        .unwrap_or_else(|| "Contract content unavailable".to_string()),
+                    status: match active.status {
+                        contract_chain::ContractChainRuntimeStatus::Active => "Active",
+                        contract_chain::ContractChainRuntimeStatus::Blocked => "Blocked",
+                        contract_chain::ContractChainRuntimeStatus::Unavailable => "Unavailable",
+                        contract_chain::ContractChainRuntimeStatus::Abandoned => "Abandoned",
+                    }
+                    .to_string(),
+                    blocker: active.blocker.clone(),
+                    origin,
+                    destination: destination_id.map(|_| destination),
+                    fly_origin_enabled,
+                    fly_origin_status,
+                    fly_destination_enabled,
+                    fly_destination_status,
+                }
+            })
+            .collect(),
         latest_operation: game
             .operation_feedback
             .iter()
             .find(|entry| entry.category == "Contract" || entry.category == "Contracts")
             .map(|entry| format!("{} / {}", entry.category, entry.message)),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContractTravelTarget {
+    Station(usize),
+    Planet(usize),
+    NpcShip(usize),
+}
+
+fn resolve_contract_travel_target(
+    game: &GameState,
+    target_id: &str,
+) -> Option<ContractTravelTarget> {
+    game.stations
+        .iter()
+        .position(|station| station.id == target_id)
+        .map(ContractTravelTarget::Station)
+        .or_else(|| {
+            game.planets
+                .iter()
+                .position(|planet| planet.id == target_id)
+                .map(ContractTravelTarget::Planet)
+        })
+        .or_else(|| {
+            game.npc_ships
+                .iter()
+                .position(|npc| npc.id == target_id)
+                .map(ContractTravelTarget::NpcShip)
+        })
+}
+
+fn contract_travel_target_name_and_system(
+    game: &GameState,
+    target: ContractTravelTarget,
+) -> Option<(&str, &str)> {
+    match target {
+        ContractTravelTarget::Station(index) => game
+            .stations
+            .get(index)
+            .map(|station| (station.name.as_str(), station.system.as_str())),
+        ContractTravelTarget::Planet(index) => game
+            .planets
+            .get(index)
+            .map(|planet| (local_content_id(&planet.id), planet.system.as_str())),
+        ContractTravelTarget::NpcShip(index) => game
+            .npc_ships
+            .get(index)
+            .map(|npc| (npc.name.as_str(), npc.system.as_str())),
+    }
+}
+
+fn contract_travel_view(
+    game: &GameState,
+    target_id: Option<&str>,
+    fallback_name: &str,
+) -> (String, bool, String) {
+    let Some(target_id) = target_id else {
+        return (
+            fallback_name.to_string(),
+            false,
+            "No flight destination for this objective".to_string(),
+        );
+    };
+    let Some(target) = resolve_contract_travel_target(game, target_id) else {
+        return (
+            fallback_name.to_string(),
+            false,
+            "Destination is unavailable".to_string(),
+        );
+    };
+    let Some((name, system)) = contract_travel_target_name_and_system(game, target) else {
+        return (
+            fallback_name.to_string(),
+            false,
+            "Destination is unavailable".to_string(),
+        );
+    };
+    let enabled = system == game.current_system_id;
+    let status = if enabled {
+        "Ready in the current system".to_string()
+    } else {
+        format!(
+            "Located in {}",
+            system_display_name(&game.content_registry, system)
+        )
+    };
+    (name.to_string(), enabled, status)
+}
+
+fn contract_destination_id(contract: &ContractOffer) -> Option<&str> {
+    contract
+        .target_station
+        .as_deref()
+        .or(contract.target_planet.as_deref())
+}
+
+fn active_contract_chain_destination_id(
+    game: &GameState,
+    active: &contract_chain::ActiveContractChain,
+) -> Option<String> {
+    let definition = game
+        .content_registry
+        .contract_chains
+        .get(&active.contract_chain_id)?;
+    let stage = definition
+        .stages
+        .iter()
+        .find(|stage| stage.id == active.stage_id)?;
+    stage
+        .objectives
+        .iter()
+        .find(|objective| {
+            !contract_chain::objective_complete(active, &stage.id, objective)
+                && (objective.target.is_some()
+                    || objective.kind == content::ContractChainObjectiveKind::ReturnOrigin)
+        })
+        .map(|objective| {
+            if objective.kind == content::ContractChainObjectiveKind::ReturnOrigin {
+                definition.origin_station.clone()
+            } else {
+                objective.target.clone().unwrap_or_default()
+            }
+        })
+}
+
+fn fly_to_contract_target(game: &mut GameState, target_id: &str) -> bool {
+    let Some(target) = resolve_contract_travel_target(game, target_id) else {
+        push_operation_feedback(game, "Contracts", "Destination is unavailable".to_string());
+        return false;
+    };
+    let Some((name, system)) = contract_travel_target_name_and_system(game, target) else {
+        return false;
+    };
+    let name = name.to_string();
+    if system != game.current_system_id {
+        let system_name = system_display_name(&game.content_registry, system).to_string();
+        push_operation_feedback(game, "Contracts", format!("{name} is in {system_name}"));
+        return false;
+    }
+    pause_navigation_route(game, None);
+    match target {
+        ContractTravelTarget::Station(index) => {
+            execute_context_action(game, ContextTarget::Station(index), ContextAction::Approach)
+        }
+        ContractTravelTarget::Planet(index) => {
+            execute_context_action(game, ContextTarget::Planet(index), ContextAction::Approach)
+        }
+        ContractTravelTarget::NpcShip(index) => {
+            execute_context_action(game, ContextTarget::NpcShip(index), ContextAction::Approach)
+        }
+    }
+    push_operation_feedback(game, "Contracts", format!("Flying to {name}"));
+    true
+}
+
+fn contract_chain_stage_progress_text(
+    game: &GameState,
+    active: &contract_chain::ActiveContractChain,
+    stage: &content::ContractChainStageDef,
+) -> String {
+    stage
+        .objectives
+        .iter()
+        .map(|objective| {
+            let progress = active.objective_progress(&stage.id, &objective.id);
+            let label = match objective.kind {
+                content::ContractChainObjectiveKind::ReachLocation => "Reach location".to_string(),
+                content::ContractChainObjectiveKind::ScanIdentify => {
+                    "Scan and identify target".to_string()
+                }
+                content::ContractChainObjectiveKind::AcquireItem
+                | content::ContractChainObjectiveKind::LootItem
+                | content::ContractChainObjectiveKind::ManufactureItem
+                | content::ContractChainObjectiveKind::DeliverItem
+                | content::ContractChainObjectiveKind::MineQuota => objective
+                    .item
+                    .as_deref()
+                    .and_then(|item| game.content_registry.items.get(item))
+                    .map(|item| item.name.clone())
+                    .unwrap_or_else(|| "Required item".to_string()),
+                content::ContractChainObjectiveKind::DestroyTarget => "Disable target".to_string(),
+                content::ContractChainObjectiveKind::ProtectTarget => "Protect target".to_string(),
+                content::ContractChainObjectiveKind::CompleteResearch => {
+                    "Complete research".to_string()
+                }
+                content::ContractChainObjectiveKind::SurviveDuration => "Survive".to_string(),
+                content::ContractChainObjectiveKind::ReturnOrigin => "Return to origin".to_string(),
+            };
+            if objective.kind == content::ContractChainObjectiveKind::SurviveDuration {
+                format!(
+                    "{label} {:.1}/{:.1}s",
+                    progress.elapsed_seconds, objective.duration_seconds
+                )
+            } else {
+                format!("{label} {}/{}", progress.amount, objective.amount)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn content_browser_view(game: &GameState) -> egui_content::ContentBrowserView {
@@ -24369,6 +25500,16 @@ fn apply_station_ui_actions(game: &mut GameState, actions: Vec<egui_station::Sta
                     accept_or_complete_contract(game, station_index, service_index, contract_index)
                 })
             }
+            egui_station::StationUiAction::ContractChain(contract_chain_index) => {
+                game.selected_station_service.is_some_and(|service_index| {
+                    accept_or_advance_contract_chain(
+                        game,
+                        station_index,
+                        service_index,
+                        contract_chain_index,
+                    )
+                })
+            }
             egui_station::StationUiAction::PurchaseRecipe(unlock_index) => {
                 game.selected_station_service.is_some_and(|service_index| {
                     purchase_recipe_unlock(game, station_index, service_index, unlock_index)
@@ -24921,6 +26062,77 @@ fn apply_contracts_ui_actions(
                     game.audio.play(audio::AudioCue::Warning);
                 }
             }
+            egui_contracts::ContractsUiAction::FlyToOrigin(index) => {
+                let entry = active_contract_menu_entries(game).get(index).cloned();
+                let handled = entry.is_some_and(|entry| {
+                    game.selected_contract_index = Some(index);
+                    fly_to_contract_target(game, &entry.contract.origin_station)
+                });
+                game.audio.play(if handled {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+            }
+            egui_contracts::ContractsUiAction::FlyToDestination(index) => {
+                let entry = active_contract_menu_entries(game).get(index).cloned();
+                let handled = entry.is_some_and(|entry| {
+                    game.selected_contract_index = Some(index);
+                    contract_destination_id(&entry.contract)
+                        .map(str::to_string)
+                        .is_some_and(|target_id| fly_to_contract_target(game, &target_id))
+                });
+                game.audio.play(if handled {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+            }
+            egui_contracts::ContractsUiAction::FlyToContractChainOrigin(contract_chain_id) => {
+                let target_id = game
+                    .content_registry
+                    .contract_chains
+                    .get(&contract_chain_id)
+                    .map(|definition| definition.origin_station.clone());
+                let handled =
+                    target_id.is_some_and(|target_id| fly_to_contract_target(game, &target_id));
+                game.audio.play(if handled {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+            }
+            egui_contracts::ContractsUiAction::FlyToContractChainDestination(contract_chain_id) => {
+                let target_id = game
+                    .active_contract_chains
+                    .iter()
+                    .find(|active| active.contract_chain_id == contract_chain_id)
+                    .and_then(|active| active_contract_chain_destination_id(game, active));
+                let handled =
+                    target_id.is_some_and(|target_id| fly_to_contract_target(game, &target_id));
+                game.audio.play(if handled {
+                    audio::AudioCue::Confirm
+                } else {
+                    audio::AudioCue::Warning
+                });
+            }
+            egui_contracts::ContractsUiAction::AbandonContractChain(contract_chain_id) => {
+                if let Some(active) = game
+                    .active_contract_chains
+                    .iter_mut()
+                    .find(|active| active.contract_chain_id == contract_chain_id)
+                {
+                    active.status = contract_chain::ContractChainRuntimeStatus::Abandoned;
+                    active.blocker = Some("Return to the origin service to restart".to_string());
+                    game.save_dirty = true;
+                    push_operation_feedback(
+                        game,
+                        "Contract",
+                        format!("Abandoned contract `{contract_chain_id}`; it can be restarted at its origin"),
+                    );
+                    game.audio.play(audio::AudioCue::Back);
+                }
+            }
         }
     }
 }
@@ -25026,7 +26238,7 @@ fn apply_destinations_ui_actions(
                 true
             }
             egui_destinations::DestinationsUiAction::FlySelected => {
-                fly_to_selected_starmap_planet(game)
+                fly_to_selected_starmap_destination(game)
             }
             egui_destinations::DestinationsUiAction::AddSelected => {
                 add_selected_starmap_planet_to_route(game)
@@ -31045,6 +32257,39 @@ mod tests {
     }
 
     #[test]
+    fn opening_contracts_preserves_fleet_windows_and_inspection_targets() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.fleet_open = true;
+        game.inventory_open = true;
+        game.production_open = true;
+        game.research_open = true;
+        game.content_open = true;
+        game.operations_open = true;
+        game.selected_planet = Some(1);
+        game.selected_station = Some(2);
+        game.selected_station_service = Some(3);
+        game.selected_npc_ship = Some(4);
+
+        handle_contracts_shortcut(&mut game);
+
+        assert!(game.contracts_open);
+        assert!(game.fleet_open);
+        assert!(game.inventory_open);
+        assert!(game.production_open);
+        assert!(game.research_open);
+        assert!(game.content_open);
+        assert!(game.operations_open);
+        assert_eq!(game.selected_planet, Some(1));
+        assert_eq!(game.selected_station, Some(2));
+        assert_eq!(game.selected_station_service, Some(3));
+        assert_eq!(game.selected_npc_ship, Some(4));
+
+        handle_contracts_shortcut(&mut game);
+        assert!(!game.contracts_open);
+        assert!(game.fleet_open);
+    }
+
+    #[test]
     fn production_info_only_lists_unlocked_follow_on_recipes() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -31156,6 +32401,19 @@ mod tests {
 
         game.map_open = true;
         assert!(!flight_camera_wheel_enabled(&game, false));
+    }
+
+    #[test]
+    fn fleet_window_does_not_pause_player_ship_motion() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.fleet_open = true;
+        game.ship.position = Vec2::ZERO;
+        game.ship.velocity = vec2(100.0, 0.0);
+
+        update_player_ship_motion_with_control(&mut game, 0.1, ShipControl::default());
+
+        assert!(game.ship.position.x > 0.0);
+        assert!(game.ship.velocity.x > 0.0);
     }
 
     #[test]
@@ -31744,6 +33002,223 @@ mod tests {
     }
 
     #[test]
+    fn contract_chain_progress_and_looted_not_returned_state_round_trip() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        let mut active = contract_chain::ActiveContractChain::start(&definition)
+            .expect("contract_chain has a first stage");
+        active.stage_id = "recover".to_string();
+        game.active_contract_chains.push(active);
+
+        record_contract_chain_event(
+            &mut game,
+            contract_chain::ContractChainEvent::new(
+                "loot:archive",
+                contract_chain::ContractChainEventKind::Looted,
+            )
+            .target("core:pale_relay_derelict")
+            .item("core:pale_relay_archive", 1),
+        );
+        assert_eq!(game.active_contract_chains[0].stage_id, "return");
+
+        let serialized =
+            toml::to_string(&game.to_save()).expect("contract_chain save should serialize");
+        let restored =
+            toml::from_str::<SaveData>(&serialized).expect("contract_chain save should load");
+        assert_eq!(restored.active_contract_chains.len(), 1);
+        assert_eq!(restored.active_contract_chains[0].stage_id, "return");
+        assert!(restored.active_contract_chains[0]
+            .processed_events
+            .contains("loot:archive"));
+
+        let legacy_serialized = serialized
+            .replace("active_contract_chains", "active_quests")
+            .replace("completed_contract_chains", "completed_quests")
+            .replace("contract_chain_event_sequence", "quest_event_sequence")
+            .replace("contract_chain_id", "quest_id");
+        let legacy_restored = toml::from_str::<SaveData>(&legacy_serialized)
+            .expect("pre-rename contract save should remain loadable");
+        assert_eq!(legacy_restored.active_contract_chains.len(), 1);
+        assert_eq!(
+            legacy_restored.active_contract_chains[0].contract_chain_id,
+            "core:derelict_recovery"
+        );
+        assert_eq!(legacy_restored.active_contract_chains[0].stage_id, "return");
+    }
+
+    #[test]
+    fn contract_chain_rewards_are_idempotent_for_duplicate_completion_events() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        let mut active = contract_chain::ActiveContractChain::start(&definition)
+            .expect("contract_chain has a first stage");
+        active.stage_id = "return".to_string();
+        game.active_contract_chains.push(active);
+        let credits = game.credits;
+
+        let delivered = contract_chain::ContractChainEvent::new(
+            "deliver:archive",
+            contract_chain::ContractChainEventKind::Delivered,
+        )
+        .target("core:frontier_exchange")
+        .item("core:pale_relay_archive", 1);
+        record_contract_chain_event(&mut game, delivered.clone());
+        record_contract_chain_event(&mut game, delivered);
+
+        assert_eq!(game.credits, credits + 650);
+        assert_eq!(game.completed_contract_chains, ["core:derelict_recovery"]);
+        assert!(game.active_contract_chains.is_empty());
+    }
+
+    #[test]
+    fn ore_contract_chain_acquires_then_auto_delivers_at_destination() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let definition = registry.contract_chains["core:ore_to_frontier_iron_run"].clone();
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:frontier_exchange",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.ship.position = vec2(120.0, 0.0);
+        game.inventory.add_item(iron.clone(), 2);
+        game.active_contract_chains
+            .push(contract_chain::ActiveContractChain::start(&definition).unwrap());
+        let starting_credits = game.credits;
+
+        update_contract_chain_observations(&mut game, 0.0);
+
+        assert_eq!(game.active_contract_chains[0].stage_id, "load_iron");
+        assert_eq!(
+            game.active_contract_chains[0]
+                .objective_progress("load_iron", "acquire_iron")
+                .amount,
+            2
+        );
+        game.inventory.add_item(iron.clone(), 4);
+        update_contract_chain_observations(&mut game, 0.0);
+
+        assert_eq!(game.active_contract_chains[0].stage_id, "deliver_iron");
+        assert_eq!(game.inventory.count(&iron), 6);
+
+        update_contract_chain_observations(&mut game, 0.0);
+
+        assert!(game.active_contract_chains.is_empty());
+        assert_eq!(game.inventory.count(&iron), 0);
+        assert_eq!(game.credits, starting_credits + 180);
+        assert_eq!(game.faction_reputation["core:cinder_cooperative"], 5);
+        assert!(game
+            .completed_contract_chains
+            .iter()
+            .any(|completed| completed == "core:ore_to_frontier_iron_run"));
+    }
+
+    #[test]
+    fn accepted_legacy_ore_contract_is_promoted_to_contract_chain() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut active_contracts = vec![ActiveContract {
+            id: "core:ore_to_frontier_iron_run".to_string(),
+            origin_station: "core:ore_lattice_depot".to_string(),
+            origin_service: "core:ore_lattice_freight_lock".to_string(),
+            expires_day: 8.0,
+            target_reached: false,
+        }];
+        let mut active_contract_chains = Vec::new();
+
+        migrate_promoted_contract_chains(
+            &registry,
+            &mut active_contracts,
+            &mut active_contract_chains,
+            &[],
+        );
+
+        assert!(active_contracts.is_empty());
+        assert_eq!(active_contract_chains.len(), 1);
+        assert_eq!(
+            active_contract_chains[0].contract_chain_id,
+            "core:ore_to_frontier_iron_run"
+        );
+        assert_eq!(active_contract_chains[0].stage_id, "load_iron");
+    }
+
+    #[test]
+    fn contract_chain_flight_actions_resolve_current_stage_and_origin() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let definition = registry.contract_chains["core:derelict_recovery"].clone();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:frontier_exchange",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        let mut wreck = test_npc_ship(NpcBehaviorMode::Patrol, vec2(500.0, 0.0));
+        wreck.id = "core:pale_relay_derelict".to_string();
+        wreck.name = "Pale Relay Derelict".to_string();
+        game.npc_ships = vec![wreck];
+        game.active_contract_chains
+            .push(contract_chain::ActiveContractChain::start(&definition).unwrap());
+
+        let view = contracts_view(&game);
+        assert_eq!(view.contract_chains[0].origin, "Test Station");
+        assert_eq!(
+            view.contract_chains[0].destination.as_deref(),
+            Some("Pale Relay Derelict")
+        );
+        assert!(view.contract_chains[0].fly_destination_enabled);
+
+        apply_contracts_ui_actions(
+            &mut game,
+            vec![
+                egui_contracts::ContractsUiAction::FlyToContractChainDestination(
+                    "core:derelict_recovery".to_string(),
+                ),
+            ],
+        );
+        assert_eq!(game.approach_target, Some(ApproachTarget::NpcShip(0)));
+
+        game.active_contract_chains[0].stage_id = "return".to_string();
+        apply_contracts_ui_actions(
+            &mut game,
+            vec![egui_contracts::ContractsUiAction::FlyToContractChainOrigin(
+                "core:derelict_recovery".to_string(),
+            )],
+        );
+        assert_eq!(game.approach_target, Some(ApproachTarget::Station(0)));
+    }
+
+    #[test]
+    fn saved_contract_chain_with_removed_content_remains_visible_as_unavailable() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let definition = game.content_registry.contract_chains["core:derelict_recovery"].clone();
+        game.active_contract_chains
+            .push(contract_chain::ActiveContractChain::start(&definition).unwrap());
+        let save = game.to_save();
+        game.content_registry.contract_chains.clear();
+
+        game.apply_save(save);
+
+        assert_eq!(game.active_contract_chains.len(), 1);
+        assert_eq!(
+            game.active_contract_chains[0].status,
+            contract_chain::ContractChainRuntimeStatus::Unavailable
+        );
+        assert!(game.active_contract_chains[0]
+            .blocker
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not present")));
+    }
+
+    #[test]
     fn active_contract_menu_resolves_progress_and_destination() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
@@ -31814,6 +33289,24 @@ mod tests {
             .detail
             .as_ref()
             .is_some_and(|detail| detail.focus_enabled));
+        assert!(selected_view
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.fly_origin_enabled && detail.fly_destination_enabled));
+
+        apply_contracts_ui_actions(
+            &mut game,
+            vec![egui_contracts::ContractsUiAction::FlyToDestination(0)],
+        );
+        assert_eq!(game.approach_target, Some(ApproachTarget::Planet(0)));
+        assert_eq!(game.destination_planet, Some(0));
+
+        apply_contracts_ui_actions(
+            &mut game,
+            vec![egui_contracts::ContractsUiAction::FlyToOrigin(0)],
+        );
+        assert_eq!(game.approach_target, Some(ApproachTarget::Station(0)));
+        assert_eq!(game.selected_station, Some(0));
 
         game.active_contracts[0].target_reached = true;
         let completed_entries = active_contract_menu_entries(&game);
@@ -33611,6 +35104,31 @@ mod tests {
     }
 
     #[test]
+    fn starmap_station_selection_can_fly_now() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.stations = vec![test_station_destination(
+            "core:test_map_station",
+            STARTER_SYSTEM_ID,
+            vec2(600.0, 0.0),
+        )];
+        game.selected_station = Some(0);
+        game.map_open = true;
+
+        let view = destinations_view(&game);
+        assert!(view
+            .selected
+            .as_ref()
+            .is_some_and(|selected| { selected.name == "Test Station" && !selected.can_add_stop }));
+
+        assert!(fly_to_selected_starmap_destination(&mut game));
+        assert_eq!(game.approach_target, Some(ApproachTarget::Station(0)));
+        assert_eq!(game.selected_station, Some(0));
+        assert!(!game.map_open);
+    }
+
+    #[test]
     fn starmap_panel_size_respects_dragged_dimensions_and_screen_bounds() {
         assert_eq!(
             starmap_panel_size_for(vec2(1600.0, 900.0), Some(vec2(900.0, 600.0))),
@@ -34486,6 +36004,7 @@ mod tests {
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                     contracts: Vec::new(),
+                    contract_chains: Vec::new(),
                     reputation_required: None,
                 },
                 StationService {
@@ -34499,6 +36018,7 @@ mod tests {
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                     contracts: Vec::new(),
+                    contract_chains: Vec::new(),
                     reputation_required: None,
                 },
                 StationService {
@@ -34512,6 +36032,7 @@ mod tests {
                     research: Vec::new(),
                     recipe_unlocks: Vec::new(),
                     contracts: Vec::new(),
+                    contract_chains: Vec::new(),
                     reputation_required: None,
                 },
             ],
@@ -34943,11 +36464,15 @@ mod tests {
             selected_npc_ship: None,
             selected_station_service: None,
             active_contracts: Vec::new(),
+            active_contract_chains: Vec::new(),
+            completed_contract_chains: Vec::new(),
+            contract_chain_event_sequence: 0,
             faction_reputation: HashMap::new(),
             selected_research: None,
             destination_planet: None,
             orbiting_planet: None,
             system_destinations: HashMap::new(),
+            discovered_systems: HashSet::new(),
             starmap_selected_planet: None,
             navigation_route: Vec::new(),
             navigation_route_current: None,

@@ -32,6 +32,16 @@ pub struct ContractRow {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ContractChainRow {
+    pub name: String,
+    pub description: String,
+    pub objective: String,
+    pub rewards: String,
+    pub status: String,
+    pub actionable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecipeRow {
     pub name: String,
     pub status: String,
@@ -77,6 +87,7 @@ pub struct StationPaneView {
     pub repair_label: String,
     pub repair_enabled: bool,
     pub contracts: Vec<ContractRow>,
+    pub contract_chains: Vec<ContractChainRow>,
     pub recipes: Vec<RecipeRow>,
     pub research: Vec<ResearchRow>,
     pub shipyard: Vec<ShipOffer>,
@@ -91,6 +102,7 @@ pub enum StationUiAction {
     Sell(usize),
     Repair,
     Contract(usize),
+    ContractChain(usize),
     PurchaseRecipe(usize),
     BuyShip(String),
 }
@@ -219,6 +231,7 @@ fn draw_service_rail(
     }
     draw_trade(ui, view, actions);
     draw_contracts(ui, view, actions);
+    draw_contract_chains(ui, view, actions);
     draw_recipes(ui, view, actions);
     draw_research(ui, view);
     draw_shipyard(ui, view, actions);
@@ -327,6 +340,37 @@ fn draw_contracts(ui: &mut egui::Ui, view: &StationPaneView, actions: &mut Vec<S
             });
             ui.label(&contract.description);
             ui.small(&contract.objective);
+        });
+    }
+}
+
+fn draw_contract_chains(
+    ui: &mut egui::Ui,
+    view: &StationPaneView,
+    actions: &mut Vec<StationUiAction>,
+) {
+    if view.contract_chains.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.heading("Contract chains");
+    for (index, contract_chain) in view.contract_chains.iter().enumerate() {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.strong(&contract_chain.name);
+                if ui
+                    .add_enabled(
+                        contract_chain.actionable,
+                        egui::Button::new(&contract_chain.status),
+                    )
+                    .clicked()
+                {
+                    actions.push(StationUiAction::ContractChain(index));
+                }
+            });
+            ui.label(&contract_chain.description);
+            ui.small(&contract_chain.objective);
+            ui.small(format!("Rewards · {}", contract_chain.rewards));
         });
     }
 }

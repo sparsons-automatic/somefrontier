@@ -8,7 +8,9 @@ pub struct DestinationCandidate {
     pub system: String,
     pub summary: String,
     pub distance: String,
-    pub scan_status: String,
+    pub detail_label: String,
+    pub detail_value: String,
+    pub can_add_stop: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +106,7 @@ fn draw_contents(
     }
     ui.heading("Navigation console");
     ui.small(if view.map_open {
-        "Select a planet on the starmap, then fly now or add it to the itinerary."
+        "Select a planet or station on the starmap, then fly now. Planets can also be added to the itinerary."
     } else {
         "Press M to reopen the starmap and choose another destination."
     });
@@ -121,19 +123,23 @@ fn draw_contents(
             .show(ui, |ui| {
                 fact_row(ui, "System", &selected.system);
                 fact_row(ui, "Distance", &selected.distance);
-                fact_row(ui, "Survey", &selected.scan_status);
+                fact_row(ui, &selected.detail_label, &selected.detail_value);
             });
         ui.label(&selected.summary);
         ui.horizontal(|ui| {
             if ui.button("Fly Now").clicked() {
                 actions.push(DestinationsUiAction::FlySelected);
             }
-            if ui.button("Add Stop").clicked() {
+            if ui
+                .add_enabled(selected.can_add_stop, egui::Button::new("Add Stop"))
+                .on_disabled_hover_text("Only planets can be added to an itinerary")
+                .clicked()
+            {
                 actions.push(DestinationsUiAction::AddSelected);
             }
         });
     } else {
-        ui.label("Click a visible planet on the starmap.");
+        ui.label("Click a visible planet or station on the starmap.");
     }
 
     ui.separator();

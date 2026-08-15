@@ -29,6 +29,8 @@ pub struct ContentRegistry {
     pub recipe_order: Vec<String>,
     pub research: HashMap<String, ResearchDef>,
     pub research_order: Vec<String>,
+    pub contract_chains: HashMap<String, ContractChainDef>,
+    pub contract_chain_order: Vec<String>,
     pub factions: HashMap<String, FactionDef>,
     pub faction_order: Vec<String>,
     pub universes: HashMap<String, UniverseDef>,
@@ -149,6 +151,97 @@ pub struct ResearchRewardDef {
     pub amount: Option<f32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ContractChainDef {
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    pub origin_station: String,
+    pub origin_service: String,
+    pub stages: Vec<ContractChainStageDef>,
+    pub rewards: Vec<ContractChainRewardDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractChainStageDef {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub objectives: Vec<ContractChainObjectiveDef>,
+    pub next_stage: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractChainObjectiveDef {
+    pub id: String,
+    pub kind: ContractChainObjectiveKind,
+    pub target: Option<String>,
+    pub item: Option<String>,
+    pub amount: u32,
+    pub duration_seconds: f32,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractChainObjectiveKind {
+    ReachLocation,
+    ScanIdentify,
+    AcquireItem,
+    LootItem,
+    ManufactureItem,
+    DeliverItem,
+    MineQuota,
+    DestroyTarget,
+    ProtectTarget,
+    CompleteResearch,
+    SurviveDuration,
+    ReturnOrigin,
+}
+
+impl ContractChainObjectiveKind {
+    pub fn from_id(id: &str) -> Option<Self> {
+        Some(match id {
+            "reach_location" => Self::ReachLocation,
+            "scan_identify" => Self::ScanIdentify,
+            "acquire_item" => Self::AcquireItem,
+            "loot_item" => Self::LootItem,
+            "manufacture_item" => Self::ManufactureItem,
+            "deliver_item" => Self::DeliverItem,
+            "mine_quota" => Self::MineQuota,
+            "destroy_target" => Self::DestroyTarget,
+            "protect_target" => Self::ProtectTarget,
+            "complete_research" => Self::CompleteResearch,
+            "survive_duration" => Self::SurviveDuration,
+            "return_origin" => Self::ReturnOrigin,
+            _ => return None,
+        })
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::ReachLocation => "reach_location",
+            Self::ScanIdentify => "scan_identify",
+            Self::AcquireItem => "acquire_item",
+            Self::LootItem => "loot_item",
+            Self::ManufactureItem => "manufacture_item",
+            Self::DeliverItem => "deliver_item",
+            Self::MineQuota => "mine_quota",
+            Self::DestroyTarget => "destroy_target",
+            Self::ProtectTarget => "protect_target",
+            Self::CompleteResearch => "complete_research",
+            Self::SurviveDuration => "survive_duration",
+            Self::ReturnOrigin => "return_origin",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractChainRewardDef {
+    pub kind: String,
+    pub target: Option<String>,
+    pub amount: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackDef {
     pub item: String,
@@ -204,6 +297,7 @@ pub struct NpcShipDef {
     pub mass: f32,
     pub cargo_capacity: f32,
     pub cargo_defaults: Vec<StackDef>,
+    pub starts_wrecked: bool,
     pub credit_reward_min: u32,
     pub credit_reward_max: u32,
     pub hull_capacity: f32,
@@ -584,6 +678,7 @@ pub struct StationServiceDef {
     pub research: Vec<ResearchLeadDef>,
     pub recipe_unlocks: Vec<RecipeUnlockDef>,
     pub contracts: Vec<StationContractDef>,
+    pub contract_chains: Vec<String>,
     pub reputation_required: Option<i32>,
 }
 
@@ -780,6 +875,61 @@ struct ResearchFileDef {
     summary: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ContractChainsFile {
+    #[serde(default)]
+    contract_chains: Vec<ContractChainFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractChainFileDef {
+    id: String,
+    name: String,
+    summary: String,
+    origin_station: String,
+    origin_service: String,
+    #[serde(default)]
+    stages: Vec<ContractChainStageFileDef>,
+    #[serde(default)]
+    rewards: Vec<ContractChainRewardFileDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractChainStageFileDef {
+    id: String,
+    name: String,
+    description: String,
+    #[serde(default)]
+    objectives: Vec<ContractChainObjectiveFileDef>,
+    next_stage: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractChainObjectiveFileDef {
+    id: String,
+    kind: String,
+    target: Option<String>,
+    item: Option<String>,
+    #[serde(default = "default_contract_chain_amount")]
+    amount: u32,
+    #[serde(default)]
+    duration_seconds: f32,
+    #[serde(default)]
+    optional: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractChainRewardFileDef {
+    kind: String,
+    target: Option<String>,
+    #[serde(default)]
+    amount: i32,
+}
+
+fn default_contract_chain_amount() -> u32 {
+    1
+}
+
 #[derive(Debug, Deserialize)]
 struct ResearchRewardFileDef {
     kind: String,
@@ -860,6 +1010,8 @@ struct NpcShipFileDef {
     cargo_capacity: f32,
     #[serde(default)]
     cargo_defaults: Vec<StackFileDef>,
+    #[serde(default)]
+    starts_wrecked: bool,
     #[serde(default)]
     credit_reward_min: u32,
     #[serde(default)]
@@ -1269,6 +1421,8 @@ struct StationServiceFileDef {
     recipe_unlocks: Vec<RecipeUnlockFileDef>,
     #[serde(default)]
     contracts: Vec<StationContractFileDef>,
+    #[serde(default)]
+    contract_chains: Vec<String>,
     #[serde(default)]
     reputation_required: Option<i32>,
 }
@@ -2180,6 +2334,7 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     mass: npc_ship.mass,
                     cargo_capacity: npc_ship.cargo_capacity,
                     cargo_defaults,
+                    starts_wrecked: npc_ship.starts_wrecked,
                     credit_reward_min: npc_ship.credit_reward_min,
                     credit_reward_max: npc_ship.credit_reward_max,
                     hull_capacity: npc_ship.hull_capacity,
@@ -2310,6 +2465,141 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
             registry.research_order.push(id.clone());
         } else {
             errors.push(format!("Duplicate research id `{id}`"));
+        }
+    }
+
+    let contract_chains = read_optional_toml::<ContractChainsFile>(
+        &raw_pack.path.join("contract_chains.toml"),
+        errors,
+    );
+    for contract_chain in contract_chains.contract_chains {
+        let id = namespaced_id(&pack_id, &contract_chain.id);
+        validate_local_content_id(&id, "contract chain", errors);
+        validate_required_name(&id, "Contract chain", &contract_chain.name, errors);
+        if contract_chain.summary.trim().is_empty() {
+            errors.push(format!("Contract chain `{id}` has an empty summary"));
+        }
+        if contract_chain.stages.is_empty() {
+            errors.push(format!("Contract chain `{id}` has no stages"));
+        }
+        let mut stage_ids = HashSet::new();
+        let stages = contract_chain
+            .stages
+            .into_iter()
+            .map(|stage| {
+                if stage.id.trim().is_empty() || !stage_ids.insert(stage.id.clone()) {
+                    errors.push(format!(
+                        "Contract chain `{id}` has an empty or duplicate stage id `{}`",
+                        stage.id
+                    ));
+                }
+                if stage.name.trim().is_empty() || stage.description.trim().is_empty() {
+                    errors.push(format!(
+                        "Contract chain `{id}` stage `{}` needs a name and description",
+                        stage.id
+                    ));
+                }
+                if stage.objectives.is_empty() {
+                    errors.push(format!("Contract chain `{id}` stage `{}` has no objectives", stage.id));
+                }
+                let mut objective_ids = HashSet::new();
+                let objectives = stage
+                    .objectives
+                    .into_iter()
+                    .filter_map(|objective| {
+                        if objective.id.trim().is_empty()
+                            || !objective_ids.insert(objective.id.clone())
+                        {
+                            errors.push(format!(
+                                "Contract chain `{id}` stage `{}` has an empty or duplicate objective id `{}`",
+                                stage.id, objective.id
+                            ));
+                        }
+                        let Some(kind) = ContractChainObjectiveKind::from_id(&objective.kind) else {
+                            errors.push(format!(
+                                "Contract chain `{id}` objective `{}` has unsupported kind `{}`",
+                                objective.id, objective.kind
+                            ));
+                            return None;
+                        };
+                        if objective.amount == 0 {
+                            errors.push(format!(
+                                "Contract chain `{id}` objective `{}` has zero amount",
+                                objective.id
+                            ));
+                        }
+                        if kind == ContractChainObjectiveKind::SurviveDuration
+                            && (!objective.duration_seconds.is_finite()
+                                || objective.duration_seconds <= 0.0)
+                        {
+                            errors.push(format!(
+                                "Contract chain `{id}` objective `{}` has invalid duration",
+                                objective.id
+                            ));
+                        }
+                        Some(ContractChainObjectiveDef {
+                            id: objective.id,
+                            kind,
+                            target: objective
+                                .target
+                                .map(|target| namespaced_id(&pack_id, &target)),
+                            item: objective.item.map(|item| namespaced_id(&pack_id, &item)),
+                            amount: objective.amount,
+                            duration_seconds: objective.duration_seconds,
+                            optional: objective.optional,
+                        })
+                    })
+                    .collect();
+                ContractChainStageDef {
+                    id: stage.id,
+                    name: stage.name,
+                    description: stage.description,
+                    objectives,
+                    next_stage: stage.next_stage,
+                }
+            })
+            .collect::<Vec<_>>();
+        for stage in &stages {
+            if let Some(next) = &stage.next_stage {
+                if next == &stage.id || !stage_ids.contains(next) {
+                    errors.push(format!(
+                        "Contract chain `{id}` stage `{}` has invalid next_stage `{next}`",
+                        stage.id
+                    ));
+                }
+            }
+        }
+        let rewards = contract_chain
+            .rewards
+            .into_iter()
+            .map(|reward| ContractChainRewardDef {
+                kind: reward.kind,
+                target: reward.target.map(|target| namespaced_id(&pack_id, &target)),
+                amount: reward.amount,
+            })
+            .collect::<Vec<_>>();
+        if rewards.is_empty() {
+            errors.push(format!("Contract chain `{id}` has no rewards"));
+        }
+        let inserted = registry
+            .contract_chains
+            .insert(
+                id.clone(),
+                ContractChainDef {
+                    id: id.clone(),
+                    name: contract_chain.name,
+                    summary: contract_chain.summary,
+                    origin_station: namespaced_id(&pack_id, &contract_chain.origin_station),
+                    origin_service: namespaced_id(&pack_id, &contract_chain.origin_service),
+                    stages,
+                    rewards,
+                },
+            )
+            .is_none();
+        if inserted {
+            registry.contract_chain_order.push(id.clone());
+        } else {
+            errors.push(format!("Duplicate contract chain id `{id}`"));
         }
     }
 
@@ -3025,6 +3315,11 @@ fn resolve_station_services(
                 }
             })
             .collect();
+        let contract_chains = service
+            .contract_chains
+            .into_iter()
+            .map(|contract_chain| namespaced_id(pack_id, &contract_chain))
+            .collect();
         resolved.push(StationServiceDef {
             id,
             name: service.name,
@@ -3035,6 +3330,7 @@ fn resolve_station_services(
             research,
             recipe_unlocks,
             contracts,
+            contract_chains,
             reputation_required: service.reputation_required,
         });
     }
@@ -3416,6 +3712,135 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
         }
     }
 
+    for contract_chain in registry.contract_chains.values() {
+        let origin = registry.stations.get(&contract_chain.origin_station);
+        validate_reference(
+            origin.is_some(),
+            "Contract chain",
+            &contract_chain.id,
+            "origin station",
+            &contract_chain.origin_station,
+            errors,
+        );
+        if origin.is_some_and(|station| {
+            !station
+                .services
+                .iter()
+                .any(|service| service.id == contract_chain.origin_service)
+        }) {
+            errors.push(format!(
+                "Contract chain `{}` references missing origin service `{}`",
+                contract_chain.id, contract_chain.origin_service
+            ));
+        }
+        for stage in &contract_chain.stages {
+            for objective in &stage.objectives {
+                if matches!(
+                    objective.kind,
+                    ContractChainObjectiveKind::AcquireItem
+                        | ContractChainObjectiveKind::LootItem
+                        | ContractChainObjectiveKind::ManufactureItem
+                        | ContractChainObjectiveKind::DeliverItem
+                        | ContractChainObjectiveKind::MineQuota
+                ) {
+                    let item = objective.item.as_deref().unwrap_or_default();
+                    validate_reference(
+                        registry.items.contains_key(item),
+                        "Contract chain objective",
+                        &objective.id,
+                        "item",
+                        item,
+                        errors,
+                    );
+                }
+                if objective.kind == ContractChainObjectiveKind::CompleteResearch {
+                    let target = objective.target.as_deref().unwrap_or_default();
+                    validate_reference(
+                        registry.research.contains_key(target),
+                        "Contract chain objective",
+                        &objective.id,
+                        "research",
+                        target,
+                        errors,
+                    );
+                }
+                if matches!(
+                    objective.kind,
+                    ContractChainObjectiveKind::ScanIdentify
+                        | ContractChainObjectiveKind::DestroyTarget
+                        | ContractChainObjectiveKind::ProtectTarget
+                ) {
+                    let target = objective.target.as_deref().unwrap_or_default();
+                    validate_reference(
+                        registry.npc_ships.contains_key(target)
+                            || registry.planets.contains_key(target),
+                        "Contract chain objective",
+                        &objective.id,
+                        "target",
+                        target,
+                        errors,
+                    );
+                }
+                if objective.kind == ContractChainObjectiveKind::ReachLocation {
+                    let target = objective.target.as_deref().unwrap_or_default();
+                    validate_reference(
+                        registry.systems.contains_key(target)
+                            || registry.planets.contains_key(target)
+                            || registry.stations.contains_key(target)
+                            || registry.npc_ships.contains_key(target),
+                        "Contract chain objective",
+                        &objective.id,
+                        "location",
+                        target,
+                        errors,
+                    );
+                }
+            }
+        }
+        for reward in &contract_chain.rewards {
+            match reward.kind.as_str() {
+                "credits" if reward.amount > 0 && reward.target.is_none() => {}
+                "reputation" if reward.amount != 0 => validate_reference(
+                    reward
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| registry.factions.contains_key(target)),
+                    "Contract chain reward",
+                    &contract_chain.id,
+                    "faction",
+                    reward.target.as_deref().unwrap_or_default(),
+                    errors,
+                ),
+                "research" => validate_reference(
+                    reward
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| registry.research.contains_key(target)),
+                    "Contract chain reward",
+                    &contract_chain.id,
+                    "research",
+                    reward.target.as_deref().unwrap_or_default(),
+                    errors,
+                ),
+                "route_knowledge" => validate_reference(
+                    reward
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| registry.systems.contains_key(target)),
+                    "Contract chain reward",
+                    &contract_chain.id,
+                    "system",
+                    reward.target.as_deref().unwrap_or_default(),
+                    errors,
+                ),
+                _ => errors.push(format!(
+                    "Contract chain `{}` has invalid reward kind or amount `{}`",
+                    contract_chain.id, reward.kind
+                )),
+            }
+        }
+    }
+
     for station in registry.stations.values() {
         if let Some(system) = station.system.as_deref() {
             validate_reference(
@@ -3509,6 +3934,16 @@ fn validate_references(registry: &ContentRegistry, errors: &mut Vec<String>) {
                         errors,
                     );
                 }
+            }
+            for contract_chain in &service.contract_chains {
+                validate_reference(
+                    registry.contract_chains.contains_key(contract_chain),
+                    "Station service",
+                    &service.id,
+                    "contract_chain",
+                    contract_chain,
+                    errors,
+                );
             }
         }
     }
@@ -4327,11 +4762,12 @@ mod tests {
             .is_some_and(|station| {
                 station.services.iter().any(|service| {
                     service.id == "core:ore_lattice_freight_lock"
-                        && service.contracts.iter().any(|contract| {
-                            contract.kind == "hauling"
-                                && contract.target_station
-                                    == Some("core:frontier_exchange".to_string())
-                        })
+                        && service.contracts.is_empty()
+                        && service.contract_chains
+                            == [
+                                "core:ore_to_frontier_iron_run",
+                                "core:ore_to_cinder_copper_run",
+                            ]
                 })
             }));
         assert!(registry
@@ -4357,7 +4793,45 @@ mod tests {
                     && faction.tags.iter().any(|tag| tag == "raider")
                     && faction.tags.iter().any(|tag| tag == "probe")
             }));
-        assert_eq!(registry.npc_ships.len(), 5);
+        assert_eq!(registry.npc_ships.len(), 6);
+        assert!(registry
+            .npc_ships
+            .get("core:pale_relay_derelict")
+            .is_some_and(|npc| {
+                npc.starts_wrecked
+                    && npc
+                        .cargo_defaults
+                        .iter()
+                        .any(|cargo| cargo.item == "core:pale_relay_archive")
+            }));
+        assert!(registry
+            .contract_chains
+            .get("core:derelict_recovery")
+            .is_some_and(|contract_chain| {
+                contract_chain.origin_station == "core:frontier_exchange"
+                    && contract_chain.origin_service == "core:saloon"
+                    && contract_chain.stages.len() == 4
+                    && contract_chain.stages[2].objectives[0].kind
+                        == ContractChainObjectiveKind::LootItem
+            }));
+        assert!(registry
+            .contract_chains
+            .get("core:ore_to_frontier_iron_run")
+            .is_some_and(|contract_chain| {
+                contract_chain.origin_station == "core:ore_lattice_depot"
+                    && contract_chain.stages.len() == 2
+                    && contract_chain.stages[0].objectives[0].kind
+                        == ContractChainObjectiveKind::AcquireItem
+                    && contract_chain.stages[1].objectives[0].kind
+                        == ContractChainObjectiveKind::DeliverItem
+                    && contract_chain.stages[1].next_stage.is_none()
+            }));
+        assert!(registry
+            .stations
+            .get("core:frontier_exchange")
+            .is_some_and(|station| station.services.iter().any(|service| {
+                service.id == "core:saloon" && service.contract_chains == ["core:derelict_recovery"]
+            })));
         assert!(registry
             .npc_ships
             .get("remote-duskfall:redwake_remote_probe")
@@ -6415,6 +6889,61 @@ weapon_slots = ["missing_npc_weapon"]
                 == "NPC ship `bad-ship-pack:bad_npc` references missing weapon `bad-ship-pack:missing_npc_weapon`"
         }));
 
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rejects_contract_chain_with_unsupported_objective_kind() {
+        let root = make_temp_content_root("contract_chain-invalid-kind");
+        write_minimal_core_pack(&root);
+        let pack = root.join("core");
+        fs::write(
+            pack.join("stations.toml"),
+            r#"
+[[stations]]
+id = "origin"
+name = "Origin"
+
+[[stations.services]]
+id = "desk"
+name = "Desk"
+kind = "contracts"
+contract_chains = ["bad_contract_chain"]
+"#,
+        )
+        .expect("contract-chain station should be written");
+        fs::write(
+            pack.join("contract_chains.toml"),
+            r#"
+[[contract_chains]]
+id = "bad_contract_chain"
+name = "Bad contract chain"
+summary = "Invalid objective validation fixture."
+origin_station = "origin"
+origin_service = "desk"
+
+[[contract_chains.stages]]
+id = "first"
+name = "First"
+description = "Invalid objective."
+
+[[contract_chains.stages.objectives]]
+id = "bad"
+kind = "run_arbitrary_script"
+
+[[contract_chains.rewards]]
+kind = "credits"
+amount = 1
+"#,
+        )
+        .expect("invalid contract chain should be written");
+
+        let errors =
+            load_content_packs(&root).expect_err("invalid contract chain should fail validation");
+        assert!(errors.iter().any(|error| {
+            error
+                == "Contract chain `core:bad_contract_chain` objective `bad` has unsupported kind `run_arbitrary_script`"
+        }));
         fs::remove_dir_all(root).ok();
     }
 

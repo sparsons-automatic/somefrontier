@@ -339,3 +339,8 @@ id = "hazard_shield_matrix"
 name = "Hazard shield matrix"
 tier = "shield_module"
 unit_mass = 720.0
+[[items]]
+id = "pale_relay_archive"
+name = "Pale Relay Archive"
+tier = "contract"
+unit_mass = 18.0

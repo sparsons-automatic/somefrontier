@@ -79,4 +79,36 @@ mod tests {
         assert!(!entry.enabled);
         assert_eq!(entry.detail, "Requires survey drone");
     }
+
+    #[test]
+    fn empty_followup_pass_releases_transient_context_menu_pointer_capture() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(egui::pos2(20.0, 20.0))],
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        draw(
+            &ctx,
+            &ContextMenuView {
+                position: [0.0, 0.0],
+                heading: None,
+                entries: vec![ContextMenuEntryView {
+                    label: "Approach wreck".to_string(),
+                    detail: "Approach cargo recovery range".to_string(),
+                    enabled: true,
+                }],
+            },
+        );
+        let _ = ctx.end_pass();
+        assert!(ctx.wants_pointer_input());
+
+        ctx.begin_pass(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(egui::pos2(20.0, 20.0))],
+            ..Default::default()
+        });
+        let _ = ctx.end_pass();
+
+        assert!(!ctx.wants_pointer_input());
+    }
 }

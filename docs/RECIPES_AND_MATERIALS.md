@@ -52,7 +52,7 @@ upgrade chains.
 
 ## Early-To-Remote Arc
 
-The current first progression arc is operational rather than quest-driven. The
+The current first progression arc is operational rather than contract-driven. The
 starter system should teach surveying, mining, production, trading, and ship
 upgrades, then prepare the player for the first remote route.
 

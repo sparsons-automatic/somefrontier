@@ -75,8 +75,8 @@ volume; setting it to zero mutes these cues without disabling gameplay.
 | Inspect nearby planet or station | `Space` |
 | Select a visible planet | Left click the planet; press `Space` to inspect |
 | Open object actions | Right click a visible planet, station, or ship |
-| Select a starmap destination | Left click a planet in the map |
-| Fly or build an itinerary | Use the Destinations window after selecting a planet |
+| Select a starmap destination | Left click a planet or station in the map |
+| Fly or build an itinerary | Use the Destinations window after selecting a planet or station |
 | Open ship upgrades | Fleet → `Upgrades` |
 | Close menu / pause actions | `Esc` |
 | Reset movable menu positions | Pause with `Esc`, then choose `Reset Menus` or press `R` |
@@ -133,6 +133,8 @@ disposition early. Station and NPC markers can be clicked to select them, while
 the `F` and `R` filters continue to apply specifically to planet markers.
 Clicking a planet selects it without changing course; choose `Fly Now` to begin
 a physical autopilot approach or `Add Stop` to append it to the itinerary.
+Clicking a station also populates Destinations and provides `Fly Now`; stations
+cannot currently be added as itinerary stops.
 Numbered planet markers show itinerary order on the map. Systems tagged as
 starter, surveyed, known, or remote can appear in the known systems panel. Warp
 travel charges before switching systems, and non-starter routes can require fuel
@@ -632,9 +634,10 @@ mining statistics; ship sales no longer appear in Fleet management. When docked 
 credits, repair restores damaged hull and shields; the price is based on the
 amount of damage. This remains the immediate way to restore both systems;
 research-gated Auto Repair is slower, hull-only, and consumes carried raw ore.
-Freight Lock services provide hauling contracts: accept one,
-carry the requested cargo to its target station, and return to the contract
-desk to collect the reward. Archive scan desks provide survey contracts: scan
+The Ore Lattice Freight Lock provides authored hauling contract chains. Acquire
+the requested ore, then carry it into range of the named destination station;
+the destination accepts the shipment and pays automatically, with no return to
+the issuing desk. Archive scan desks provide survey contracts: scan
 the named planet, then return to the archive. The station panel shows contract
 progress, completion, expiry, and rewards. Up to three contracts can be active,
 and active contracts survive save/load.
@@ -644,7 +647,35 @@ active contract on the left to inspect its objective, progress, origin,
 destination, deadline, reward, and current status. Use `Focus origin station`
 or double-click the contract when its origin is in the current system; remote
 contracts remain visible with their origin system explained. Pin the window to
-keep it visible after closing the Contracts workspace.
+keep it visible after closing the Contracts workspace. Opening Contracts does
+not close Fleet or other workspace windows, so it can remain alongside ship
+controls while you review and fly contract routes.
+
+Contract details provide `Fly to source now` and `Fly to destination now`
+controls. Authored contract chains provide the same `Fly now` controls beside
+their origin and current-stage destination. A local destination immediately
+engages the normal approach autopilot. A destination in another system names
+that system and remains disabled until you travel there.
+
+Authored contract chains also appear in station services and in the Contracts
+window. They advance through real travel, scanning, mining, production, combat,
+research, cargo, and return actions. The window shows the current stage,
+objective counts, and explicit blockers. Contract cargo is ordinary physical cargo:
+it remains in a ship hold, appears in nearby shared Fleet Inventory, and survives
+save/load. You can abandon a chain in Contracts and restart it at its origin.
+If a required content pack is removed, the saved contract remains visible as
+unavailable instead of silently disappearing.
+
+### Testing The Silent Relay
+
+At Frontier Exchange, approach dock range, open `Exchange Rumors`, and accept
+`The Silent Relay`. Travel northwest beyond the normal traffic lanes to roughly
+`-1840, -1680`. Approach and select the `Pale Relay Derelict`; remain in scanner
+range until its identity scan completes. Right-click it, choose `Loot wreck`, and
+confirm `Pale Relay Archive` appears in Fleet Inventory. Save and reload here to
+verify the recovered-but-not-returned stage. Return to Frontier Exchange, open
+`Exchange Rumors`, and choose `Deliver`; completion awards 650 credits and 8
+Cinder Cooperative reputation exactly once.
 
 Faction reputation is separate from station ownership, culture, and default
 disposition. Contract completion increases the reputation of the sponsoring

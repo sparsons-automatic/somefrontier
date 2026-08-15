@@ -118,7 +118,19 @@ active-contract projection. Selecting a row changes presentation state only;
 the typed focus action returns to gameplay code, which validates the contract
 and current system before opening its origin station. Contract window geometry
 and pin state participate in the shared persistence and `Reset Menus` recovery
-paths.
+paths. Source and destination flight actions return stable contract identifiers
+to gameplay code, which resolves their current station, planet, or NPC indices
+before engaging the normal approach controller. Remote-system destinations are
+projected as disabled controls with explanatory system text.
+
+The same workspace lists active authored contract chains above repeatable
+contracts. Contract-chain rows project the content definition plus persistent
+runtime stage, objective progress, status, and blocker text.
+`AbandonContractChain` is a typed UI action; gameplay code owns the state change
+and origin restart rule. Station service contract-chain buttons likewise return
+typed accept/deliver actions to gameplay code, which validates range and
+consumes delivery cargo through nearby shared-fleet inventory. The UI never
+advances objectives or grants rewards directly.
 
 Research uses a data-driven graph canvas. Pure layout code normalizes authored
 column and row values into stable screen lanes, resolves duplicate positions by

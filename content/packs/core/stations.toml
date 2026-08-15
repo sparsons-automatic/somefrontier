@@ -66,6 +66,7 @@ name = "Exchange Rumors"
 kind = "saloon"
 artwork = "./assets/services/exchange-rumors.png"
 description = "Dockside rumor desk for prices, station directions, and early faction introductions."
+contract_chains = ["derelict_recovery"]
 
 [[stations]]
 id = "ore_lattice_depot"
@@ -120,30 +121,7 @@ name = "Freight Lock"
 kind = "cargo"
 artwork = "./assets/services/freight-lock.png"
 description = "Bulk cargo staging and freight-contract desk for moving industrial stock between stations."
-
-[[stations.services.contracts]]
-id = "ore_to_frontier_iron_run"
-name = "Iron Run to Frontier Exchange"
-kind = "hauling"
-description = "Deliver a small iron ore consignment to the Frontier Exchange."
-target_station = "frontier_exchange"
-item = "iron_ore"
-amount = 6
-reward = 180
-duration_days = 8.0
-reputation_reward = 5
-
-[[stations.services.contracts]]
-id = "ore_to_cinder_copper_run"
-name = "Copper Run to Cinder Yard"
-kind = "hauling"
-description = "Move copper ore to the repair yard before its next parts shipment."
-target_station = "cinder_repair_yard"
-item = "copper_ore"
-amount = 4
-reward = 220
-duration_days = 10.0
-reputation_reward = 6
+contract_chains = ["ore_to_frontier_iron_run", "ore_to_cinder_copper_run"]
 
 [[stations]]
 id = "cinder_repair_yard"
