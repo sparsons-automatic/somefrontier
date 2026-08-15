@@ -167,6 +167,9 @@ pub struct PackChoice {
     pub id: String,
     pub version: String,
     pub description: String,
+    pub enabled: bool,
+    pub locked: bool,
+    pub dependencies: Vec<String>,
     pub options: Vec<PackOptionView>,
 }
 
@@ -206,9 +209,105 @@ pub enum TitleSubmenuAction {
     LoadSave,
     DeleteSave,
     SelectPack(usize),
+    TogglePack,
     CyclePackOption(usize),
     SelectSetting(usize),
     AdjustSetting(i32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackLoadDecisionView {
+    pub save_label: String,
+    pub save_only_available: Vec<String>,
+    pub missing: Vec<String>,
+    pub version_mismatches: Vec<String>,
+    pub current_only: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackLoadDecisionAction {
+    RestoreSaveProfile,
+    UseCurrentProfile,
+    Cancel,
+}
+
+pub fn draw_pack_load_decision(
+    ctx: &egui::Context,
+    screen: [f32; 2],
+    view: &PackLoadDecisionView,
+) -> Vec<PackLoadDecisionAction> {
+    let mut actions = Vec::new();
+    let size = Vec2::new(
+        620.0_f32.min((screen[0] - 72.0).max(320.0)),
+        460.0_f32.min((screen[1] - 72.0).max(300.0)),
+    );
+    let position = egui::pos2((screen[0] - size.x) * 0.5, (screen[1] - size.y) * 0.5);
+    egui::Window::new("Content pack decision")
+        .id(Id::new("title-pack-load-decision"))
+        .order(egui::Order::Foreground)
+        .default_pos(position)
+        .fixed_size(size)
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.heading("This save uses a different content-pack profile");
+            ui.label(format!("Save: {}", view.save_label));
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .id_salt("pack-load-decision-scroll")
+                .max_height((size.y - 210.0).max(100.0))
+                .show(ui, |ui| {
+                    if !view.save_only_available.is_empty() {
+                        ui.strong("Available save packs currently disabled");
+                        for pack in &view.save_only_available {
+                            ui.label(format!("• {pack}"));
+                        }
+                        ui.add_space(8.0);
+                    }
+                    if !view.missing.is_empty() {
+                        ui.colored_label(ui.visuals().warn_fg_color, "Not installed locally");
+                        for pack in &view.missing {
+                            ui.label(format!("• {pack}"));
+                        }
+                        ui.small("Restoring the save profile will continue without these packs.");
+                        ui.add_space(8.0);
+                    }
+                    if !view.version_mismatches.is_empty() {
+                        ui.colored_label(ui.visuals().warn_fg_color, "Different local versions");
+                        for pack in &view.version_mismatches {
+                            ui.label(format!("• {pack}"));
+                        }
+                        ui.add_space(8.0);
+                    }
+                    if !view.current_only.is_empty() {
+                        ui.strong("Enabled now but absent from the save");
+                        for pack in &view.current_only {
+                            ui.label(format!("• {pack}"));
+                        }
+                    }
+                });
+            ui.separator();
+            if ui
+                .button("Restore save profile and load")
+                .on_hover_text(
+                    "Enable locally available packs recorded by the save and disable extras",
+                )
+                .clicked()
+            {
+                actions.push(PackLoadDecisionAction::RestoreSaveProfile);
+            }
+            if ui
+                .button("Use current pack selection and load")
+                .on_hover_text("Try loading with the packs currently enabled on the title screen")
+                .clicked()
+            {
+                actions.push(PackLoadDecisionAction::UseCurrentProfile);
+            }
+            if ui.button("Cancel").clicked() {
+                actions.push(PackLoadDecisionAction::Cancel);
+            }
+        });
+    actions
 }
 
 pub fn draw(
@@ -533,8 +632,13 @@ fn draw_content_packs(
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             for (index, pack) in view.packs.iter().enumerate() {
+                                let label = if pack.enabled {
+                                    pack.name.clone()
+                                } else {
+                                    format!("{} (disabled)", pack.name)
+                                };
                                 if ui
-                                    .selectable_label(index == view.selected_pack, &pack.name)
+                                    .selectable_label(index == view.selected_pack, label)
                                     .clicked()
                                 {
                                     actions.push(TitleSubmenuAction::SelectPack(index));
@@ -554,9 +658,31 @@ fn draw_content_packs(
                         ui.heading(&pack.name);
                         ui.small(format!("{} · v{}", pack.id, pack.version));
                         ui.label(&pack.description);
+                        ui.horizontal(|ui| {
+                            ui.label(if pack.enabled {
+                                "Status: Enabled"
+                            } else {
+                                "Status: Disabled"
+                            });
+                            let action = if pack.enabled { "Disable" } else { "Enable" };
+                            if ui
+                                .add_enabled(!pack.locked, egui::Button::new(action))
+                                .clicked()
+                            {
+                                actions.push(TitleSubmenuAction::TogglePack);
+                            }
+                            if pack.locked {
+                                ui.small("Core content is always enabled.");
+                            }
+                        });
+                        if !pack.dependencies.is_empty() {
+                            ui.small(format!("Dependencies: {}", pack.dependencies.join(", ")));
+                        }
                         ui.separator();
                         ui.strong("Options");
-                        if pack.options.is_empty() {
+                        if !pack.enabled {
+                            ui.label("Enable this pack to configure its new-game options.");
+                        } else if pack.options.is_empty() {
                             ui.label("No configurable options declared.");
                         }
                         egui::ScrollArea::vertical()
@@ -575,7 +701,7 @@ fn draw_content_packs(
                                                 |ui| {
                                                     if ui
                                                         .add_enabled(
-                                                            option.interactive,
+                                                            pack.enabled && option.interactive,
                                                             egui::Button::new(&option.value),
                                                         )
                                                         .clicked()

@@ -171,13 +171,21 @@ mv content/packs/remote-duskfall content/packs.disabled/remote-duskfall
 ```
 
 The game only scans direct child directories of `content/packs/`, so moving a
-pack elsewhere disables it. Do not remove `content/packs/core/`; it contains the
-base items, stations, recipes, starter inventory, starter system, and default
-planet content.
+pack elsewhere uninstalls it. Installed addons can instead be enabled or disabled
+from the title-screen Content Packs menu for each new-game profile. `core` is
+forced on by both the UI and loader; do not remove `content/packs/core/`, because
+it contains the base items, stations, recipes, starter inventory, starter system,
+and default planet content. Enabling a pack also enables its installed required
+and compatibility dependencies. Disabling a dependency cascades to enabled
+dependents.
 
-Save files may still reference content from removed packs. Until save migration
-and missing-content recovery screens exist, remove optional packs before relying
-on long-lived saves that contain their items, planets, or system IDs.
+Save files record the enabled pack IDs and versions. A load-profile decision is
+shown when installed/enabled packs differ: the operator can restore all locally
+available packs from the save profile or deliberately continue with the current
+selection. Missing packs and version mismatches are reported before launch.
+Legacy saves without this metadata adopt the current selection on first load.
+Content authors should still keep stable IDs and migration-safe defaults because
+continuing without a recorded pack may discard references that cannot resolve.
 
 ## Namespaced IDs
 
