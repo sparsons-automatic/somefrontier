@@ -666,6 +666,15 @@ save/load. You can abandon a chain in Contracts and restart it at its origin.
 If a required content pack is removed, the saved contract remains visible as
 unavailable instead of silently disappearing.
 
+Persistent contract-relevant discoveries are also reconciled when you accept,
+restart, or load a contract. Approaching, identifying, looting, destroying, or
+salvaging a target before accepting its contract does not invalidate the chain;
+later stages advance from the facts the world already established. If a unique
+`contract`-tier cargo item is later lost and its original wreck is missing,
+empty, or fully salvaged, return to the issuing service and choose `Recover
+cargo`. The issuer restores only the missing amount when your active hold has
+space. The original wreck remains salvaged, and rewards still pay only once.
+
 ### Testing The Silent Relay
 
 At Frontier Exchange, approach dock range, open `Exchange Rumors`, and accept
@@ -676,6 +685,12 @@ confirm `Pale Relay Archive` appears in Fleet Inventory. Save and reload here to
 verify the recovered-but-not-returned stage. Return to Frontier Exchange, open
 `Exchange Rumors`, and choose `Deliver`; completion awards 650 credits and 8
 Cinder Cooperative reputation exactly once.
+
+To test out-of-order recovery, loot the archive before accepting `The Silent
+Relay`, then accept it at Exchange Rumors; it should open directly at the return
+stage. To test lost-cargo recovery, discard or otherwise remove the archive after
+the wreck has been emptied, return to Exchange Rumors, and choose `Recover
+cargo`. A second action delivers the restored archive.
 
 Faction reputation is separate from station ownership, culture, and default
 disposition. Contract completion increases the reputation of the sponsoring

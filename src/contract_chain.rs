@@ -2,7 +2,8 @@ use crate::content::{ContractChainDef, ContractChainObjectiveDef, ContractChainO
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContractChainEventKind {
     Reached,
     Scanned,
@@ -12,20 +13,29 @@ pub enum ContractChainEventKind {
     Delivered,
     Mined,
     Destroyed,
+    Salvaged,
     Protected,
     ResearchCompleted,
     Survived,
     Returned,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContractChainEvent {
     pub id: String,
     pub kind: ContractChainEventKind,
+    #[serde(default)]
     pub target: Option<String>,
+    #[serde(default)]
     pub item: Option<String>,
+    #[serde(default = "default_event_amount")]
     pub amount: u32,
+    #[serde(default)]
     pub elapsed_seconds: f32,
+}
+
+fn default_event_amount() -> u32 {
+    1
 }
 
 impl ContractChainEvent {

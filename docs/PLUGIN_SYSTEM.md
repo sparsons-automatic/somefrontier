@@ -654,6 +654,22 @@ Rewards support positive `credits`, signed `reputation` with a faction target,
 Completion history and processed event IDs make rewards and progress idempotent.
 Active stage progress, blockers, abandonment, and missing-content state persist.
 
+The runtime also persists a bounded, deduplicated world-fact ledger for durable
+`reach_location`, `scan_identify`, `loot_item`, and `destroy_target` evidence.
+Final salvage records destruction evidence as well. Accepting or restarting a
+chain replays those facts across sequential stages, and load reconciliation does
+the same for active chains. Stronger evidence implies its necessary earlier
+contact facts: scanning implies reaching; looting or destroying implies reaching
+and identifying; salvage additionally implies destruction. Use stable target and
+item references so this generic replay remains valid for pack-authored chains.
+
+Items declared with `tier = "contract"` are treated as unique contract cargo.
+If a current `loot_item` or `deliver_item` objective requires one, no owned ship
+holds it, and its original source can no longer supply it, the issuing service
+offers a recover-cargo action. Recovery fills only the missing amount, respects
+active-ship cargo capacity, never respawns the source, and does not duplicate
+completion rewards. Other item tiers do not receive this recovery behavior.
+
 ```toml
 [[contract_chains]]
 id = "archive_recovery"
