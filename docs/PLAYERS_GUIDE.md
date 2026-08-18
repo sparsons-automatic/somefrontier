@@ -137,8 +137,10 @@ Clicking a station also populates Destinations and provides `Fly Now`; stations
 cannot currently be added as itinerary stops.
 Numbered planet markers show itinerary order on the map. Systems tagged as
 starter, surveyed, known, or remote can appear in the known systems panel. Warp
-travel charges before switching systems, and non-starter routes can require fuel
-canisters. The starter system is always free to return to.
+travel requires Warp Drive level 1 on the currently controlled ship and charges
+before switching systems; upgrading another owned ship does not unlock the
+active one. Non-starter routes can also require fuel canisters. The starter
+system has no fuel cost but still requires an installed warp drive.
 
 `Activate Route` approaches every itinerary stop in order and advances after the
 ship reaches each planet's interaction range. Manual thrust or turning pauses
@@ -177,10 +179,11 @@ closing and reopening the map, and after panning, zooming, resizing the map, and
 pinning Destinations. Planet markers should never bob or drift with ship motion;
 only the ship marker and slow authored planet orbits should move.
 
-Known system rows include route readiness guidance. If a remote route is not
-ready, the row calls out the missing fuel and can point at a local station that
-stocks it. If the ship can warp but the route leads to harsher remote space, the
-row can recommend scanner preparation before departure.
+Known system rows include route readiness guidance. If the active ship lacks the
+upgrade, the row reports `Warp drive required` before checking fuel. Otherwise,
+it calls out missing fuel and can point at a local station that stocks it. If
+the ship can warp but the route leads to harsher remote space, the row can
+recommend scanner preparation before departure.
 
 Planets can be selected from local space or the map without immediately changing
 course. The map selection populates Destinations; local-space inspection opens
@@ -363,8 +366,13 @@ ships and drones. Inventory combines linked holds into one searchable manifest,
 shows distributed mass and capacity, preserves per-hull provenance, and lists
 remote or sharing-disabled hulls under `Unavailable cargo`.
 Production exposes the complete Smelt/Craft/Process workspace for the active
-hull. Selecting an inactive mining drone instead exposes its installed onboard
-smelter; other inactive ships explain that direct control is required.
+hull. Its currently running recipe uses green text, a `▶` marker, and a subtle
+row tint. Hover a recipe name or its Status cell for a compact activity line
+explaining whether it is active, waiting behind another recipe, missing
+materials, blocked by cargo capacity, locked, or simply not queued. Selecting
+an inactive mining drone instead exposes its installed onboard smelter with the
+same active-work highlight; other inactive ships explain that direct control is
+required.
 
 After a destroyed drone's cargo is empty, right-click its wreck in local space
 and choose `Salvage`. Dismantling takes 150 seconds while the active ship remains
@@ -470,12 +478,13 @@ Open inventory, then choose `Inspect ship upgrades` in the Ship Pane. The
 movable stock-egui window lists every upgrade's current level, effect, next
 component cost, and the amount currently held in cargo. Upgrades consume those
 crafted components and immediately improve ship systems such as thrust, turning,
-energy, shields, survey drone behavior, warp charge time, scan depth, and cargo
-rating. Pin the window to keep it open while returning to other workspaces.
+energy, shields, survey drone behavior, warp capability and charge time, scan
+depth, and cargo rating. Pin the window to keep it open while returning to other
+workspaces.
 
-For the first remote route, fuel canisters make the jump possible and Scanner
-Array level 2 is recommended so improved survey work reaches deeper resource
-data after arrival.
+For the first remote route, install Warp Drive level 1 on the ship that will make
+the jump and carry the required fuel canister. Scanner Array level 2 is
+recommended so improved survey work reaches deeper resource data after arrival.
 
 Upgrade costs scale by level. If you cannot afford an upgrade, its action is
 disabled until the required items are in inventory. Shift and Control retain
@@ -484,10 +493,11 @@ components remain available.
 
 Upgrade catalogs are hull-specific while levels remain stored per owned ship.
 Conventional ships use Engine Tuning, Maneuver Thrusters, Energy Core, Shield
-Matrix, Drone Bay, Fuel Systems, Scanner Array, and Cargo Hold. Autonomous
-mining drones instead use Mining Head, Ore Processor, Cargo Pods, Navigation
-Core, Job Controller, Delivery Thrusters, Industrial Plating, and Drone Shield
-Matrix. These improve mining speed, bonus ore chance, drone cargo capacity,
+Matrix, Drone Bay, Warp Drive, Fuel Systems, Scanner Array, and Cargo Hold.
+Autonomous mining drones use Warp Drive alongside Mining Head, Ore Processor,
+Cargo Pods, Navigation Core, Job Controller, Delivery Thrusters, Industrial
+Plating, and Drone Shield Matrix. These improve mining speed, bonus ore chance,
+drone cargo capacity,
 operating range, job quota, autonomous travel speed, hull, and shields. Buying an
 upgrade affects only the currently controlled hull; switch control to inspect or
 improve another fleet ship.
@@ -610,8 +620,10 @@ range, reputation, or availability requirements before they can be used; a
 station without a repair service does not advertise Repair.
 
 Current service groups can include trade stock and research leads. Market rows
-provide explicit Buy and Sell buttons for one-unit transactions when the ship is
-in range and the offer is available. Limited stock is replenished using
+provide explicit Buy and Sell buttons when the ship is in range and the offer is
+available. A normal click trades one unit; hold `Shift` for up to 5 units or
+`Ctrl` for up to 10. The displayed amount and total price account for stock,
+credits, cargo space, and owned cargo. Limited stock is replenished using
 the game's elapsed time; the trade row shows the current stock and remaining
 time until its next restock. Selling cargo back to a station restores stock up
 to that offer's configured capacity. Research leads point to progression-tree

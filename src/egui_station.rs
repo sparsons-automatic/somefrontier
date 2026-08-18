@@ -16,6 +16,8 @@ pub struct TradeRow {
     pub cargo: u32,
     pub buy_price: u32,
     pub sell_price: u32,
+    pub buy_amount: u32,
+    pub sell_amount: u32,
     pub can_buy: bool,
     pub can_sell: bool,
 }
@@ -83,6 +85,7 @@ pub struct StationPaneView {
     pub service_description: Option<String>,
     pub service_status: Option<String>,
     pub trade: Vec<TradeRow>,
+    pub trade_quantity: u32,
     pub garage: bool,
     pub repair_label: String,
     pub repair_enabled: bool,
@@ -283,6 +286,10 @@ fn draw_trade(ui: &mut egui::Ui, view: &StationPaneView, actions: &mut Vec<Stati
     }
     ui.separator();
     ui.heading("Market");
+    ui.small(format!(
+        "Trade quantity ×{} · hold Shift for ×5 or Ctrl for ×10",
+        view.trade_quantity
+    ));
     egui::Grid::new("station-trade-grid")
         .striped(true)
         .show(ui, |ui| {
@@ -294,20 +301,32 @@ fn draw_trade(ui: &mut egui::Ui, view: &StationPaneView, actions: &mut Vec<Stati
                 ui.label(&row.item);
                 ui.label(&row.stock);
                 ui.label(row.cargo.to_string());
-                if ui
-                    .add_enabled(
-                        row.can_buy,
-                        egui::Button::new(format!("{} cr", row.buy_price)),
+                let buy_label = if row.buy_amount > 0 {
+                    format!(
+                        "×{} · {} cr",
+                        row.buy_amount,
+                        row.buy_price.saturating_mul(row.buy_amount)
                     )
+                } else {
+                    "Unavailable".to_string()
+                };
+                if ui
+                    .add_enabled(row.can_buy, egui::Button::new(buy_label))
                     .clicked()
                 {
                     actions.push(StationUiAction::Buy(index));
                 }
-                if ui
-                    .add_enabled(
-                        row.can_sell,
-                        egui::Button::new(format!("{} cr", row.sell_price)),
+                let sell_label = if row.sell_amount > 0 {
+                    format!(
+                        "×{} · {} cr",
+                        row.sell_amount,
+                        row.sell_price.saturating_mul(row.sell_amount)
                     )
+                } else {
+                    "No cargo".to_string()
+                };
+                if ui
+                    .add_enabled(row.can_sell, egui::Button::new(sell_label))
                     .clicked()
                 {
                     actions.push(StationUiAction::Sell(index));

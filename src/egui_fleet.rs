@@ -96,6 +96,7 @@ pub struct DroneSmeltRow {
     pub name: String,
     pub queued: u32,
     pub progress: f32,
+    pub active: bool,
     pub unlocked: bool,
 }
 
@@ -467,20 +468,9 @@ fn draw_contents(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<Flee
                 if drone.smelter_installed {
                     ui.small("Queues run autonomously from this drone's own inventory.");
                     for (index, row) in drone.smelt_rows.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "{} · queued {} · {:.0}%",
-                                row.name,
-                                row.queued,
-                                row.progress * 100.0
-                            ));
-                            if ui
-                                .add_enabled(row.unlocked, egui::Button::new("Queue"))
-                                .clicked()
-                            {
-                                actions.push(FleetUiAction::QueueDroneSmelt(index));
-                            }
-                        });
+                        if draw_drone_smelt_row(ui, row) {
+                            actions.push(FleetUiAction::QueueDroneSmelt(index));
+                        }
                     }
                 } else {
                     ui.small("Install the Drone smelter upgrade to process ore autonomously.");
@@ -699,26 +689,52 @@ fn draw_production(
             return;
         }
         for (index, row) in drone.smelt_rows.iter().enumerate() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!(
-                    "{} · queued {} · {:.0}%",
-                    row.name,
-                    row.queued,
-                    row.progress * 100.0
-                ));
-                if ui
-                    .add_enabled(row.unlocked, egui::Button::new("Queue"))
-                    .clicked()
-                {
-                    actions.push(FleetUiAction::QueueDroneSmelt(index));
-                }
-            });
+            if draw_drone_smelt_row(ui, row) {
+                actions.push(FleetUiAction::QueueDroneSmelt(index));
+            }
         }
         return;
     }
 
     ui.label("General production is available on the currently controlled hull.");
     ui.small("Double-click this hull's tab or use Ship stats → Switch control to manage its production queues.");
+}
+
+fn draw_drone_smelt_row(ui: &mut egui::Ui, row: &DroneSmeltRow) -> bool {
+    let active_color = egui::Color32::from_rgb(104, 211, 153);
+    let mut frame = egui::Frame::group(ui.style()).inner_margin(6.0);
+    if row.active {
+        frame = frame
+            .fill(egui::Color32::from_rgba_premultiplied(45, 92, 67, 90))
+            .stroke(egui::Stroke::new(1.0_f32, active_color));
+    }
+    frame
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if row.active {
+                    ui.colored_label(
+                        active_color,
+                        egui::RichText::new(format!("▶ {}", row.name)).strong(),
+                    );
+                } else {
+                    ui.label(&row.name);
+                }
+                if row.active {
+                    ui.colored_label(active_color, format!("queued {}", row.queued));
+                } else {
+                    ui.label(format!("queued {}", row.queued));
+                }
+                ui.add(
+                    egui::ProgressBar::new(row.progress.clamp(0.0, 1.0))
+                        .desired_width(90.0)
+                        .text(format!("{:.0}%", row.progress * 100.0)),
+                );
+                ui.add_enabled(row.unlocked, egui::Button::new("Queue"))
+                    .clicked()
+            })
+            .inner
+        })
+        .inner
 }
 
 fn draw_upgrades(ui: &mut egui::Ui, view: &FleetPaneView, actions: &mut Vec<FleetUiAction>) {

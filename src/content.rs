@@ -5188,6 +5188,7 @@ mod tests {
             "core:energy_core",
             "core:shields",
             "core:drone_bay",
+            "core:warp_drive",
             "core:fuel_systems",
             "core:scanner_array",
             "core:cargo_hold",

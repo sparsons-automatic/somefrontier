@@ -58,6 +58,7 @@ power_modules = ["compact_fission_cell"]
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = []
 upgrade_catalog = [
+  "warp_drive",
   "mining_head",
   "ore_processor",
   "smelter",
@@ -90,6 +91,7 @@ power_modules = ["compact_fission_cell"]
 shield_slots = ["balanced_shield_matrix"]
 weapon_slots = ["point_defense_turret"]
 upgrade_catalog = [
+  "warp_drive",
   "mining_head",
   "ore_processor",
   "smelter",

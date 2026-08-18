@@ -15,12 +15,41 @@ pub struct ProductionRow {
     pub status: String,
     pub percent: String,
     pub active: bool,
+    pub activity: ProductionActivity,
     pub enabled: bool,
     pub unlocked: bool,
     pub requirements: Vec<String>,
     pub sub_requirements: Vec<String>,
     pub equipment_links: Vec<String>,
     pub could_make: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProductionActivity {
+    Active(String),
+    Blocked(String),
+    Waiting(String),
+    Idle(String),
+}
+
+impl ProductionActivity {
+    fn label(&self) -> String {
+        match self {
+            Self::Active(detail) => format!("Active · {detail}"),
+            Self::Blocked(detail) => format!("Blocked · {detail}"),
+            Self::Waiting(detail) => format!("Waiting · {detail}"),
+            Self::Idle(detail) => format!("Idle · {detail}"),
+        }
+    }
+
+    fn color(&self, ui: &egui::Ui) -> egui::Color32 {
+        match self {
+            Self::Active(_) => production_active_color(),
+            Self::Blocked(_) => ui.visuals().warn_fg_color,
+            Self::Waiting(_) => egui::Color32::from_rgb(225, 184, 92),
+            Self::Idle(_) => ui.visuals().weak_text_color(),
+        }
+    }
 }
 
 impl ProductionRow {
@@ -176,7 +205,9 @@ fn draw_production_pane(
                 ui.end_row();
 
                 for (row_index, row) in view.production.iter().enumerate() {
-                    let response = ui.selectable_label(row_index == selected, &row.item);
+                    let item_label = production_item_label(row);
+                    let response = ui.selectable_label(row_index == selected, item_label);
+                    let mut row_rect = response.rect;
                     if response.clicked() {
                         selected = row_index;
                         if row.accepts_input() {
@@ -185,7 +216,7 @@ fn draw_production_pane(
                     }
                     response.on_hover_ui(|ui| draw_recipe_info_card(ui, row));
 
-                    ui.horizontal(|ui| {
+                    let keep_response = ui.horizontal(|ui| {
                         if keep_button(
                             ui,
                             "−",
@@ -216,16 +247,57 @@ fn draw_production_pane(
                             });
                         }
                     });
-                    ui.add_enabled(row.enabled, egui::Label::new(&row.status));
-                    ui.add_enabled(row.enabled, egui::Label::new(&row.percent));
-                    let mut active = row.active;
-                    ui.add_enabled(false, egui::Checkbox::new(&mut active, ""));
+                    row_rect = row_rect.union(keep_response.response.rect);
+                    if row.active {
+                        let status_response = ui.colored_label(
+                            production_active_color(),
+                            egui::RichText::new(&row.status).strong(),
+                        );
+                        let status_response =
+                            status_response.on_hover_ui(|ui| draw_recipe_info_card(ui, row));
+                        row_rect = row_rect.union(status_response.rect);
+                        let percent_response = ui.colored_label(
+                            production_active_color(),
+                            egui::RichText::new(&row.percent).strong(),
+                        );
+                        row_rect = row_rect.union(percent_response.rect);
+                        let active_response = ui.colored_label(production_active_color(), "●");
+                        row_rect = row_rect.union(active_response.rect);
+                        ui.painter().rect_filled(
+                            row_rect.expand2(egui::vec2(4.0, 2.0)),
+                            2.0,
+                            production_active_tint(),
+                        );
+                    } else {
+                        ui.add_enabled(row.enabled, egui::Label::new(&row.status))
+                            .on_hover_ui(|ui| draw_recipe_info_card(ui, row));
+                        ui.add_enabled(row.enabled, egui::Label::new(&row.percent));
+                        ui.weak("—");
+                    }
                     ui.end_row();
                 }
             });
     });
     ui.ctx()
         .data_mut(|data| data.insert_temp(selected_id, selected));
+}
+
+fn production_active_color() -> egui::Color32 {
+    egui::Color32::from_rgb(104, 211, 153)
+}
+
+fn production_active_tint() -> egui::Color32 {
+    egui::Color32::from_rgba_premultiplied(45, 92, 67, 22)
+}
+
+fn production_item_label(row: &ProductionRow) -> egui::RichText {
+    if row.active {
+        egui::RichText::new(format!("▶ {}", row.item))
+            .strong()
+            .color(production_active_color())
+    } else {
+        egui::RichText::new(&row.item)
+    }
 }
 
 pub fn draw_production_page(
@@ -241,6 +313,10 @@ fn draw_recipe_info_card(ui: &mut egui::Ui, row: &ProductionRow) {
     ui.set_max_width(340.0);
     ui.strong(&row.item);
     ui.label("Production recipe");
+    ui.colored_label(
+        row.activity.color(ui),
+        egui::RichText::new(row.activity.label()).strong(),
+    );
     info_card_section(ui, "Produces", std::slice::from_ref(&row.output));
     info_card_section(ui, "Requires", &row.requirements);
     if !row.sub_requirements.is_empty() {
@@ -309,6 +385,7 @@ mod tests {
                     status: "Ready".to_string(),
                     percent: "0%".to_string(),
                     active: false,
+                    activity: ProductionActivity::Idle("Not queued".to_string()),
                     enabled: true,
                     unlocked: true,
                     requirements: Vec::new(),
@@ -363,6 +440,7 @@ mod tests {
             status: "0/100".to_string(),
             percent: String::new(),
             active: false,
+            activity: ProductionActivity::Idle("Not queued".to_string()),
             enabled: false,
             unlocked: true,
             requirements: Vec::new(),
@@ -380,6 +458,17 @@ mod tests {
         assert_eq!(keep_chip_label("+", 1), "+");
         assert_eq!(keep_chip_label("−", 10), "−10");
         assert_eq!(keep_chip_label("+", 20), "+20");
+    }
+
+    #[test]
+    fn active_production_rows_receive_a_distinct_working_label() {
+        let mut view = production_scroll_test_view();
+        let idle = production_item_label(&view.production[0]);
+        view.production[0].active = true;
+        let active = production_item_label(&view.production[0]);
+
+        assert_eq!(idle.text(), "Recipe 0");
+        assert_eq!(active.text(), "▶ Recipe 0");
     }
 
     #[test]

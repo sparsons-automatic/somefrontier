@@ -269,6 +269,12 @@ tier = "exotic"
 unit_mass = 35.0
 
 [[items]]
+id = "warp_drive_assembly"
+name = "Warp drive assembly"
+tier = "ship_component"
+unit_mass = 180.0
+
+[[items]]
 id = "film_solar_sail"
 name = "Film solar sail"
 tier = "power_module"

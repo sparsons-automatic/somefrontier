@@ -102,7 +102,7 @@ const STARMAP_ZOOM_STEP: f32 = 1.15;
 const STARMAP_PAN_PIXELS_TO_WORLD: f32 = 1.35;
 const ARC_SEGMENTS: usize = 72;
 const INVENTORY_SLOTS: usize = 200;
-const SHIP_UPGRADE_COUNT: usize = 17;
+const SHIP_UPGRADE_COUNT: usize = 18;
 const OWNED_SHIP_TRANSFER_RANGE: f32 = 180.0;
 const OWNED_SHIP_DOUBLE_CLICK_SECONDS: f64 = 0.35;
 const DEBUG_CONSOLE_HISTORY_LIMIT: usize = 32;
@@ -1949,6 +1949,7 @@ enum ShipUpgradeKind {
     EnergyCore,
     Shields,
     DroneBay,
+    WarpDrive,
     FuelSystems,
     ScannerArray,
     CargoHold,
@@ -2458,6 +2459,7 @@ impl GameState {
         sync_npc_identification(&mut self.npc_ships, &self.combat_intel);
 
         self.inventory = Inventory::from_save(&self.content_registry, &save.inventory);
+        self.ship_upgrades = make_ship_upgrades();
         apply_upgrade_save(&mut self.ship_upgrades, &save.upgrades);
         self.rebuild_ship_from_upgrades();
 
@@ -6352,6 +6354,7 @@ impl ShipUpgradeKind {
             Self::EnergyCore => "core:energy_core",
             Self::Shields => "core:shields",
             Self::DroneBay => "core:drone_bay",
+            Self::WarpDrive => "core:warp_drive",
             Self::FuelSystems => "core:fuel_systems",
             Self::ScannerArray => "core:scanner_array",
             Self::CargoHold => "core:cargo_hold",
@@ -6374,6 +6377,7 @@ impl ShipUpgradeKind {
             "core:energy_core" => Some(Self::EnergyCore),
             "core:shields" => Some(Self::Shields),
             "core:drone_bay" => Some(Self::DroneBay),
+            "core:warp_drive" => Some(Self::WarpDrive),
             "core:fuel_systems" => Some(Self::FuelSystems),
             "core:scanner_array" => Some(Self::ScannerArray),
             "core:cargo_hold" => Some(Self::CargoHold),
@@ -6397,6 +6401,7 @@ impl ShipUpgradeKind {
             Self::EnergyCore => "Energy core",
             Self::Shields => "Shield matrix",
             Self::DroneBay => "Drone bay",
+            Self::WarpDrive => "Warp drive",
             Self::FuelSystems => "Fuel systems",
             Self::ScannerArray => "Scanner array",
             Self::CargoHold => "Cargo hold",
@@ -6419,6 +6424,9 @@ impl ShipUpgradeKind {
             Self::EnergyCore => "+15 energy capacity, +3 recharge",
             Self::Shields => "+15 shield capacity",
             Self::DroneBay => "+10% survey drone return chance",
+            Self::WarpDrive => {
+                "Level 1 enables warp; each additional level reduces charge time by 10%"
+            }
             Self::FuelSystems => "-10% warp charge time",
             Self::ScannerArray => {
                 "+1 combat scan depth and +15% scan speed per level; +1 survey depth every 2 levels"
@@ -6508,6 +6516,7 @@ fn make_ship_upgrades() -> [ShipUpgrade; SHIP_UPGRADE_COUNT] {
         ShipUpgrade::new(ShipUpgradeKind::EnergyCore),
         ShipUpgrade::new(ShipUpgradeKind::Shields),
         ShipUpgrade::new(ShipUpgradeKind::DroneBay),
+        ShipUpgrade::new(ShipUpgradeKind::WarpDrive),
         ShipUpgrade::new(ShipUpgradeKind::FuelSystems),
         ShipUpgrade::new(ShipUpgradeKind::ScannerArray),
         ShipUpgrade::new(ShipUpgradeKind::CargoHold),
@@ -6602,8 +6611,14 @@ fn scanner_survey_bonus(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> u8 {
 }
 
 fn warp_charge_seconds(upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
+    let drive_level = ship_upgrade_level(upgrades, ShipUpgradeKind::WarpDrive);
     let fuel_level = ship_upgrade_level(upgrades, ShipUpgradeKind::FuelSystems) as f32;
-    WARP_CHARGE_SECONDS * (1.0 - fuel_level * 0.10).max(0.45)
+    let charge_reduction_levels = drive_level.saturating_sub(1) as f32 + fuel_level;
+    WARP_CHARGE_SECONDS * (1.0 - charge_reduction_levels * 0.10).max(0.45)
+}
+
+fn active_ship_has_warp_drive(game: &GameState) -> bool {
+    ship_upgrade_level(&game.ship_upgrades, ShipUpgradeKind::WarpDrive) >= 1
 }
 
 fn cargo_rating_kg(ship: &Ship, upgrades: &[ShipUpgrade; SHIP_UPGRADE_COUNT]) -> f32 {
@@ -7229,6 +7244,7 @@ fn apply_ship_upgrade(ship: &mut Ship, kind: ShipUpgradeKind) {
             ship.systems.shields.restore(15.0);
         }
         ShipUpgradeKind::DroneBay
+        | ShipUpgradeKind::WarpDrive
         | ShipUpgradeKind::FuelSystems
         | ShipUpgradeKind::ScannerArray
         | ShipUpgradeKind::CargoHold
@@ -9323,7 +9339,7 @@ async fn main() {
                     let pins = egui_pin_snapshot();
                     let keep_click_step = production_keep_click_step();
                     let quantity_step = keep_click_step.max(1) as u32;
-                    let upgrade_purchase_count = work_setting_step().max(1) as u32;
+                    let modifier_quantity = work_setting_step().max(1) as u32;
                     let egui_windows_allowed = !game.escape_dialog_open;
                     let inventory_visible =
                         egui_windows_allowed && egui_inventory_windows_visible(game, pins);
@@ -9346,13 +9362,14 @@ async fn main() {
                         inventory_visible.then(|| inventory_overlay_view(game, keep_click_step));
                     let planet_view =
                         planet_visible.then(|| planet_pane_view(game, keep_click_step));
-                    let station_view = station_visible.then(|| station_pane_view(game));
+                    let station_view =
+                        station_visible.then(|| station_pane_view(game, modifier_quantity));
                     let npc_view = npc_visible.then(|| npc_pane_view(game, quantity_step));
                     let fleet_view = fleet_visible.then(|| fleet_pane_view(game, quantity_step));
                     let content_view = content_visible.then(|| content_browser_view(game));
                     let contracts_view = contracts_visible.then(|| contracts_view(game));
                     let upgrades_view =
-                        upgrades_visible.then(|| upgrades_view(game, upgrade_purchase_count));
+                        upgrades_visible.then(|| upgrades_view(game, modifier_quantity));
                     let research_view = research_visible.then(|| research_view(game));
                     let destinations_view = destinations_visible.then(|| destinations_view(game));
                     let operations_view = operations_visible.then(|| operations_view(game));
@@ -9487,7 +9504,7 @@ async fn main() {
                             apply_planet_ui_actions(game, planet_actions, keep_click_step);
                         }
                         if egui_station_was_active && station_visible {
-                            apply_station_ui_actions(game, station_actions);
+                            apply_station_ui_actions(game, station_actions, modifier_quantity);
                         }
                         if egui_npc_was_active && npc_visible {
                             apply_npc_ui_actions(game, npc_actions, quantity_step);
@@ -9502,11 +9519,7 @@ async fn main() {
                             apply_contracts_ui_actions(game, contracts_actions);
                         }
                         if egui_upgrades_was_active && upgrades_visible {
-                            apply_upgrades_ui_actions(
-                                game,
-                                upgrades_actions,
-                                upgrade_purchase_count,
-                            );
+                            apply_upgrades_ui_actions(game, upgrades_actions, modifier_quantity);
                         }
                         if egui_research_was_active && research_visible {
                             apply_research_ui_actions(game, research_actions);
@@ -13110,6 +13123,10 @@ fn start_player_warp_charge(game: &mut GameState, target_system_id: String) {
     {
         return;
     }
+    if !active_ship_has_warp_drive(game) {
+        push_operation_feedback(game, "Travel", "Warp drive required".to_string());
+        return;
+    }
 
     let cost = warp_cost(
         &game.content_registry,
@@ -13137,6 +13154,13 @@ fn start_player_warp_charge(game: &mut GameState, target_system_id: String) {
 
 fn update_pending_warp(game: &mut GameState, dt: f32) {
     if game.scene_transition.is_some() {
+        return;
+    }
+
+    if !active_ship_has_warp_drive(game) {
+        if game.pending_warp.take().is_some() {
+            push_operation_feedback(game, "Travel", "Warp drive required".to_string());
+        }
         return;
     }
 
@@ -13303,6 +13327,9 @@ fn route_readiness_summary(game: &GameState, target_system_id: &str) -> String {
     let Some(target_system) = game.content_registry.systems.get(target_system_id) else {
         return "Route data unavailable".to_string();
     };
+    if !active_ship_has_warp_drive(game) {
+        return "Warp drive required".to_string();
+    }
     let cost = warp_cost(
         &game.content_registry,
         &game.current_system_id,
@@ -15825,11 +15852,25 @@ fn select_station_service(
     true
 }
 
+fn station_trade_buy_amount(game: &GameState, offer: &TradeOffer, requested: u32) -> u32 {
+    let requested = requested.max(1);
+    let stock = offer.stock.unwrap_or(requested);
+    let affordable = game.credits / offer.buy_price.max(1);
+    inventory_receivable_count(
+        &game.inventory,
+        &game.ship,
+        &game.ship_upgrades,
+        &offer.item,
+        requested.min(stock).min(affordable),
+    )
+}
+
 fn buy_station_trade_offer(
     game: &mut GameState,
     station_index: usize,
     service_index: usize,
     offer_index: usize,
+    requested: u32,
 ) -> bool {
     let in_range = game
         .stations
@@ -15850,37 +15891,53 @@ fn buy_station_trade_offer(
     {
         return true;
     }
-    let Some(station) = game.stations.get_mut(station_index) else {
+    let Some(station) = game.stations.get(station_index) else {
         return false;
     };
     let station_name = station.name.clone();
     let Some(offer) = station
         .services
-        .get_mut(service_index)
-        .and_then(|service| service.trade.get_mut(offer_index))
+        .get(service_index)
+        .and_then(|service| service.trade.get(offer_index))
     else {
         return false;
     };
-    if offer.unavailable || offer.stock == Some(0) || game.credits < offer.buy_price {
+    let amount = station_trade_buy_amount(game, offer, requested);
+    if offer.unavailable || amount == 0 {
         return true;
     }
 
-    game.credits -= offer.buy_price;
-    if let Some(stock) = offer.stock.as_mut() {
-        *stock = stock.saturating_sub(1);
-    }
     let item = offer.item.clone();
     let buy_price = offer.buy_price;
+    game.credits = game
+        .credits
+        .saturating_sub(buy_price.saturating_mul(amount));
+    if let Some(stock) = game.stations[station_index].services[service_index].trade[offer_index]
+        .stock
+        .as_mut()
+    {
+        *stock = stock.saturating_sub(amount);
+    }
 
-    game.inventory.add_item(item.clone(), 1);
+    game.inventory.add_item(item.clone(), amount);
     game.save_dirty = true;
     push_operation_feedback(
         game,
         "Trade",
-        format!(
-            "Bought {} from {} for {} cr",
-            item.name, station_name, buy_price
-        ),
+        if amount == 1 {
+            format!(
+                "Bought {} from {} for {} cr",
+                item.name, station_name, buy_price
+            )
+        } else {
+            format!(
+                "Bought {} ×{} from {} for {} cr",
+                item.name,
+                amount,
+                station_name,
+                buy_price.saturating_mul(amount)
+            )
+        },
     );
     push_route_ready_feedback(game);
     true
@@ -15891,6 +15948,7 @@ fn sell_station_trade_offer(
     station_index: usize,
     service_index: usize,
     offer_index: usize,
+    requested: u32,
 ) -> bool {
     let in_range = game
         .stations
@@ -15911,28 +15969,35 @@ fn sell_station_trade_offer(
     {
         return true;
     }
-    let Some(station) = game.stations.get_mut(station_index) else {
+    let Some(station) = game.stations.get(station_index) else {
         return false;
     };
     let station_name = station.name.clone();
     let Some(offer) = station
         .services
-        .get_mut(service_index)
-        .and_then(|service| service.trade.get_mut(offer_index))
+        .get(service_index)
+        .and_then(|service| service.trade.get(offer_index))
     else {
         return false;
     };
-    if game.inventory.count(&offer.item) == 0 {
+    let amount = requested.max(1).min(game.inventory.count(&offer.item));
+    if amount == 0 {
         return true;
     }
 
     let item = offer.item.clone();
     let sell_price = offer.sell_price;
-    game.inventory.remove_item(&item, 1);
-    game.credits = game.credits.saturating_add(sell_price);
-    if let Some(stock) = offer.stock.as_mut() {
-        *stock = stock.saturating_add(1);
-        if let Some(max_stock) = offer.max_stock {
+    let max_stock = offer.max_stock;
+    game.inventory.remove_item(&item, amount);
+    game.credits = game
+        .credits
+        .saturating_add(sell_price.saturating_mul(amount));
+    if let Some(stock) = game.stations[station_index].services[service_index].trade[offer_index]
+        .stock
+        .as_mut()
+    {
+        *stock = stock.saturating_add(amount);
+        if let Some(max_stock) = max_stock {
             *stock = (*stock).min(max_stock);
         }
     }
@@ -15941,10 +16006,20 @@ fn sell_station_trade_offer(
     push_operation_feedback(
         game,
         "Trade",
-        format!(
-            "Sold {} to {} for {} cr",
-            item.name, station_name, sell_price
-        ),
+        if amount == 1 {
+            format!(
+                "Sold {} to {} for {} cr",
+                item.name, station_name, sell_price
+            )
+        } else {
+            format!(
+                "Sold {} ×{} to {} for {} cr",
+                item.name,
+                amount,
+                station_name,
+                sell_price.saturating_mul(amount)
+            )
+        },
     );
     true
 }
@@ -16237,33 +16312,7 @@ fn update_fleet_recipes(
     table: RecipeTable,
     dt: f32,
 ) -> Vec<ItemStack> {
-    let recipe_index = {
-        let (recipes, _, _) = recipe_table(game, table);
-        let settings = producer_settings(game, producer, table);
-        recipes
-            .iter()
-            .zip(settings)
-            .enumerate()
-            .find_map(|(index, (recipe, setting))| {
-                let local_output = producer_inventory(game, producer).count(&recipe.output.item);
-                let has_bill =
-                    setting.queued > 0 || (setting.keep > 0 && local_output < setting.keep);
-                (recipe_is_unlocked_from_sets(
-                    &game.content_registry,
-                    &recipe.id,
-                    &game.recipe_vendor_locked_recipes,
-                    &game.completed_research,
-                ) && has_bill
-                    && producer_receivable_count(
-                        game,
-                        producer,
-                        &recipe.output.item,
-                        recipe.output.count,
-                    ) == recipe.output.count
-                    && fleet_can_afford(game, producer, &recipe.ingredients))
-                .then_some(index)
-            })
-    };
+    let recipe_index = next_fleet_recipe_bill_index(game, producer, table);
     let Some(recipe_index) = recipe_index else {
         return Vec::new();
     };
@@ -16314,24 +16363,33 @@ fn update_fleet_recipes(
     }]
 }
 
-fn next_recipe_bill_index(
+fn next_fleet_recipe_bill_index(
     game: &GameState,
-    recipes: &[Recipe],
-    settings: &[CraftSetting],
+    producer: FleetProducer,
+    table: RecipeTable,
 ) -> Option<usize> {
+    let (recipes, _, _) = recipe_table(game, table);
+    let settings = producer_settings(game, producer, table);
     recipes
         .iter()
         .zip(settings.iter())
         .enumerate()
         .find_map(|(index, (recipe, setting))| {
+            let local_output = producer_inventory(game, producer).count(&recipe.output.item);
+            let has_bill = setting.queued > 0 || (setting.keep > 0 && local_output < setting.keep);
             (recipe_is_unlocked_from_sets(
                 &game.content_registry,
                 &recipe.id,
                 &game.recipe_vendor_locked_recipes,
                 &game.completed_research,
-            ) && (setting.queued > 0
-                || (setting.keep > 0 && game.inventory.count(&recipe.output.item) < setting.keep))
-                && fleet_can_afford(game, FleetProducer::Active, &recipe.ingredients))
+            ) && has_bill
+                && producer_receivable_count(
+                    game,
+                    producer,
+                    &recipe.output.item,
+                    recipe.output.count,
+                ) == recipe.output.count
+                && fleet_can_afford(game, producer, &recipe.ingredients))
             .then_some(index)
         })
 }
@@ -22393,7 +22451,8 @@ fn draw_known_systems_panel(game: &GameState) {
             &game.current_system_id,
             system_id.as_str(),
         );
-        let can_warp = is_current || can_afford_cost(&game.inventory, &cost);
+        let has_warp_drive = active_ship_has_warp_drive(game);
+        let can_warp = is_current || (has_warp_drive && can_afford_cost(&game.inventory, &cost));
         let fill = if is_current {
             Color::from_rgba(24, 68, 74, 230)
         } else if is_charging {
@@ -22437,6 +22496,8 @@ fn draw_known_systems_panel(game: &GameState) {
             format!("CHARGE {:.1}s", warp.timer)
         } else if can_warp {
             format!("{} WARP", format_warp_cost(&cost))
+        } else if !has_warp_drive {
+            "WARP DRIVE REQUIRED".to_string()
         } else {
             format!("NEED {}", format_warp_cost(&cost))
         };
@@ -22565,13 +22626,19 @@ fn inventory_overlay_view(
 ) -> egui_inventory::InventoryOverlayView {
     let pins = egui_pin_snapshot();
     let (recipes, settings) = active_production_rows(game);
-    let active_row = next_recipe_bill_index(game, recipes, settings);
+    let active_table = match game.production_mode {
+        ProductionMode::Smelting => RecipeTable::Smelting,
+        ProductionMode::Crafting => RecipeTable::Crafting,
+        ProductionMode::Processing => RecipeTable::Processing,
+    };
+    let active_row = next_fleet_recipe_bill_index(game, FleetProducer::Active, active_table);
     let production = recipes
         .iter()
         .zip(settings)
         .enumerate()
         .map(|(index, (recipe, setting))| {
             let unlocked = recipe_is_unlocked(game, &recipe.id);
+            let activity = production_activity(game, recipes, index, setting, unlocked, active_row);
             egui_inventory::ProductionRow {
                 item: recipe_row_label(recipes, index),
                 output: format!("{} x{}", recipe.output.item.name, recipe.output.count),
@@ -22591,6 +22658,7 @@ fn inventory_overlay_view(
                     String::new()
                 },
                 active: active_row == Some(index),
+                activity,
                 enabled: unlocked
                     && fleet_can_afford(game, FleetProducer::Active, &recipe.ingredients),
                 unlocked,
@@ -22621,6 +22689,73 @@ fn inventory_overlay_view(
             && !(game.fleet_open && game.fleet_page == egui_fleet::FleetPage::Production),
         production_pinned: pins.production,
     }
+}
+
+fn production_activity(
+    game: &GameState,
+    recipes: &[Recipe],
+    index: usize,
+    setting: &CraftSetting,
+    unlocked: bool,
+    active_row: Option<usize>,
+) -> egui_inventory::ProductionActivity {
+    let recipe = &recipes[index];
+    if !unlocked {
+        return egui_inventory::ProductionActivity::Blocked("Recipe locked".to_string());
+    }
+    if active_row == Some(index) {
+        return egui_inventory::ProductionActivity::Active("Production in progress".to_string());
+    }
+
+    let output_count = game.inventory.count(&recipe.output.item);
+    let has_bill = setting.queued > 0 || (setting.keep > 0 && output_count < setting.keep);
+    if !has_bill {
+        return if setting.keep > 0 {
+            egui_inventory::ProductionActivity::Idle("Keep target satisfied".to_string())
+        } else {
+            egui_inventory::ProductionActivity::Idle("Not queued".to_string())
+        };
+    }
+
+    let missing = recipe
+        .ingredients
+        .iter()
+        .filter_map(|ingredient| {
+            let available = fleet_inventory_count(game, FleetProducer::Active, &ingredient.item);
+            let missing = ingredient.count.saturating_sub(available);
+            (missing > 0).then(|| format!("{missing} {}", ingredient.item.name))
+        })
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return egui_inventory::ProductionActivity::Blocked(format!(
+            "Missing {}",
+            missing.join(", ")
+        ));
+    }
+    if !fleet_can_afford(game, FleetProducer::Active, &recipe.ingredients) {
+        return egui_inventory::ProductionActivity::Blocked(
+            "Required materials unavailable".to_string(),
+        );
+    }
+    if producer_receivable_count(
+        game,
+        FleetProducer::Active,
+        &recipe.output.item,
+        recipe.output.count,
+    ) != recipe.output.count
+    {
+        return egui_inventory::ProductionActivity::Blocked(
+            "Cargo hold cannot accept output".to_string(),
+        );
+    }
+
+    if let Some(active_index) = active_row {
+        return egui_inventory::ProductionActivity::Waiting(format!(
+            "{} has priority",
+            recipe_row_label(recipes, active_index)
+        ));
+    }
+    egui_inventory::ProductionActivity::Waiting("Production scheduler paused".to_string())
 }
 
 fn unlocked_recipe_products_using(game: &GameState, item_id: &str) -> Vec<String> {
@@ -23012,7 +23147,8 @@ fn planet_pane_view(game: &GameState, keep_click_step: i32) -> egui_planet::Plan
     }
 }
 
-fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
+fn station_pane_view(game: &GameState, trade_quantity: u32) -> egui_station::StationPaneView {
+    let trade_quantity = trade_quantity.max(1);
     let station_index = game.selected_station.unwrap_or(usize::MAX);
     let Some(station) = game.stations.get(station_index) else {
         return egui_station::StationPaneView {
@@ -23029,6 +23165,7 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
             service_description: None,
             service_status: None,
             trade: Vec::new(),
+            trade_quantity,
             garage: false,
             repair_label: String::new(),
             repair_enabled: false,
@@ -23116,18 +23253,26 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
                 .iter()
                 .map(|offer| {
                     let cargo = game.inventory.count(&offer.item);
+                    let buy_amount = if in_range && service_available && !offer.unavailable {
+                        station_trade_buy_amount(game, offer, trade_quantity)
+                    } else {
+                        0
+                    };
+                    let sell_amount = if in_range && service_available {
+                        trade_quantity.max(1).min(cargo)
+                    } else {
+                        0
+                    };
                     egui_station::TradeRow {
                         item: offer.item.name.clone(),
                         stock: format_trade_stock(offer, game.world_elapsed_days),
                         cargo,
                         buy_price: offer.buy_price,
                         sell_price: offer.sell_price,
-                        can_buy: in_range
-                            && service_available
-                            && !offer.unavailable
-                            && offer.stock != Some(0)
-                            && game.credits >= offer.buy_price,
-                        can_sell: in_range && service_available && cargo > 0,
+                        buy_amount,
+                        sell_amount,
+                        can_buy: buy_amount > 0,
+                        can_sell: sell_amount > 0,
                     }
                 })
                 .collect()
@@ -23420,6 +23565,7 @@ fn station_pane_view(game: &GameState) -> egui_station::StationPaneView {
         service_description: service.and_then(|service| service.description.clone()),
         service_status,
         trade,
+        trade_quantity,
         garage,
         repair_label,
         repair_enabled: garage && in_range && service_available,
@@ -25278,6 +25424,16 @@ fn mining_drone_view(
     let throughput = mining_drone_throughput(profile, &owned.upgrades);
     let operating_range = mining_drone_operating_range(profile, &owned.upgrades);
     let max_quota = mining_drone_max_quota(profile, &owned.upgrades);
+    let producer = if active {
+        Some(FleetProducer::Active)
+    } else {
+        game.owned_ships
+            .iter()
+            .position(|candidate| candidate.instance_id == owned.instance_id)
+            .map(FleetProducer::Owned)
+    };
+    let active_smelt_row = producer
+        .and_then(|producer| next_fleet_recipe_bill_index(game, producer, RecipeTable::Smelting));
     let destinations = mining_drone_destination_options(game, owned);
     let selected_planet = selected_mining_drone_planet(game, owned);
     let resources: Vec<egui_fleet::MiningJobOption> = selected_planet
@@ -25403,11 +25559,17 @@ fn mining_drone_view(
         smelt_rows: game
             .smelt_recipes
             .iter()
-            .zip(owned.smelt_settings.iter())
-            .map(|(recipe, setting)| egui_fleet::DroneSmeltRow {
+            .zip(if active {
+                game.smelt_settings.iter()
+            } else {
+                owned.smelt_settings.iter()
+            })
+            .enumerate()
+            .map(|(index, (recipe, setting))| egui_fleet::DroneSmeltRow {
                 name: format!("{} x{}", recipe.output.item.name, recipe.output.count),
                 queued: setting.queued,
                 progress: setting.progress,
+                active: active_smelt_row == Some(index),
                 unlocked: recipe_is_unlocked(game, &recipe.id),
             })
             .collect(),
@@ -26261,7 +26423,11 @@ fn apply_planet_ui_actions(
     }
 }
 
-fn apply_station_ui_actions(game: &mut GameState, actions: Vec<egui_station::StationUiAction>) {
+fn apply_station_ui_actions(
+    game: &mut GameState,
+    actions: Vec<egui_station::StationUiAction>,
+    trade_quantity: u32,
+) {
     let Some(station_index) = game.selected_station else {
         return;
     };
@@ -26277,12 +26443,24 @@ fn apply_station_ui_actions(game: &mut GameState, actions: Vec<egui_station::Sta
             }
             egui_station::StationUiAction::Buy(offer_index) => {
                 game.selected_station_service.is_some_and(|service_index| {
-                    buy_station_trade_offer(game, station_index, service_index, offer_index)
+                    buy_station_trade_offer(
+                        game,
+                        station_index,
+                        service_index,
+                        offer_index,
+                        trade_quantity,
+                    )
                 })
             }
             egui_station::StationUiAction::Sell(offer_index) => {
                 game.selected_station_service.is_some_and(|service_index| {
-                    sell_station_trade_offer(game, station_index, service_index, offer_index)
+                    sell_station_trade_offer(
+                        game,
+                        station_index,
+                        service_index,
+                        offer_index,
+                        trade_quantity,
+                    )
                 })
             }
             egui_station::StationUiAction::Repair => repair_ship_at_station(game, station_index),
@@ -29681,7 +29859,7 @@ mod tests {
         game.selected_station_service = Some(2);
         game.stations[0].services[2].artwork = Some("test:shipyard-art".to_string());
 
-        let view = station_pane_view(&game);
+        let view = station_pane_view(&game, 1);
         assert!(!view.garage);
         assert_eq!(
             view.services[2].artwork.as_deref(),
@@ -29704,6 +29882,7 @@ mod tests {
             vec![egui_station::StationUiAction::BuyShip(
                 "core:prospector_mining_drone".to_string(),
             )],
+            1,
         );
         assert_eq!(game.owned_ships.len(), owned_before + 1);
         assert_eq!(
@@ -29984,6 +30163,9 @@ mod tests {
                 .add_item(ingredient.item.clone(), ingredient.count);
         }
         game.owned_ships[drone_index].smelt_settings[recipe_index].queued = 1;
+        let view = mining_drone_view(&game, &game.owned_ships[drone_index], false)
+            .expect("mining drone should expose its Fleet production view");
+        assert!(view.smelt_rows[recipe_index].active);
 
         let saved = game.owned_ships[drone_index].to_save(&game.smelt_recipes);
         let restored = OwnedShip::from_save(&game.content_registry, &game.smelt_recipes, saved);
@@ -33873,7 +34055,7 @@ mod tests {
         }];
         game.ship.position = vec2(120.0, 0.0);
 
-        assert!(buy_station_trade_offer(&mut game, 0, 0, 0));
+        assert!(buy_station_trade_offer(&mut game, 0, 0, 0, 1));
         assert_eq!(game.credits, 75);
         assert_eq!(game.inventory.count(&iron), 1);
         assert_eq!(game.stations[0].services[0].trade[0].stock, Some(1));
@@ -33883,7 +34065,7 @@ mod tests {
             "Bought Iron ore"
         ));
 
-        assert!(sell_station_trade_offer(&mut game, 0, 0, 0));
+        assert!(sell_station_trade_offer(&mut game, 0, 0, 0, 1));
         assert_eq!(game.credits, 85);
         assert_eq!(game.inventory.count(&iron), 0);
         assert_eq!(game.stations[0].services[0].trade[0].stock, Some(2));
@@ -33920,12 +34102,54 @@ mod tests {
         game.selected_station = Some(0);
         game.selected_station_service = Some(0);
 
-        apply_station_ui_actions(&mut game, vec![egui_station::StationUiAction::Buy(0)]);
+        apply_station_ui_actions(&mut game, vec![egui_station::StationUiAction::Buy(0)], 1);
 
         assert_eq!(game.credits, 75);
         assert_eq!(game.inventory.count(&iron), 1);
         assert_eq!(game.stations[0].services[0].trade[0].stock, Some(1));
         assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn station_trade_modifier_quantity_is_capped_by_stock_and_cargo() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let iron = required_item(&registry, "core:iron_ore");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.credits = 1_000;
+        game.stations = vec![test_station_destination(
+            "core:test_station",
+            STARTER_SYSTEM_ID,
+            vec2(100.0, 0.0),
+        )];
+        game.stations[0].services[0].trade = vec![TradeOffer {
+            item: iron.clone(),
+            buy_price: 25,
+            sell_price: 10,
+            stock: Some(3),
+            max_stock: Some(3),
+            restock_days: None,
+            next_restock_day: None,
+            catalog_rotation: None,
+            unavailable: false,
+        }];
+        game.ship.position = vec2(120.0, 0.0);
+        game.selected_station = Some(0);
+        game.selected_station_service = Some(0);
+
+        let view = station_pane_view(&game, 5);
+        assert_eq!(view.trade_quantity, 5);
+        assert_eq!(view.trade[0].buy_amount, 3);
+
+        apply_station_ui_actions(&mut game, vec![egui_station::StationUiAction::Buy(0)], 5);
+        assert_eq!(game.credits, 925);
+        assert_eq!(game.inventory.count(&iron), 3);
+        assert_eq!(game.stations[0].services[0].trade[0].stock, Some(0));
+
+        apply_station_ui_actions(&mut game, vec![egui_station::StationUiAction::Sell(0)], 10);
+        assert_eq!(game.credits, 955);
+        assert_eq!(game.inventory.count(&iron), 0);
+        assert_eq!(game.stations[0].services[0].trade[0].stock, Some(3));
     }
 
     #[test]
@@ -34280,7 +34504,7 @@ mod tests {
             contract_chain::ContractChainRuntimeStatus::Blocked
         );
         assert_eq!(
-            station_pane_view(&game).contract_chains[0].status,
+            station_pane_view(&game, 1).contract_chains[0].status,
             "Recover cargo"
         );
 
@@ -35615,7 +35839,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_route_readiness_points_to_local_fuel_stock_when_missing() {
+    fn remote_route_readiness_reports_warp_drive_before_missing_fuel() {
         let registry = content::load_content_packs(Path::new("content/packs"))
             .expect("content packs should load and validate");
         let fuel_canister =
@@ -35641,6 +35865,15 @@ mod tests {
 
         assert_eq!(
             route_readiness_summary(&game, "remote-duskfall:duskfall_reach"),
+            "Warp drive required"
+        );
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 1;
+        assert_eq!(
+            route_readiness_summary(&game, "remote-duskfall:duskfall_reach"),
             "Need Fuel canister x1; Fuel Stop stocks it"
         );
     }
@@ -35653,6 +35886,11 @@ mod tests {
             core_item(&registry, "fuel_canister").expect("core fuel canister should exist");
         let mut game = test_game_with_systems(registry, Vec::new());
         game.inventory.add_item(fuel_canister, 1);
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 1;
 
         assert_eq!(
             route_readiness_summary(&game, "remote-duskfall:duskfall_reach"),
@@ -35668,6 +35906,11 @@ mod tests {
             core_item(&registry, "fuel_canister").expect("core fuel canister should exist");
         let mut game = test_game_with_systems(registry, Vec::new());
         game.inventory.add_item(fuel_canister, 1);
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 1;
         game.ship_upgrades
             .iter_mut()
             .find(|upgrade| upgrade.kind == ShipUpgradeKind::ScannerArray)
@@ -35695,10 +35938,21 @@ mod tests {
         let fuel_canister = core_item(&game.content_registry, "fuel_canister")
             .expect("core fuel canister should exist");
 
+        game.inventory.add_item(fuel_canister.clone(), 1);
         start_player_warp_charge(&mut game, remote_system.clone());
         assert!(game.pending_warp.is_none());
+        assert_eq!(game.inventory.count(&fuel_canister), 1);
+        assert!(operation_feedback_contains(
+            &game,
+            "Travel",
+            "Warp drive required"
+        ));
 
-        game.inventory.add_item(fuel_canister.clone(), 1);
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 1;
         start_player_warp_charge(&mut game, remote_system.clone());
         assert!(game.pending_warp.is_some());
         assert_eq!(game.inventory.count(&fuel_canister), 1);
@@ -35727,6 +35981,116 @@ mod tests {
             "Travel",
             "Arrived in Duskfall Reach"
         ));
+    }
+
+    #[test]
+    fn upgrading_only_an_inactive_owned_ship_does_not_unlock_warp() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let remote_system = "remote-duskfall:duskfall_reach".to_string();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let fuel_canister = core_item(&game.content_registry, "fuel_canister")
+            .expect("core fuel canister should exist");
+        game.inventory.add_item(fuel_canister, 1);
+
+        let mut inactive_ship = game.capture_active_owned_ship();
+        inactive_ship.instance_id = "ship-2".to_string();
+        inactive_ship.callsign = "Warp tender".to_string();
+        inactive_ship
+            .upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 1;
+        game.owned_ships = vec![game.capture_active_owned_ship(), inactive_ship];
+
+        assert!(!active_ship_has_warp_drive(&game));
+        start_player_warp_charge(&mut game, remote_system);
+        assert!(game.pending_warp.is_none());
+    }
+
+    #[test]
+    fn warp_charge_cancels_if_the_active_ship_loses_its_drive() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let remote_system = "remote-duskfall:duskfall_reach".to_string();
+        let mut game = test_game_with_systems(registry, Vec::new());
+        let fuel_canister = core_item(&game.content_registry, "fuel_canister")
+            .expect("core fuel canister should exist");
+        game.inventory.add_item(fuel_canister.clone(), 1);
+        let warp_drive = game
+            .ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist");
+        warp_drive.level = 1;
+
+        start_player_warp_charge(&mut game, remote_system);
+        assert!(game.pending_warp.is_some());
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 0;
+        update_pending_warp(&mut game, WARP_CHARGE_SECONDS + 0.1);
+
+        assert!(game.pending_warp.is_none());
+        assert!(game.scene_transition.is_none());
+        assert_eq!(game.inventory.count(&fuel_canister), 1);
+    }
+
+    #[test]
+    fn warp_drive_upgrade_round_trips_and_old_saves_default_to_uninstalled() {
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut game = test_game_with_systems(registry, Vec::new());
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 2;
+        game.sync_active_owned_ship();
+
+        let save = game.to_save();
+        assert!(save.upgrades.iter().any(|upgrade| {
+            upgrade.kind == ShipUpgradeKind::WarpDrive.id() && upgrade.level == 2
+        }));
+        assert!(save.owned_ships[0].upgrades.iter().any(|upgrade| {
+            upgrade.kind == ShipUpgradeKind::WarpDrive.id() && upgrade.level == 2
+        }));
+
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut restored = test_game_with_systems(registry, Vec::new());
+        restored.apply_save(save);
+        assert_eq!(
+            ship_upgrade_level(&restored.ship_upgrades, ShipUpgradeKind::WarpDrive),
+            2
+        );
+
+        let mut old_save = restored.to_save();
+        old_save
+            .upgrades
+            .retain(|upgrade| upgrade.kind != ShipUpgradeKind::WarpDrive.id());
+        for owned in &mut old_save.owned_ships {
+            owned
+                .upgrades
+                .retain(|upgrade| upgrade.kind != ShipUpgradeKind::WarpDrive.id());
+        }
+        let registry = content::load_content_packs(Path::new("content/packs"))
+            .expect("content packs should load and validate");
+        let mut migrated = test_game_with_systems(registry, Vec::new());
+        migrated
+            .ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 3;
+        migrated.apply_save(old_save);
+        assert_eq!(
+            ship_upgrade_level(&migrated.ship_upgrades, ShipUpgradeKind::WarpDrive),
+            0
+        );
     }
 
     #[test]
@@ -35844,6 +36208,9 @@ mod tests {
             .contains_key(ShipUpgradeKind::DroneBay.id()));
         assert!(registry
             .upgrades
+            .contains_key(ShipUpgradeKind::WarpDrive.id()));
+        assert!(registry
+            .upgrades
             .contains_key(ShipUpgradeKind::FuelSystems.id()));
         assert!(registry
             .upgrades
@@ -35878,6 +36245,12 @@ mod tests {
         assert_eq!(survey_drone_return_chance(&upgrades), 0.3);
         assert_eq!(scanner_survey_bonus(&upgrades), 2);
         assert!((warp_charge_seconds(&upgrades) - WARP_CHARGE_SECONDS * 0.8).abs() < 0.01);
+        upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should be registered")
+            .level = 3;
+        assert!((warp_charge_seconds(&upgrades) - WARP_CHARGE_SECONDS * 0.6).abs() < 0.01);
         assert_eq!(cargo_rating_kg(&ship, &upgrades), 40_000.0);
     }
 
@@ -35892,7 +36265,7 @@ mod tests {
         }
 
         let view = upgrades_view(&game, 2);
-        assert_eq!(view.rows.len(), 8);
+        assert_eq!(view.rows.len(), 9);
         assert_eq!(view.purchase_count, 2);
         assert!(view.rows[0].affordable);
         assert_eq!(view.rows[0].level, 0);
@@ -35921,15 +36294,17 @@ mod tests {
         assert!(switch_active_owned_ship(&mut game, drone_index));
 
         let view = upgrades_view(&game, 1);
-        assert_eq!(view.rows.len(), 9);
-        assert_eq!(view.rows[0].name, "Mining head");
-        assert_eq!(view.rows[0].upgrade_index, 8);
-        assert_eq!(view.rows[2].name, "Drone smelter");
-        assert_eq!(view.rows[2].upgrade_index, 10);
-        assert_eq!(view.rows[8].name, "Drone shield matrix");
-        assert_eq!(view.rows[8].upgrade_index, 16);
+        assert_eq!(view.rows.len(), 10);
+        assert_eq!(view.rows[0].name, "Warp drive");
+        assert_eq!(view.rows[0].upgrade_index, 5);
+        assert_eq!(view.rows[1].name, "Mining head");
+        assert_eq!(view.rows[1].upgrade_index, 9);
+        assert_eq!(view.rows[3].name, "Drone smelter");
+        assert_eq!(view.rows[3].upgrade_index, 11);
+        assert_eq!(view.rows[9].name, "Drone shield matrix");
+        assert_eq!(view.rows[9].upgrade_index, 17);
 
-        let mining_head_index = view.rows[0].upgrade_index;
+        let mining_head_index = view.rows[1].upgrade_index;
         let cost = game.ship_upgrades[mining_head_index].next_cost(&game.content_registry);
         for stack in cost {
             game.inventory.add_item(stack.item, stack.count);
@@ -35952,6 +36327,11 @@ mod tests {
             &game.content_registry,
             &game.ship_id,
             ShipUpgradeKind::Engine
+        ));
+        assert!(ship_upgrade_is_available(
+            &game.content_registry,
+            &game.ship_id,
+            ShipUpgradeKind::WarpDrive
         ));
     }
 
@@ -36294,6 +36674,11 @@ mod tests {
         let fuel_canister = core_item(&game.content_registry, "fuel_canister")
             .expect("core fuel canister should exist");
         game.inventory.add_item(fuel_canister, 1);
+        game.ship_upgrades
+            .iter_mut()
+            .find(|upgrade| upgrade.kind == ShipUpgradeKind::WarpDrive)
+            .expect("warp drive upgrade should exist")
+            .level = 1;
         start_player_warp_charge(&mut game, remote_system);
         assert_eq!(game.orbiting_planet, None);
         assert!(game.pending_warp.is_some());
@@ -37444,6 +37829,8 @@ mod tests {
 
         assert_eq!(game.smelt_settings[0].keep, 1);
         assert_eq!(game.smelt_settings[0].queued, 1);
+        let view = inventory_overlay_view(&game, 1);
+        assert!(view.production[0].active);
         assert!(
             game.save_dirty,
             "post-update UI actions must dirty the save"
@@ -37466,6 +37853,91 @@ mod tests {
         assert!(matches!(game.production_mode, ProductionMode::Processing));
         assert_eq!(game.work_scroll, 0.0);
         assert!(game.save_dirty);
+    }
+
+    #[test]
+    fn production_hover_activity_explains_blockers_and_scheduler_priority() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        let ingredient = ItemRef {
+            id: "test:ore".to_string(),
+            name: "Test ore".to_string(),
+            unit_mass: 1.0,
+        };
+        let first_output = ItemRef {
+            id: "test:first".to_string(),
+            name: "First plate".to_string(),
+            unit_mass: 1.0,
+        };
+        let second_output = ItemRef {
+            id: "test:second".to_string(),
+            name: "Second plate".to_string(),
+            unit_mass: 1.0,
+        };
+        let oversized_output = ItemRef {
+            id: "test:oversized".to_string(),
+            name: "Oversized plate".to_string(),
+            unit_mass: cargo_rating_kg(&game.ship, &game.ship_upgrades) + 1.0,
+        };
+        game.smelt_recipes = vec![
+            Recipe {
+                id: "test:first_recipe".to_string(),
+                output: ItemStack {
+                    item: first_output,
+                    count: 1,
+                },
+                ingredients: vec![ItemStack {
+                    item: ingredient.clone(),
+                    count: 2,
+                }],
+                base_seconds: 1.0,
+            },
+            Recipe {
+                id: "test:second_recipe".to_string(),
+                output: ItemStack {
+                    item: second_output,
+                    count: 1,
+                },
+                ingredients: Vec::new(),
+                base_seconds: 1.0,
+            },
+            Recipe {
+                id: "test:oversized_recipe".to_string(),
+                output: ItemStack {
+                    item: oversized_output,
+                    count: 1,
+                },
+                ingredients: Vec::new(),
+                base_seconds: 1.0,
+            },
+        ];
+        game.smelt_settings = vec![
+            CraftSetting {
+                queued: 1,
+                ..CraftSetting::starter()
+            };
+            3
+        ];
+
+        let blocked = inventory_overlay_view(&game, 1);
+        assert_eq!(
+            blocked.production[0].activity,
+            egui_inventory::ProductionActivity::Blocked("Missing 2 Test ore".to_string())
+        );
+        assert_eq!(
+            blocked.production[2].activity,
+            egui_inventory::ProductionActivity::Blocked(
+                "Cargo hold cannot accept output".to_string()
+            )
+        );
+
+        game.inventory.add_item(ingredient, 2);
+        let prioritized = inventory_overlay_view(&game, 1);
+        assert!(prioritized.production[0].active);
+        assert!(matches!(
+            &prioritized.production[1].activity,
+            egui_inventory::ProductionActivity::Waiting(detail)
+                if detail == "First plate has priority"
+        ));
     }
 
     #[test]

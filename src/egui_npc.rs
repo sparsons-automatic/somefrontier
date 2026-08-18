@@ -187,6 +187,10 @@ fn draw_trade(ui: &mut egui::Ui, view: &NpcPaneView, actions: &mut Vec<NpcUiActi
         ui.separator();
         ui.label(format!("Credits {}", view.credits));
     });
+    ui.small(format!(
+        "Quantity step {} · hold Shift for ±10 or Ctrl for ±20",
+        view.quantity_step
+    ));
 
     if !view.trade_available {
         ui.label("Approach this identified, non-hostile trader to exchange cargo.");

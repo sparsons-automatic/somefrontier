@@ -170,3 +170,7 @@ summary = "Unlocks the jump core recipe for late remote-route capability."
 [[research.rewards]]
 kind = "recipe_unlock"
 target = "jump_core"
+
+[[research.rewards]]
+kind = "recipe_unlock"
+target = "warp_drive_assembly"

@@ -47,6 +47,13 @@ costs = [
 ]
 
 [[upgrades]]
+id = "warp_drive"
+costs = [
+  { item = "core:warp_drive_assembly", base_count = 1, per_level = 0 },
+  { item = "core:coolant", base_count = 1, per_level = 1 },
+]
+
+[[upgrades]]
 id = "scanner_array"
 costs = [
   { item = "core:advanced_scanner_core", base_count = 0, per_level = 1, per_levels = 2 },

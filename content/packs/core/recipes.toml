@@ -347,6 +347,18 @@ ingredients = [
 purpose = "Late-game jump system component."
 
 [[recipes]]
+id = "warp_drive_assembly"
+station = "crafting"
+output = { item = "core:warp_drive_assembly", count = 1 }
+ingredients = [
+  { item = "core:jump_core", count = 1 },
+  { item = "core:fusion_drive_core", count = 1 },
+  { item = "core:structural_alloy", count = 2 },
+  { item = "core:electronics", count = 2 },
+]
+purpose = "Ship-bound drive hardware required to initiate inter-system warp."
+
+[[recipes]]
 id = "interceptor_rounds"
 station = "crafting"
 output = { item = "core:interceptor_round", count = 20 }
