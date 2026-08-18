@@ -297,12 +297,15 @@ struct UniverseBackground {
     star_layers: Vec<StarLayer>,
 }
 
+#[derive(Clone)]
 struct SystemStar {
     system: String,
     name: String,
     classification: String,
     position: Vec2,
     radius: f32,
+    hazard_range: f32,
+    hazard_damage_per_second: f32,
     color: Color,
     is_primary: bool,
 }
@@ -3257,6 +3260,8 @@ fn make_system_stars(content_registry: &content::ContentRegistry) -> Vec<SystemS
                 classification: star_def.classification.clone(),
                 position: vec2(star_def.position[0], star_def.position[1]),
                 radius: star_def.radius,
+                hazard_range: star_def.hazard_range,
+                hazard_damage_per_second: star_def.hazard_damage_per_second,
                 color: Color::from_rgba(
                     star_def.color[0],
                     star_def.color[1],
@@ -5297,6 +5302,85 @@ fn apply_shield_hazard_drain(game: &mut GameState, amount: f32) {
         game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
         reset_active_auto_repair_after_damage(game);
     }
+}
+
+fn stellar_hazard_damage_per_second(star: &SystemStar, position: Vec2) -> f32 {
+    if star.hazard_range <= 0.0 || star.hazard_damage_per_second <= 0.0 || !position.is_finite() {
+        return 0.0;
+    }
+    let normalized_distance = position.distance(star.position) / star.hazard_range;
+    if !normalized_distance.is_finite() || normalized_distance >= 1.0 {
+        return 0.0;
+    }
+    let proximity = 1.0 - normalized_distance.clamp(0.0, 1.0);
+    let smooth_proximity = proximity * proximity * (3.0 - 2.0 * proximity);
+    star.hazard_damage_per_second * smooth_proximity
+}
+
+fn stellar_hazard_damage_at_position(stars: &[SystemStar], system_id: &str, position: Vec2) -> f32 {
+    stars
+        .iter()
+        .filter(|star| system_star_is_in_system(star, system_id))
+        .map(|star| stellar_hazard_damage_per_second(star, position))
+        .sum()
+}
+
+fn apply_active_ship_stellar_hazard_damage(game: &mut GameState, amount: f32) -> bool {
+    let damage = amount.max(0.0) * (1.0 - active_shield_hazard_resistance(game)).clamp(0.0, 1.0);
+    let application = apply_damage_to_resources(
+        &mut game.ship.systems.shields,
+        &mut game.ship.systems.hull,
+        damage,
+        1.0,
+    );
+    if application.changed() {
+        game.shield_recharge_delay_remaining = active_shield_recharge_delay(game);
+        reset_active_auto_repair_after_damage(game);
+        game.save_dirty = true;
+    }
+    application.changed()
+}
+
+fn owned_ship_shield_hazard_resistance(owned: &OwnedShip) -> f32 {
+    owned
+        .equipped_shields
+        .first()
+        .map(|shield| shield.hazard_resistance)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
+fn apply_owned_ship_stellar_hazard_damage(owned: &mut OwnedShip, amount: f32) -> bool {
+    let damage = amount.max(0.0) * (1.0 - owned_ship_shield_hazard_resistance(owned));
+    let application = apply_damage_to_resources(
+        &mut owned.ship.systems.shields,
+        &mut owned.ship.systems.hull,
+        damage,
+        1.0,
+    );
+    if application.changed() {
+        owned.shield_recharge_delay_remaining = owned_ship_shield_recharge_delay(owned);
+        reset_owned_auto_repair_after_damage(owned);
+        interrupt_owned_mining_job_after_damage(owned);
+    }
+    application.changed()
+}
+
+fn npc_shield_hazard_resistance(npc_ship: &NpcShip) -> f32 {
+    active_npc_shield(npc_ship)
+        .map(|shield| shield.hazard_resistance)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
+fn apply_npc_stellar_hazard_damage(npc_ship: &mut NpcShip, amount: f32) -> bool {
+    let damage = amount.max(0.0) * (1.0 - npc_shield_hazard_resistance(npc_ship));
+    let application =
+        apply_damage_to_resources(&mut npc_ship.shields, &mut npc_ship.hull, damage, 1.0);
+    if application.changed() {
+        npc_ship.shield_recharge_delay_remaining = npc_shield_recharge_delay(npc_ship);
+    }
+    application.changed()
 }
 
 fn ship_pressure_damage_after_resistance(game: &GameState, damage: f32) -> f32 {
@@ -11379,6 +11463,7 @@ fn update_game(game: &mut GameState, dt: f32) {
     update_navigation_route_mining(game, dt);
     update_mining(game, dt);
     update_orbital_hazards(game, dt);
+    update_stellar_hazards(game, dt);
     update_shield_recharge(game, dt);
     update_inactive_owned_ship_systems(game, dt);
     update_owned_ship_salvage(game, dt);
@@ -16500,6 +16585,44 @@ fn update_orbital_hazards(game: &mut GameState, dt: f32) {
 
     if shield_drain > 0.0 {
         apply_shield_hazard_drain(game, shield_drain * dt);
+    }
+}
+
+fn update_stellar_hazards(game: &mut GameState, dt: f32) {
+    if !dt.is_finite() || dt <= 0.0 {
+        return;
+    }
+
+    let stars = game.system_stars.clone();
+    let active_system = game.current_system_id.clone();
+    let active_damage =
+        stellar_hazard_damage_at_position(&stars, &active_system, game.ship.position) * dt;
+    if active_damage > 0.0 {
+        apply_active_ship_stellar_hazard_damage(game, active_damage);
+    }
+
+    for owned in &mut game.owned_ships {
+        if owned.instance_id == game.active_owned_ship_id
+            || owned.system_id != active_system
+            || owned.ship.systems.hull.current <= 0.0
+        {
+            continue;
+        }
+        let damage =
+            stellar_hazard_damage_at_position(&stars, &active_system, owned.ship.position) * dt;
+        if damage > 0.0 {
+            apply_owned_ship_stellar_hazard_damage(owned, damage);
+        }
+    }
+
+    for npc in &mut game.npc_ships {
+        if npc.system != active_system || npc.hull.current <= 0.0 {
+            continue;
+        }
+        let damage = stellar_hazard_damage_at_position(&stars, &active_system, npc.position) * dt;
+        if damage > 0.0 {
+            apply_npc_stellar_hazard_damage(npc, damage);
+        }
     }
 }
 
@@ -33833,6 +33956,8 @@ mod tests {
         assert_eq!(frontier_primary.classification, "K-type main sequence");
         assert_eq!(frontier_primary.position, vec2(-900.0, -700.0));
         assert_eq!(frontier_primary.radius, 180.0);
+        assert_eq!(frontier_primary.hazard_range, 520.0);
+        assert_eq!(frontier_primary.hazard_damage_per_second, 8.0);
         assert!(frontier_primary.is_primary);
         assert!(system_star_is_in_system(
             frontier_primary,
@@ -33884,6 +34009,8 @@ mod tests {
                 color: [255, 230, 190],
                 radius: 180.0,
                 position: [50.0, -25.0],
+                hazard_range: 0.0,
+                hazard_damage_per_second: 0.0,
             },
         );
         let planet = content::PlanetDef {
@@ -36352,6 +36479,115 @@ mod tests {
         };
         assert!((planet_hazard_mining_slowdown(&planet) - 1.25).abs() < f32::EPSILON);
         assert!((planet_hazard_shield_drain_per_second(&planet) - 1.2).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn stellar_hazard_curve_respects_boundary_and_distance_scaling() {
+        let star = SystemStar {
+            system: STARTER_SYSTEM_ID.to_string(),
+            name: "Test Sun".to_string(),
+            classification: "G-type".to_string(),
+            position: Vec2::ZERO,
+            radius: 100.0,
+            hazard_range: 100.0,
+            hazard_damage_per_second: 10.0,
+            color: WHITE,
+            is_primary: true,
+        };
+
+        assert_eq!(
+            stellar_hazard_damage_per_second(&star, vec2(100.0, 0.0)),
+            0.0
+        );
+        assert_eq!(
+            stellar_hazard_damage_per_second(&star, vec2(0.0, 0.0)),
+            10.0
+        );
+        assert!((stellar_hazard_damage_per_second(&star, vec2(50.0, 0.0)) - 5.0).abs() < 0.001);
+        assert!(
+            stellar_hazard_damage_per_second(&star, vec2(25.0, 0.0))
+                > stellar_hazard_damage_per_second(&star, vec2(50.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn stellar_hazard_damage_is_frame_rate_independent_and_hits_shields_then_hull() {
+        let make_game = || {
+            let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+            game.system_stars = vec![SystemStar {
+                system: STARTER_SYSTEM_ID.to_string(),
+                name: "Test Sun".to_string(),
+                classification: "G-type".to_string(),
+                position: Vec2::ZERO,
+                radius: 100.0,
+                hazard_range: 100.0,
+                hazard_damage_per_second: 10.0,
+                color: WHITE,
+                is_primary: true,
+            }];
+            game.ship.position = Vec2::ZERO;
+            game.ship.systems.shields = ShipResource::full(5.0);
+            game.ship.systems.hull = ShipResource::full(100.0);
+            game
+        };
+
+        let mut one_step = make_game();
+        update_stellar_hazards(&mut one_step, 1.0);
+        let mut many_steps = make_game();
+        for _ in 0..10 {
+            update_stellar_hazards(&mut many_steps, 0.1);
+        }
+
+        assert_eq!(one_step.ship.systems.shields.current, 0.0);
+        assert_eq!(one_step.ship.systems.hull.current, 95.0);
+        assert!(
+            (one_step.ship.systems.shields.current - many_steps.ship.systems.shields.current).abs()
+                < 0.001
+        );
+        assert!(
+            (one_step.ship.systems.hull.current - many_steps.ship.systems.hull.current).abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn stellar_hazards_damage_same_system_owned_and_npc_ships() {
+        let mut game = test_game_with_systems(content::ContentRegistry::default(), Vec::new());
+        game.system_stars = vec![SystemStar {
+            system: STARTER_SYSTEM_ID.to_string(),
+            name: "Test Sun".to_string(),
+            classification: "G-type".to_string(),
+            position: Vec2::ZERO,
+            radius: 100.0,
+            hazard_range: 100.0,
+            hazard_damage_per_second: 10.0,
+            color: WHITE,
+            is_primary: true,
+        }];
+        let mut owned = game.capture_active_owned_ship();
+        owned.instance_id = "ship-2".to_string();
+        owned.system_id = STARTER_SYSTEM_ID.to_string();
+        owned.ship.position = Vec2::ZERO;
+        owned.ship.systems.shields = ShipResource::full(25.0);
+        game.owned_ships.push(owned);
+        game.npc_ships = vec![test_npc_ship(NpcBehaviorMode::Patrol, Vec2::ZERO)];
+
+        assert_eq!(game.owned_ships[1].system_id, STARTER_SYSTEM_ID);
+        assert_eq!(game.owned_ships[1].instance_id, "ship-2");
+        assert_eq!(
+            game.owned_ships[1].ship.systems.hull.current,
+            game.owned_ships[1].ship.systems.hull.max
+        );
+        assert_eq!(game.active_owned_ship_id, "ship-1");
+        assert_eq!(
+            stellar_hazard_damage_at_position(&game.system_stars, STARTER_SYSTEM_ID, Vec2::ZERO),
+            10.0
+        );
+
+        update_stellar_hazards(&mut game, 1.0);
+
+        assert!(game.owned_ships[1].ship.systems.shields.current < 25.0);
+        assert!(game.npc_ships[0].shields.current < 25.0);
     }
 
     #[test]

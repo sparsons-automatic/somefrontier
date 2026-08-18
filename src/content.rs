@@ -615,6 +615,8 @@ pub struct StarDef {
     pub color: [u8; 3],
     pub radius: f32,
     pub position: [f32; 2],
+    pub hazard_range: f32,
+    pub hazard_damage_per_second: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -1329,6 +1331,10 @@ struct StarFileDef {
     color: [u8; 3],
     radius: f32,
     position: [f32; 2],
+    #[serde(default)]
+    hazard_range: f32,
+    #[serde(default)]
+    hazard_damage_per_second: f32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2929,6 +2935,16 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
         if star.radius <= 0.0 {
             errors.push(format!("Star `{id}` has a non-positive radius"));
         }
+        if !star.hazard_range.is_finite() || star.hazard_range < 0.0 {
+            errors.push(format!(
+                "Star `{id}` has a negative or non-finite hazard range"
+            ));
+        }
+        if !star.hazard_damage_per_second.is_finite() || star.hazard_damage_per_second < 0.0 {
+            errors.push(format!(
+                "Star `{id}` has negative or non-finite hazard damage per second"
+            ));
+        }
         let inserted = registry
             .stars
             .insert(
@@ -2941,6 +2957,8 @@ fn load_pack(raw_pack: RawPack, registry: &mut ContentRegistry, errors: &mut Vec
                     color: star.color,
                     radius: star.radius,
                     position: star.position,
+                    hazard_range: star.hazard_range,
+                    hazard_damage_per_second: star.hazard_damage_per_second,
                 },
             )
             .is_none();

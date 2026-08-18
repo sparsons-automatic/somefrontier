@@ -17,3 +17,5 @@ classification = "M-type red dwarf"
 color = [255, 116, 82]
 radius = 126.0
 position = [-740.0, -560.0]
+hazard_range = 420.0
+hazard_damage_per_second = 6.0

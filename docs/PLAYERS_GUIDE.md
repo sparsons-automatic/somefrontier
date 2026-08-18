@@ -226,7 +226,11 @@ The `Keep` column sets an auto-maintained inventory target. Click its stock egui
 10, or hold `Control` while clicking to adjust by 20.
 
 Hazard effects are lightweight in the current build. Some planets can drain
-shields while the ship is close. Stable orbit mitigates configured shield drain.
+shields while the ship is close. Stars with a configured hazard zone damage
+shields first and then the hull; damage increases smoothly as a ship approaches
+the star, and equipped hazard-resistant shields reduce it. Stable orbit
+mitigates configured planet shield drain, but does not protect against stellar
+hazards.
 
 Purchased mining-drone hulls can perform this work without becoming the active
 ship. Open Fleet and select an inactive mining drone. Choose a composition-
