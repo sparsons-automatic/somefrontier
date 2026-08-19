@@ -194,16 +194,15 @@ fn draw_mining_grid(ui: &mut egui::Ui, view: &PlanetPaneView, actions: &mut Vec<
             ui.end_row();
 
             for (row_index, row) in view.mining.iter().enumerate() {
-                if ui
-                    .add_enabled(
-                        row.enabled,
-                        egui::Button::new(&row.item).selected(row.active),
-                    )
-                    .clicked()
-                {
+                let item_response = ui.add_enabled(
+                    row.enabled,
+                    egui::Label::new(mining_item_label(row)).sense(egui::Sense::click()),
+                );
+                let mut row_rect = item_response.rect;
+                if item_response.clicked() {
                     actions.push(PlanetUiAction::QueueMining { row: row_index });
                 }
-                ui.horizontal(|ui| {
+                let keep_response = ui.horizontal(|ui| {
                     if mining_keep_button(
                         ui,
                         "−",
@@ -234,13 +233,45 @@ fn draw_mining_grid(ui: &mut egui::Ui, view: &PlanetPaneView, actions: &mut Vec<
                         });
                     }
                 });
-                ui.add_enabled(row.enabled, egui::Label::new(&row.status));
-                ui.label(&row.richness);
-                let mut active = row.active;
-                ui.add_enabled(false, egui::Checkbox::new(&mut active, ""));
+                row_rect = row_rect.union(keep_response.response.rect);
+                let status_response = ui.add_enabled(row.enabled, egui::Label::new(&row.status));
+                row_rect = row_rect.union(status_response.rect);
+                let richness_response = ui.label(&row.richness);
+                row_rect = row_rect.union(richness_response.rect);
+                let active_response = if row.active {
+                    ui.colored_label(mining_active_color(), "●")
+                } else {
+                    ui.weak("—")
+                };
+                row_rect = row_rect.union(active_response.rect);
+                if row.active {
+                    ui.painter().rect_filled(
+                        row_rect.expand2(egui::vec2(4.0, 2.0)),
+                        2.0,
+                        mining_active_tint(),
+                    );
+                }
                 ui.end_row();
             }
         });
+}
+
+fn mining_active_color() -> egui::Color32 {
+    egui::Color32::from_rgb(104, 211, 153)
+}
+
+fn mining_active_tint() -> egui::Color32 {
+    egui::Color32::from_rgba_premultiplied(45, 92, 67, 22)
+}
+
+fn mining_item_label(row: &MiningRow) -> egui::RichText {
+    if row.active {
+        egui::RichText::new(format!("▶ {}", row.item))
+            .strong()
+            .color(mining_active_color())
+    } else {
+        egui::RichText::new(&row.item)
+    }
 }
 
 fn mining_keep_button(

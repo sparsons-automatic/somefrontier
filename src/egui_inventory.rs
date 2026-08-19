@@ -206,7 +206,7 @@ fn draw_production_pane(
 
                 for (row_index, row) in view.production.iter().enumerate() {
                     let item_label = production_item_label(row);
-                    let response = ui.selectable_label(row_index == selected, item_label);
+                    let response = ui.add(egui::Label::new(item_label).sense(egui::Sense::click()));
                     let mut row_rect = response.rect;
                     if response.clicked() {
                         selected = row_index;
